@@ -17,6 +17,12 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Version for file names
+        shell: bash
+        # a release tag gives its version (v0.2.0-beta → 0.2.0-beta); other builds: Cargo.toml version + commit
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-dev.${GITHUB_SHA::7}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
@@ -29,11 +35,11 @@ jobs:
           wget -q -O /tmp/linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x /tmp/linuxdeploy
           /tmp/linuxdeploy --appdir AppDir -e target/release/leafnotes -d packaging/leafnotes.desktop -i packaging/leafnotes.png --output appimage
-          mv ./*.AppImage LeafNotes-x86_64.AppImage
+          mv ./*.AppImage "LeafNotes-${{ env.VERSION }}-x86_64.AppImage"
       - uses: actions/upload-artifact@v4
         with:
           name: LeafNotes-linux
-          path: LeafNotes-x86_64.AppImage
+          path: LeafNotes-${{ env.VERSION }}-x86_64.AppImage
 
   msi:
     # windows-2022 comes with the WiX 3 toolset that cargo-wix uses
@@ -43,6 +49,12 @@ jobs:
       HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Version for file names
+        shell: bash
+        # a release tag gives its version (v0.2.0-beta → 0.2.0-beta); other builds: Cargo.toml version + commit
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-dev.${GITHUB_SHA::7}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-wix --locked
@@ -58,7 +70,7 @@ jobs:
           $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
           & $signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target\release\leafnotes.exe
       - run: cargo wix init --force
-      - run: cargo wix --no-build --nocapture --output target/wix/LeafNotes-x86_64.msi
+      - run: cargo wix --no-build --nocapture --output target/wix/LeafNotes-${{ env.VERSION }}-x86_64.msi
       - name: Sign the installer
         if: env.HAS_CERT == 'true'
         shell: pwsh
@@ -66,17 +78,23 @@ jobs:
           CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
-          & $signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target\wix\LeafNotes-x86_64.msi
+          & $signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target\wix\LeafNotes-${{ env.VERSION }}-x86_64.msi
           Remove-Item "$env:RUNNER_TEMP\cert.pfx"
       - uses: actions/upload-artifact@v4
         with:
           name: LeafNotes-windows
-          path: target/wix/LeafNotes-x86_64.msi
+          path: target/wix/LeafNotes-${{ env.VERSION }}-x86_64.msi
 
   apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Version for file names
+        shell: bash
+        # a release tag gives its version (v0.2.0-beta → 0.2.0-beta); other builds: Cargo.toml version + commit
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-dev.${GITHUB_SHA::7}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
@@ -106,11 +124,11 @@ jobs:
           cargo apk build --release --lib
           # the Java part (file picker, sharing, key store); the app can't start without it
           sh tools/android-java.sh target/release/apk/LeafNotes.apk
-          cp target/release/apk/LeafNotes.apk LeafNotes-arm64.apk
+          cp target/release/apk/LeafNotes.apk "LeafNotes-${{ env.VERSION }}-arm64.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: LeafNotes-android
-          path: LeafNotes-arm64.apk
+          path: LeafNotes-${{ env.VERSION }}-arm64.apk
 
   release:
     # tag a version (git tag v0.1.0 && git push --tags) to publish the three files as a release

@@ -2,7 +2,7 @@
 # Writes winget manifests for a released version: sh make.sh 0.2.0
 set -e
 V=${1:?version, e.g. 0.2.0}
-URL="https://github.com/NilsBriggen/leaf-notes/releases/download/v$V/LeafNotes-x86_64.msi"
+URL="https://github.com/NilsBriggen/leaf-notes/releases/download/v$V/LeafNotes-$V-x86_64.msi"
 SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1 | tr a-f A-F)
 D=manifests/$V; mkdir -p "$D"
 cat > "$D/NilsBriggen.LeafNotes.yaml" <<M

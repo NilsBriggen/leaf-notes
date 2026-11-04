@@ -22,9 +22,9 @@ Every push to `main` builds three files under **Actions ▸ Build ▸ Artifacts*
 
 | Platform | File |
 |---|---|
-| Linux | `LeafNotes-x86_64.AppImage`: make it executable (`chmod +x`) and run it |
-| Windows | `LeafNotes-x86_64.msi`: installer |
-| Android (arm64) | `LeafNotes-arm64.apk`: allow installing from this source |
+| Linux | `LeafNotes-<version>-x86_64.AppImage`: make it executable (`chmod +x`) and run it |
+| Windows | `LeafNotes-<version>-x86_64.msi`: installer |
+| Android (arm64) | `LeafNotes-<version>-arm64.apk`: allow installing from this source |
 
 Push a version tag (`git tag v0.1.0 && git push --tags`) to publish the three files as a GitHub release.
 
