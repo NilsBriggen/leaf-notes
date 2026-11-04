@@ -1,0 +1,75 @@
+[package]
+name = "leafnotes"
+version = "0.1.0"
+edition = "2021"
+description = "Notes with pen, maths, recordings and flashcards"
+authors = ["Nils Briggen"]
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "leafnotes"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "links"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", features = ["json"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
+hayro = "0.9"
+cpal = "0.18"
+lopdf = { version = "0.47", default-features = false }
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+sha2 = "0.11"
+getrandom = "0.3"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit", "wayland", "x11", "clipboard"] }
+rfd = "0.17"
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
+jni = "0.22"
+ndk-context = "0.1"
+
+[package.metadata.android]
+package = "org.leafnotes.app"
+apk_name = "LeafNotes"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 34
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
+[package.metadata.android.application]
+label = "Leaf Notes"
+
+[package.metadata.android.application.activity]
+config_changes = "orientation|screenSize|keyboardHidden"
+orientation = "unspecified"
+
+[profile.release]
+opt-level = 2
+
+# Development signing key (made locally). Replace with your own key before publishing to a store.
+[package.metadata.android.signing.release]
+path = "android/dev.keystore"
+keystore_password = "android"
+
+# The offline handwriting recognizer does real number crunching; keep it quick even in debug builds.
+[profile.dev.package.leafnotes]
+opt-level = 2
+
+# Libraries (PDF rendering, UI) run optimized even in debug builds; printing a PDF stays quick.
+[profile.dev.package."*"]
+opt-level = 2

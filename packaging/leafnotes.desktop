@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Leaf Notes
+Comment=Notes with pen, maths, recordings and flashcards
+Exec=leafnotes
+Icon=leafnotes
+Categories=Office;Education;
+Terminal=false

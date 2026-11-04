@@ -1,0 +1,8 @@
+/target
+/shots
+/tools/bin
+__pycache__/
+*.tmp
+/.cargo
+/android/*.keystore
+/tools/.crates*

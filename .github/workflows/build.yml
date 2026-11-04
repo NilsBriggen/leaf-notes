@@ -1,0 +1,104 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Google Drive sign-in (Settings ▸ Secrets and variables ▸ Actions); without it the Drive option says it isn't set up
+  LEAFNOTES_GOOGLE_SECRET: ${{ secrets.LEAFNOTES_GOOGLE_SECRET }}
+
+jobs:
+  appimage:
+    # older Ubuntu = older glibc, so the AppImage runs on more Linux distributions
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - run: cargo test --release
+      - run: cargo build --release
+      - name: Package AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          wget -q -O /tmp/linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x /tmp/linuxdeploy
+          /tmp/linuxdeploy --appdir AppDir -e target/release/leafnotes -d packaging/leafnotes.desktop -i packaging/leafnotes.png --output appimage
+          mv ./*.AppImage LeafNotes-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LeafNotes-linux
+          path: LeafNotes-x86_64.AppImage
+
+  msi:
+    # windows-2022 comes with the WiX 3 toolset that cargo-wix uses
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-wix --locked
+      - run: cargo wix init --force
+      - run: cargo wix --nocapture --output target/wix/LeafNotes-x86_64.msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LeafNotes-windows
+          path: target/wix/LeafNotes-x86_64.msi
+
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Android SDK pieces (same versions as local builds)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.1.12297006" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+      - run: cargo install cargo-apk --locked
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          mkdir -p android
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > android/dev.keystore
+          else
+            keytool -genkeypair -keystore android/dev.keystore -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Leaf Notes CI"
+            echo "::warning::No ANDROID_KEYSTORE_B64 secret: this APK is signed with a throwaway key, so it can't update an installed copy."
+          fi
+      - name: Build APK
+        run: |
+          export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/27.1.12297006"
+          cargo apk build --release --lib
+          cp target/release/apk/LeafNotes.apk LeafNotes-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LeafNotes-android
+          path: LeafNotes-arm64.apk
+
+  release:
+    # tag a version (git tag v0.1.0 && git push --tags) to publish the three files as a release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [appimage, msi, apk]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
