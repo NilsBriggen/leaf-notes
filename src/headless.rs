@@ -1,0 +1,108 @@
+//! Draws the app without a window, for `--screenshot` when the window gets no frames
+//! (a locked or blanked screen, a hidden session, a server). It runs the same app code for the
+//! same number of frames and paints egui's triangles on the CPU, blending like the GPU renderer
+//! does (premultiplied colours in gamma space).
+use eframe::egui::{self, epaint, Color32, TextureId};
+use std::collections::HashMap;
+use std::path::Path;
+
+/// A texture as plain pixels: width, height, premultiplied colours.
+type Tex = (usize, usize, Vec<Color32>);
+
+/// Run the app for `frames` frames in a `size` (points) window at `ppp` pixels per point and save the last one as a PNG.
+pub fn screenshot(path: &Path, frames: usize, size: egui::Vec2, ppp: f32) -> Result<(), String> {
+    use eframe::App;
+    let ctx = egui::Context::default();
+    let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+    let mut app = crate::NotesApp::new(&cc, Some(path.to_path_buf()));
+    let mut frame = eframe::Frame::_new_kittest();
+    let mut textures: HashMap<TextureId, Tex> = HashMap::new();
+    let mut last = (vec![], ppp);
+    for i in 0..frames.max(1) {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            time: Some(i as f64 / 60.0),
+            predicted_dt: 1.0 / 60.0,
+            focused: true,
+            ..Default::default()
+        };
+        raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
+        let mut out = ctx.run_ui(raw, |ui| app.ui(ui, &mut frame));
+        for (id, deltas) in &out.textures_delta.set { for d in deltas { apply(&mut textures, *id, d); } }
+        last = (ctx.tessellate(out.shapes, out.pixels_per_point), out.pixels_per_point);
+        for id in &out.textures_delta.free { textures.remove(id); }
+        out.textures_delta.clear(); // handled above (egui checks that every texture change is used)
+    }
+    let (prims, ppp) = last;
+    let (w, h) = ((size.x * ppp).round() as usize, (size.y * ppp).round() as usize);
+    let bg = app.clear_color(&ctx.global_style().visuals);
+    let mut px = vec![bg; w * h];
+    for p in &prims { paint(&mut px, w, h, ppp, p, &textures); }
+    let bytes: Vec<u8> = px.iter().flat_map(|c| [c[0], c[1], c[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).into_iter().chain([255])).collect();
+    if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+    image::save_buffer(path, &bytes, w as u32, h as u32, image::ColorType::Rgba8).map_err(|e| e.to_string())
+}
+
+fn apply(textures: &mut HashMap<TextureId, Tex>, id: TextureId, delta: &epaint::ImageDelta) {
+    let epaint::ImageData::Color(img) = &delta.image;
+    let [dw, dh] = img.size;
+    match delta.pos {
+        None => { textures.insert(id, (dw, dh, img.pixels.clone())); }
+        Some([x0, y0]) => {
+            let Some((tw, th, pixels)) = textures.get_mut(&id) else { return };
+            for y in 0..dh.min(th.saturating_sub(y0)) {
+                for x in 0..dw.min(tw.saturating_sub(x0)) { pixels[(y0 + y) * *tw + x0 + x] = img.pixels[y * dw + x]; }
+            }
+        }
+    }
+}
+
+/// Bilinear sample (clamped), premultiplied RGBA in 0..1.
+fn sample((tw, th, pixels): &Tex, u: f32, v: f32) -> [f32; 4] {
+    let (x, y) = (u * *tw as f32 - 0.5, v * *th as f32 - 0.5);
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let at = |dx: f32, dy: f32| {
+        let c = pixels[((y0 + dy).clamp(0.0, *th as f32 - 1.0) as usize) * tw + (x0 + dx).clamp(0.0, *tw as f32 - 1.0) as usize];
+        [c.r(), c.g(), c.b(), c.a()].map(|v| v as f32 / 255.0)
+    };
+    let (a, b, c, d) = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0));
+    std::array::from_fn(|i| (a[i] * (1.0 - fx) + b[i] * fx) * (1.0 - fy) + (c[i] * (1.0 - fx) + d[i] * fx) * fy)
+}
+
+fn paint(px: &mut [[f32; 4]], w: usize, h: usize, ppp: f32, p: &epaint::ClippedPrimitive, textures: &HashMap<TextureId, Tex>) {
+    let epaint::Primitive::Mesh(mesh) = &p.primitive else { return }; // custom GPU callbacks can't be drawn here
+    let tex = textures.get(&mesh.texture_id);
+    let cx0 = (p.clip_rect.min.x * ppp).floor().max(0.0) as usize;
+    let cy0 = (p.clip_rect.min.y * ppp).floor().max(0.0) as usize;
+    let cx1 = ((p.clip_rect.max.x * ppp).ceil().max(0.0) as usize).min(w);
+    let cy1 = ((p.clip_rect.max.y * ppp).ceil().max(0.0) as usize).min(h);
+    let edge = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    for t in mesh.indices.chunks_exact(3) {
+        let v = [t[0], t[1], t[2]].map(|i| &mesh.vertices[i as usize]);
+        let q = v.map(|v| [v.pos.x * ppp, v.pos.y * ppp]);
+        let area = edge(q[0], q[1], q[2]);
+        if area.abs() < 1e-6 { continue; }
+        let col = v.map(|v| [v.color.r(), v.color.g(), v.color.b(), v.color.a()].map(|c| c as f32 / 255.0));
+        let x0 = q.iter().map(|p| p[0]).fold(f32::MAX, f32::min).floor().max(cx0 as f32) as usize;
+        let x1 = (q.iter().map(|p| p[0]).fold(f32::MIN, f32::max).ceil().max(0.0) as usize).min(cx1);
+        let y0 = q.iter().map(|p| p[1]).fold(f32::MAX, f32::min).floor().max(cy0 as f32) as usize;
+        let y1 = (q.iter().map(|p| p[1]).fold(f32::MIN, f32::max).ceil().max(0.0) as usize).min(cy1);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let c = [x as f32 + 0.5, y as f32 + 0.5];
+                let (b0, b1) = (edge(q[1], q[2], c) / area, edge(q[2], q[0], c) / area);
+                let b2 = 1.0 - b0 - b1;
+                if b0 < 0.0 || b1 < 0.0 || b2 < 0.0 { continue; }
+                let mut src: [f32; 4] = std::array::from_fn(|i| col[0][i] * b0 + col[1][i] * b1 + col[2][i] * b2);
+                if let Some(tex) = tex {
+                    let (u, vv) = (v[0].uv.x * b0 + v[1].uv.x * b1 + v[2].uv.x * b2, v[0].uv.y * b0 + v[1].uv.y * b1 + v[2].uv.y * b2);
+                    let s = sample(tex, u, vv);
+                    for i in 0..4 { src[i] *= s[i]; }
+                }
+                let d = &mut px[y * w + x];
+                for i in 0..4 { d[i] = src[i] + d[i] * (1.0 - src[3]); }
+            }
+        }
+    }
+}

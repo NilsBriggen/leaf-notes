@@ -8,6 +8,10 @@ mod audio;
 pub(crate) mod canvas;
 mod chrome;
 pub mod sync;
+pub mod headless;
+
+/// Frames the window has drawn in a `--screenshot` run (none means the system isn't giving it any).
+pub static SHOT_FRAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 mod keys;
 
 use eframe::egui::{self, Color32, CornerRadius, Key, Modifiers, Pos2, Stroke as EStroke, TextureHandle, Vec2};
@@ -1217,6 +1221,7 @@ impl eframe::App for NotesApp {
 
         if let Some(path) = self.screenshot.clone() {
             self.frames += 1;
+            SHOT_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             ctx.request_repaint();
             // 120 frames, or 2.5 s if the system slows the window down (hidden or covered windows get few frames)
             let t = ctx.input(|i| i.time);
