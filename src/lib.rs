@@ -15,6 +15,9 @@ pub(crate) use i18n::tr;
 
 /// Frames the window has drawn in a `--screenshot` run (none means the system isn't giving it any).
 pub static SHOT_FRAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Android: something is pending, so the wake-up thread repaints the app regularly.
+#[cfg(target_os = "android")]
+static WAKE_FAST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 mod keys;
 
 use eframe::egui::{self, Color32, CornerRadius, Key, Modifiers, Pos2, Stroke as EStroke, TextureHandle, Vec2};
@@ -156,6 +159,13 @@ struct St {
     force: Option<f32>,
     frame_force: Option<f32>,
     editing: Option<u64>,
+    /// Size of the page area last frame (to notice the on-screen keyboard taking room).
+    canvas_avail: Vec2,
+    /// Time of the previous frame (for the save timer).
+    prev_t: f64,
+    /// Since when nothing wants the keyboard (it closes after a short pause, never in a flicker).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    kb_idle_since: Option<f64>,
     last_text: Option<u64>,
     focus_id: Option<egui::Id>,
     fmt: Option<Fmt>,
@@ -404,7 +414,7 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
@@ -427,7 +437,7 @@ impl NotesApp {
     }
 
     #[cfg(target_os = "android")]
-    pub fn with_android(mut self, app: android_activity::AndroidApp) -> Self { self.android = Some(app); self }
+    pub fn with_android(mut self, app: android_activity::AndroidApp) -> Self { audio::set_activity(app.activity_as_ptr()); self.android = Some(app); self }
 
     fn clamp(&mut self) {
         let s = &mut self.store;
@@ -1011,7 +1021,13 @@ impl NotesApp {
         }
         // ask first: once in the app, and (on Android) the system's own permission dialog
         if !self.st.p.mic_ok { self.st.mic_prompt = true; return; }
-        if !audio::mic_granted() { audio::mic_request(); self.st.mic_wait = Some(now_f()); self.st.say("Waiting for microphone permission…"); return; }
+        if !audio::mic_granted() {
+            match audio::mic_request() {
+                Ok(()) => { self.st.mic_wait = Some(now_f()); self.st.say("Waiting for microphone permission…"); }
+                Err(e) => self.st.say(tf!("⚠ Couldn't ask Android for the microphone ({e}). Allow it in the system settings under Apps ▸ Leaf Notes ▸ Permissions.", e = e)),
+            }
+            return;
+        }
         let id = new_id();
         let dir = data_dir().join("files");
         let _ = std::fs::create_dir_all(&dir);
@@ -1202,7 +1218,11 @@ impl eframe::App for NotesApp {
             if let Some((id, name)) = self.st.rename.take() { if !name.trim().is_empty() { self.rename(id, name.trim().to_string()); self.st.dirty = true; } }
         }
 
-        let dt = ctx.input(|i| i.stable_dt).min(0.5);
+        // real seconds since the last frame (stable_dt assumes 60 fps, so an idle app, which draws
+        // rarely, would wait close to a minute to save)
+        let now_t = ctx.input(|i| i.time);
+        let dt = ((now_t - self.st.prev_t).max(0.0) as f32).min(2.0);
+        self.st.prev_t = now_t;
         self.st.since_save += dt;
         self.st.status_age += dt;
         if self.st.dirty && self.st.since_save > 1.5 { self.save_now(); }
@@ -1237,7 +1257,33 @@ impl eframe::App for NotesApp {
         #[cfg(target_os = "android")]
         if let Some(app) = &self.android {
             let wants = ctx.egui_wants_keyboard_input();
-            if wants != self.keyboard_shown { if wants { app.show_soft_input(true) } else { app.hide_soft_input(true) } self.keyboard_shown = wants; }
+            // open at once; close only after nothing has wanted it for a moment, so a frame without
+            // focus (the layout shifting as the keyboard appears) can't start an open/close loop
+            let now = ctx.input(|i| i.time);
+            if wants { self.st.kb_idle_since = None; } else if self.st.kb_idle_since.is_none() { self.st.kb_idle_since = Some(now); }
+            let close = !wants && self.st.kb_idle_since.is_some_and(|t| now - t > 0.4);
+            if wants && !self.keyboard_shown { app.show_soft_input(true); self.keyboard_shown = true; }
+            else if close && self.keyboard_shown { app.hide_soft_input(true); self.keyboard_shown = false; }
+            if !wants && self.keyboard_shown { ctx.request_repaint_after(std::time::Duration::from_millis(450)); }
+            // Android doesn't wake an idle app for delayed repaints, so saving, timers and progress would
+            // stall until the next touch. A small thread wakes it while something is pending.
+            let busy = self.st.dirty || self.st.recorder.is_some() || self.st.player.is_some() || self.st.capture.is_some()
+                || !self.st.ai_rx.is_empty() || self.st.sync_rx.is_some() || self.st.google_rx.is_some() || self.st.focus.is_some()
+                || self.st.mic_wait.is_some() || self.st.bars == [0.0; 4] || (!wants && self.keyboard_shown);
+            WAKE_FAST.store(busy, std::sync::atomic::Ordering::Relaxed);
+            static TICKER: std::sync::Once = std::sync::Once::new();
+            TICKER.call_once(|| {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let mut idle = 0u32;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                        idle += 1;
+                        // fast while busy; every 30 s otherwise (sync checks, clocks)
+                        if WAKE_FAST.load(std::sync::atomic::Ordering::Relaxed) || idle >= 75 { idle = 0; ctx.request_repaint(); }
+                    }
+                });
+            });
         }
 
         if let Some(path) = self.screenshot.clone() {
@@ -1300,5 +1346,5 @@ fn system_bars() -> Option<[i32; 4]> {
         let r = ask(env, &act);
         if r.is_err() { let _ = env.exception_clear(); } // a pending Java exception would break every later call
         r
-    }).flatten()
+    }).ok().flatten()
 }

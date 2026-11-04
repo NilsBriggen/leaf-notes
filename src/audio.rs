@@ -22,43 +22,55 @@ pub fn mic_granted() -> bool {
 }
 
 /// Show the system's "allow microphone?" dialog (Android); the answer is picked up by polling `mic_granted`.
-pub fn mic_request() {
+pub fn mic_request() -> Result<(), String> {
     #[cfg(target_os = "android")]
-    android::request();
+    { android::request() }
+    #[cfg(not(target_os = "android"))]
+    { Ok(()) }
 }
 
 #[cfg(target_os = "android")]
-pub(crate) use android::with_activity;
+pub(crate) use android::{set_activity, with_activity};
 
 #[cfg(target_os = "android")]
 mod android {
     use jni::{objects::JObject, strings::JNIString, sys::jobject, Env, JavaVM};
     const MIC: &str = "android.permission.RECORD_AUDIO";
 
-    pub(crate) fn with_activity<R>(f: impl for<'j> FnOnce(&mut Env<'j>, JObject<'j>) -> jni::errors::Result<R>) -> Option<R> {
+    /// Run Java calls against the activity. A Java exception is printed to the system log and cleared
+    /// (a pending one would break every later call); the error comes back as text.
+    /// The running Activity (from android-activity). ndk_context only holds the Application, which
+    /// can check permissions but not ask for them, and has no window.
+    static ACTIVITY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    pub(crate) fn set_activity(ptr: *mut std::ffi::c_void) { ACTIVITY.store(ptr as usize, std::sync::atomic::Ordering::Relaxed); }
+
+    pub(crate) fn with_activity<R>(f: impl for<'j> FnOnce(&mut Env<'j>, JObject<'j>) -> jni::errors::Result<R>) -> Result<R, String> {
         let ctx = ndk_context::android_context();
         let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
-        let raw = ctx.context() as jobject;
+        let act = ACTIVITY.load(std::sync::atomic::Ordering::Relaxed);
+        let raw = if act != 0 { act as jobject } else { ctx.context() as jobject };
         vm.attach_current_thread(|env: &mut Env<'_>| {
             let activity = unsafe { JObject::from_raw(env, raw) };
-            f(env, activity)
-        }).ok()
+            let r = f(env, activity);
+            if r.is_err() && env.exception_check() { let _ = env.exception_describe(); let _ = env.exception_clear(); }
+            r
+        }).map_err(|e| e.to_string())
     }
 
     pub fn granted() -> bool {
         with_activity(|env, act| {
             let p = env.new_string(MIC)?;
             env.call_method(&act, JNIString::new("checkSelfPermission"), jni::jni_sig!("(Ljava/lang/String;)I"), &[(&p).into()])?.i()
-        }) == Some(0) // PackageManager.PERMISSION_GRANTED
+        }) == Ok(0) // PackageManager.PERMISSION_GRANTED
     }
 
-    pub fn request() {
-        let _ = with_activity(|env, act| {
+    pub fn request() -> Result<(), String> {
+        with_activity(|env, act| {
             let p = env.new_string(MIC)?;
             let list = env.new_object_array(1, jni::jni_str!("java/lang/String"), &p)?;
             env.call_method(&act, JNIString::new("requestPermissions"), jni::jni_sig!("([Ljava/lang/String;I)V"), &[(&list).into(), 7i32.into()])?;
             Ok(())
-        });
+        })
     }
 }
 

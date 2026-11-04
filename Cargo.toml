@@ -59,6 +59,8 @@ name = "android.permission.RECORD_AUDIO"
 [package.metadata.android.application]
 label = "Leaf Notes"
 icon = "@mipmap/ic_launcher"
+# no title bar: the app draws its own top bar, and an invisible title bar would only push it down
+theme = "@android:style/Theme.DeviceDefault.NoActionBar"
 
 [package.metadata.android.application.activity]
 config_changes = "orientation|screenSize|keyboardHidden"
@@ -79,3 +81,8 @@ opt-level = 2
 # Libraries (PDF rendering, UI) run optimized even in debug builds; printing a PDF stays quick.
 [profile.dev.package."*"]
 opt-level = 2
+
+# winit with one change for Android: a finger touch carries no pressure, only a stylus does
+# (see vendor/winit/src/platform_impl/android/mod.rs, "Leaf Notes"). Remove once winit reports the tool type.
+[patch.crates-io]
+winit = { path = "vendor/winit" }

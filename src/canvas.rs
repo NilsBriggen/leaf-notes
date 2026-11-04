@@ -157,6 +157,18 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
             }.clamp(0.3, 4.0);
             view = Rect::from_min_size(view.min, avail / target);
         }
+        // Keep the zoom when the space changes (the on-screen keyboard opening, a window resize):
+        // the scene would otherwise zoom out to fit the old view into the smaller area.
+        view = Rect::from_min_size(view.min, avail / (avail.x / view.width().max(1.0)).clamp(0.3, 4.0));
+        // the space just got shorter (keyboard): keep the note being typed in on screen
+        if avail.y < st.canvas_avail.y - 1.0 {
+            if let Some(b) = st.editing.and_then(|id| page.blocks.iter().find(|b| b.id == id)) {
+                let h = st.heights.get(&b.id).copied().unwrap_or(40.0).min(view.height() * 0.6);
+                if b.pos[1] + h > view.bottom() - 10.0 { view = view.translate(Vec2::new(0.0, b.pos[1] + h - view.bottom() + 24.0)); }
+                if b.pos[1] < view.top() { view = view.translate(Vec2::new(0.0, b.pos[1] - view.top() - 24.0)); }
+            }
+        }
+        st.canvas_avail = avail;
         egui::Scene::new().zoom_range(0.3..=4.0).max_inner_size(Vec2::splat(30000.0)).show(ui, &mut view, |ui| canvas(ui, page, st));
         // keep the paper from drifting away from the top-left corner
         if view.top() < -80.0 { view = view.translate(Vec2::new(0.0, -80.0 - view.top())); }
@@ -223,7 +235,11 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     // With finger drawing off, a stylus touching the page while typing picks up the pen in hand.
     // (only on devices whose fingers report no pressure, otherwise every tap would start drawing)
     let auto_pen = st.tool == Tool::Type && !st.p.draw_finger && st.p.pen_detect;
-    if auto_pen && st.input == Input::Pen && ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(rect) {
+    // the press is in screen coordinates; the page is zoomed and scrolled, so compare in page coordinates
+    // (and only where the page is visible, not under the toolbar)
+    let to_page = ui.ctx().layer_transform_from_global(ui.layer_id()).unwrap_or_default();
+    let pressed_at = ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed())).map(|q| to_page * q);
+    if auto_pen && st.input == Input::Pen && pressed_at.is_some_and(|p| ui.clip_rect().contains(p) && rect.contains(p)) {
         st.tool = Tool::Pen;
         st.editing = None;
         st.say("✏ Picked up your pen. Choose Type in the toolbar to type again.");
