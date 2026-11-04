@@ -204,6 +204,13 @@ fn merge_ids(b: &[Value], l: &[Value], r: &[Value], strict: bool) -> Result<Vec<
         match (bm.get(&i), rm.get(&i)) {
             (bv, Some(rv)) => {
                 let bv = bv.copied().unwrap_or(&Value::Null);
+                // a locked section's pages are one encrypted blob: changed on both sides, keep both
+                let lock = |v: &Value| v.get("lock").cloned().unwrap_or(Value::Null);
+                if lv.get("pages").is_some() && (lock(lv) != lock(bv) && lock(rv) != lock(bv) && lock(lv) != lock(rv)) {
+                    out.push(lv.clone());
+                    out.push(section_copy(rv));
+                    continue;
+                }
                 if is_page(lv) {
                     match mv(bv, lv, rv, true) {
                         Ok(v) => out.push(v),
@@ -226,9 +233,21 @@ fn merge_ids(b: &[Value], l: &[Value], r: &[Value], strict: bool) -> Result<Vec<
     Ok(out)
 }
 
+/// The other device's version of a locked section that both changed, as its own section.
+fn section_copy(v: &Value) -> Value {
+    let mut c = v.clone();
+    let id = new_id();
+    c["id"] = id.into();
+    c["name"] = format!("{} (other device)", c["name"].as_str().unwrap_or("")).into();
+    // the placeholder page of a locked section carries the section's id
+    if let Some(p) = c["pages"].as_array_mut().and_then(|a| a.first_mut()) { p["id"] = id.into(); }
+    c
+}
+
 /// The other device's version of a page that both changed, as its own page.
 fn conflict_copy(v: &Value) -> Value {
     let mut c = v.clone();
+    c["other_of"] = c["id"].clone();
     c["id"] = new_id().into();
     let t = c["title"].as_str().unwrap_or("").to_string();
     c["title"] = format!("{} (other device)", if t.trim().is_empty() { "Untitled page" } else { &t }).into();
@@ -245,7 +264,9 @@ fn dedupe(s: &mut Store) {
         if !seen.insert(n.id) { n.id = new_id(); }
         for sec in &mut n.sections {
             if !seen.insert(sec.id) { sec.id = new_id(); }
-            for p in &mut sec.pages { if !seen.insert(p.id) { p.id = new_id(); } }
+            let sid = sec.id;
+            // a locked section's placeholder page shares the section's id on purpose
+            for p in &mut sec.pages { if !(p.kind == PageKind::Locked && p.id == sid) && !seen.insert(p.id) { p.id = new_id(); } }
         }
     }
 }
@@ -673,6 +694,19 @@ mod tests {
         l4.trash.push(Trashed { label: "a".into(), deleted: 1, item: TrashItem::Notebook(l4.notebooks[1].clone()) });
         r4.trash.push(Trashed { label: "b".into(), deleted: 2, item: TrashItem::Notebook(r4.notebooks[1].clone()) });
         assert_eq!(merge(&m, &l4, &r4).unwrap().trash.len(), 2);
+        // a locked section changed on both devices: both encrypted versions are kept
+        let mut b5 = m.clone();
+        let sec = &mut b5.notebooks[1].sections[0];
+        sec.lock = Some(Lock { salt: "s".into(), nonce: "n0".into(), data: "d0".into() });
+        sec.pages = vec![sec.placeholder()];
+        let (mut l5, mut r5) = (b5.clone(), b5.clone());
+        l5.notebooks[1].sections[0].lock.as_mut().unwrap().data = "here".into();
+        r5.notebooks[1].sections[0].lock.as_mut().unwrap().data = "there".into();
+        let m5 = merge(&b5, &l5, &r5).unwrap();
+        let secs = &m5.notebooks[1].sections;
+        assert_eq!(secs.len(), 2);
+        assert!(secs[1].name.ends_with("(other device)") && secs[1].pages[0].id == secs[1].id);
+        assert_eq!((secs[0].lock.as_ref().unwrap().data.as_str(), secs[1].lock.as_ref().unwrap().data.as_str()), ("here", "there"));
     }
 
     #[test]

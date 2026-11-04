@@ -8,6 +8,10 @@ mod audio;
 pub(crate) mod canvas;
 mod chrome;
 pub mod sync;
+pub mod storage;
+pub mod vault;
+mod locks;
+mod safety;
 pub mod headless;
 pub mod i18n;
 mod i18n_table;
@@ -31,7 +35,6 @@ use std::sync::Arc;
 #[cfg(target_os = "android")]
 pub static ANDROID_DATA: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-const STORE_FILE: &str = "notebooks.json";
 const SETTINGS_FILE: &str = "ai-settings.json";
 const PREFS_FILE: &str = "prefs.json";
 
@@ -234,6 +237,19 @@ struct St {
     test_result: Option<Result<String, String>>,
     status: String,
     status_age: f32,
+    /// Writes changed pages only (see storage.rs).
+    saver: storage::Saver,
+    /// Page history window: (page, its older versions, the one selected).
+    history: Option<(u64, Vec<(u64, Page)>, usize)>,
+    /// Comparing a page with the other device's version: (this device's, the copy).
+    compare: Option<(u64, u64)>,
+    /// Keys of locked sections opened in this session (memory only).
+    keys: HashMap<u64, vault::Key>,
+    /// The sealed form of each opened locked section, and the pages it was made from (hash).
+    seal_cache: HashMap<u64, (u64, Lock)>,
+    lock_prompt: Option<locks::LockPrompt>,
+    unlock_pw: String,
+    unlock_err: String,
     /// Android's status and navigation bars (top, bottom, left, right) in points, and when they were last asked for.
     bars: [f32; 4],
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -393,7 +409,15 @@ impl NotesApp {
     pub fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
         setup_fonts(&cc.egui_ctx);
         let persist = screenshot.is_none();
-        let store = if persist { load(STORE_FILE).unwrap_or_else(sample) } else { sample() };
+        // a library that can't be read is never saved over: the app runs without saving and says why
+        let (store, load_msg, store_ok) = if !persist { (sample(), None, false) } else {
+            match storage::load(&data_dir()) {
+                Ok(storage::Loaded::Fresh) => (sample(), None, true),
+                Ok(storage::Loaded::Store(s, damaged)) if damaged.is_empty() => (s, None, true),
+                Ok(storage::Loaded::Store(s, damaged)) => (s, Some(tf!("⚠ {n} page(s) couldn't be read and are shown empty: {list}. Older versions are in ⋯ ▸ Page history.", n = damaged.len(), list = damaged.join(", "))), true),
+                Err(e) => (sample(), Some(tf!("⚠ Your notes couldn't be read ({e}). Nothing will be saved until this is fixed, so your files stay untouched.", e = e)), false),
+            }
+        };
         let mut ai: ai::AiSettings = if persist { load(SETTINGS_FILE).unwrap_or_default() } else { ai::AiSettings::default() };
         let p: Prefs = if persist { load(PREFS_FILE).unwrap_or_default() } else { Prefs::default() };
         let mut sync: sync::SyncSettings = if persist { load(sync::SYNC_FILE).unwrap_or_default() } else { Default::default() };
@@ -418,13 +442,14 @@ impl NotesApp {
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
-            status: String::new(), status_age: 0.0, persist, bars: [0.0; 4], bars_at: -10.0,
+            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), bars: [0.0; 4], bars_at: -10.0,
             sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
             #[cfg(target_os = "android")] android: None, #[cfg(target_os = "android")] keyboard_shown: false };
         app.clamp();
-        app.st.dirty = persist; // a first save moves secrets from older settings files into the keyring
+        app.st.dirty = app.st.persist; // a first save moves secrets from older settings files into the keyring
+        if let Some(m) = load_msg { app.st.say(m); app.st.status_age = -50.0; } // stays up for a minute
         if !persist {
             // A representative moment for the preview picture: a formatted note targeted, the AI pane mid-conversation.
             app.st.last_text = app.page().blocks.get(1).map(|b| b.id);
@@ -444,7 +469,7 @@ impl NotesApp {
         if s.notebooks.is_empty() { s.notebooks.push(Notebook { id: new_id(), name: "My Notebook".into(), color: PALETTE[0], sections: vec![] }); }
         self.nb = self.nb.min(s.notebooks.len() - 1);
         let nb = &mut s.notebooks[self.nb];
-        if nb.sections.is_empty() { nb.sections.push(Section { id: new_id(), name: "Quick Notes".into(), color: PALETTE[1], pages: vec![] }); }
+        if nb.sections.is_empty() { nb.sections.push(Section { id: new_id(), name: "Quick Notes".into(), color: PALETTE[1], pages: vec![], lock: None }); }
         self.sec = self.sec.min(nb.sections.len() - 1);
         let sec = &mut nb.sections[self.sec];
         if sec.pages.is_empty() { sec.pages.push(Page::new("Untitled page")); }
@@ -486,6 +511,7 @@ impl NotesApp {
         let hit = self.store.notebooks.iter().flat_map(|n| n.sections.iter()).flat_map(|s| s.pages.iter()).find(|p| p.title.trim().to_lowercase() == t).map(|p| p.id);
         match hit.and_then(|id| self.locate(id)) {
             Some((a, b, c)) => self.go_to(a, b, c),
+            None if !self.section_open_for_writing() => {}
             None => {
                 let p = Page { paper: self.st.p.new_paper, ..Page::new(title.trim()) };
                 let sec = self.section();
@@ -571,7 +597,9 @@ impl NotesApp {
         let mut sy = self.st.sync.clone();
         sy.password = keys::store("webdav-password", &sy.password);
         sy.google_token = keys::store("google-token", &sy.google_token);
-        let r = save(STORE_FILE, &self.store).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &self.st.p)).and_then(|_| save(sync::SYNC_FILE, &sy));
+        // locked sections are written sealed only
+        let sealed = self.sealed();
+        let r = self.st.saver.save(&data_dir(), sealed.as_ref().unwrap_or(&self.store)).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &self.st.p)).and_then(|_| save(sync::SYNC_FILE, &sy));
         self.st.sync_pending = true;
         if let Err(e) = r { self.st.say(tf!("⚠ Could not save: {e}", e = e)); self.st.dirty = true; }
     }
@@ -742,6 +770,7 @@ impl NotesApp {
     }
 
     fn insert(&mut self, kind: Kind) {
+        if self.page().kind == PageKind::Locked { return; }
         let y = self.next_free_y();
         let w = match kind { Kind::Table { .. } | Kind::Checklist { .. } | Kind::Link { .. } | Kind::File { .. } => 380.0, _ => self.st.p.note_width };
         let b = block(24.0, y, w, kind);
@@ -831,6 +860,7 @@ impl NotesApp {
 
     /// A new empty page on the chosen background (or the one from Settings).
     fn new_page(&mut self, paper: Option<Paper>) {
+        if !self.section_open_for_writing() { return; }
         let p = Page { paper: paper.unwrap_or(self.st.p.new_paper), ..Page::new("") };
         let sec = self.section();
         sec.pages.push(p);
@@ -897,6 +927,7 @@ impl NotesApp {
 
     /// A new flashcard deck in this section (optionally pre-filled), opened and ready to type in.
     fn new_deck(&mut self, title: &str, cards: Vec<(String, String)>) {
+        if !self.section_open_for_writing() { return; }
         let mut p = deck_page(title);
         if !cards.is_empty() { p.cards = cards.iter().map(|(f, b)| DeckCard::new(f, b)).collect(); }
         let first = p.cards[0].id;
@@ -948,7 +979,7 @@ impl NotesApp {
     /// Sync in the background; whatever is written meanwhile is merged with the result when it arrives.
     pub(crate) fn start_sync(&mut self, first: Option<sync::First>) {
         if self.st.sync_rx.is_some() || !self.st.persist || !self.st.sync.on() { return; }
-        let sent = self.store.clone();
+        let sent = self.sealed().unwrap_or_else(|| self.store.clone());
         let (cfg, local, home) = (self.st.sync.clone(), sent.clone(), data_dir());
         let (tx, rx) = channel();
         std::thread::spawn(move || { let _ = tx.send(sync::run(&cfg, &home, &local, first, false)); });
@@ -965,14 +996,16 @@ impl NotesApp {
         match r {
             Ok(sync::Outcome::AskFirst { pages }) => self.st.sync_ask = Some(pages),
             Ok(sync::Outcome::Synced { store, down, .. }) => {
-                let meanwhile = !sync::same(&sent, &self.store);
-                let merged = if meanwhile { sync::merge(&sent, &self.store, &store) } else { Ok(store) };
+                // compare and merge in the sealed form; opened locked sections are opened again after
+                let current = self.sealed().unwrap_or_else(|| self.store.clone());
+                let meanwhile = !sync::same(&sent, &current);
+                let merged = if meanwhile { sync::merge(&sent, &current, &store) } else { Ok(store) };
                 match merged {
                     Ok(m) => {
-                        if !sync::same(&m, &self.store) {
+                        if !sync::same(&m, &current) {
                             // stay on the open page wherever it is now
                             let open = self.store.notebooks.get(self.nb).and_then(|n| n.sections.get(self.sec)).and_then(|s| s.pages.get(self.pg)).map(|p| p.id);
-                            self.store = m;
+                            self.store = self.reopen(m);
                             match open.and_then(|id| self.locate(id)) { Some((a, b, c)) => (self.nb, self.sec, self.pg) = (a, b, c), None => self.clamp() }
                             self.save_now();
                             self.st.say(if down > 0 { tf!("Synced changes from your other devices ({down} file(s)).", down = down) } else { "Synced changes from your other devices.".into() });
@@ -1165,7 +1198,9 @@ impl eframe::App for NotesApp {
             }}}
         }
         let fav = self.st.p.favorites.contains(&self.store.notebooks[nb].sections[sec].pages[pg].id);
+        let conflict = self.conflict_pair();
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+            if conflict.is_some() && NotesApp::conflict_banner(ui) { self.st.compare = conflict; }
             let page = &mut self.store.notebooks[nb].sections[sec].pages[pg];
             page_action = canvas::page_view(ui, page, &mut self.st, &crumb, &backlinks, fav, &self.store.study);
         });
@@ -1201,6 +1236,11 @@ impl eframe::App for NotesApp {
             Some(canvas::PageAction::Copy) => { let md = self.page().plain_text(); ctx.copy_text(md); self.st.say("Page copied as Markdown."); }
             Some(canvas::PageAction::Delete) => { let id = self.page().id; self.delete(id); }
             Some(canvas::PageAction::Duplicate) => self.duplicate_page(nb, sec, pg),
+            Some(canvas::PageAction::History) => self.show_history(),
+            Some(canvas::PageAction::Unlock(pw)) => {
+                let id = self.section().id;
+                match self.unlock_section(id, &pw) { Ok(()) => { self.st.unlock_err.clear(); self.st.say("Section unlocked until you lock it again or close Leaf Notes."); } Err(e) => self.st.unlock_err = e }
+            }
             Some(canvas::PageAction::Go(a, b, c)) => self.go_to(a, b, c),
             Some(canvas::PageAction::Study) => self.start_deck(),
             Some(canvas::PageAction::Pdf(whole)) => self.export_pdf(whole),
@@ -1310,7 +1350,8 @@ impl eframe::App for NotesApp {
         if self.st.capture.is_some() { self.cancel_capture(""); } // put the panels back before saving settings
         // send the last changes on the way out (short timeouts, so closing never hangs for long)
         if self.st.persist && self.st.sync.on() && self.st.sync_rx.is_none() && self.st.sync_ask.is_none() && (self.st.sync_pending || self.st.dirty) {
-            if let Ok(sync::Outcome::Synced { store, .. }) = sync::run(&self.st.sync, &data_dir(), &self.store, None, true) { self.store = store; }
+            let sealed = self.sealed();
+            if let Ok(sync::Outcome::Synced { store, .. }) = sync::run(&self.st.sync, &data_dir(), sealed.as_ref().unwrap_or(&self.store), None, true) { self.store = store; }
         }
         self.save_now();
     }

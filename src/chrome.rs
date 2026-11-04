@@ -919,7 +919,7 @@ impl NotesApp {
             let nb_count = self.store.notebooks.len();
             let names: Vec<(u64, String)> = self.store.notebooks.iter().map(|n| (n.id, n.name.clone())).collect();
             let nb = &mut self.store.notebooks[self.nb];
-            let (mut clicked, mut recolor, mut swap, mut move_to) = (None, None, None, None);
+            let (mut clicked, mut recolor, mut swap, mut move_to, mut lock_act) = (None, None, None, None, None);
             let count = nb.sections.len();
             egui::ScrollArea::vertical().id_salt("sections-scroll").auto_shrink([false, true]).show(ui, |ui| {
                 for (i, s) in nb.sections.iter().enumerate() {
@@ -940,11 +940,26 @@ impl NotesApp {
                             });
                         }
                         ui.separator();
+                        match (&s.lock, self.st.keys.contains_key(&s.id)) {
+                            (None, _) => if ui.button(tr("🔒  Lock with a password…")).clicked() { lock_act = Some((s.id, 0)); ui.close(); },
+                            (Some(_), true) => {
+                                if ui.button(tr("🔒  Lock now")).clicked() { lock_act = Some((s.id, 1)); ui.close(); }
+                                if ui.button(tr("Remove lock")).clicked() { lock_act = Some((s.id, 2)); ui.close(); }
+                            }
+                            (Some(_), false) => {}
+                        }
                         if ui.button(RichText::new(tr("Delete section")).color(Color32::from_rgb(200, 60, 50))).clicked() { self.st.rename = None; recolor = None; move_to = None; swap = None; clicked = None; ui.close(); self.st.status = format!("delete:{id}", id = s.id); }
                     });
                 }
             });
             if let Some((i, c)) = recolor { nb.sections[i].color = c; self.st.dirty = true; }
+            match lock_act {
+                Some((id, 0)) => self.st.lock_prompt = Some(locks::LockPrompt { section: id, ..Default::default() }),
+                Some((id, 1)) => { self.relock(id); self.st.say("Section locked."); }
+                Some((id, _)) => { self.remove_lock(id); self.st.say("The lock was removed; these pages are ordinary pages again."); }
+                None => {}
+            }
+            let nb = &mut self.store.notebooks[self.nb];
             if let Some((a, b)) = swap { nb.sections.swap(a, b); if self.sec == a { self.sec = b } else if self.sec == b { self.sec = a } self.st.dirty = true; }
             if let Some((i, to)) = move_to {
                 let s = nb.sections.remove(i);
@@ -1041,7 +1056,7 @@ impl NotesApp {
     fn add_section(&mut self) {
         let nb = &mut self.store.notebooks[self.nb];
         let c = PALETTE[(nb.sections.len() + 1) % PALETTE.len()];
-        let s = Section { id: new_id(), name: "New section".into(), color: c, pages: vec![] };
+        let s = Section { id: new_id(), name: "New section".into(), color: c, pages: vec![], lock: None };
         self.st.rename = Some((s.id, s.name.clone()));
         nb.sections.push(s);
         let (n, i) = (self.nb, nb.sections.len() - 1);
@@ -1062,7 +1077,7 @@ impl NotesApp {
                 // a one-line preview of the page, like the first line of a letter
                 let first = p.blocks.iter().filter(|b| matches!(&b.kind, Kind::Text { heading: 0, .. } | Kind::Checklist { .. })).min_by(|a, b| a.pos[1].total_cmp(&b.pos[1]));
                 let preview = first.map(|b| b.kind.summary().replace(['*', '=', '$', '`'], "")).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| format_date(p.created, false));
-                let preview = if p.kind == PageKind::Deck { tf!("▤ Flashcards · {n} cards", n = p.cards.len()) } else { preview };
+                let preview = if p.kind == PageKind::Deck { tf!("▤ Flashcards · {n} cards", n = p.cards.len()) } else if p.kind == PageKind::Locked { tr("Encrypted").to_string() } else { preview };
                 let sub = Some(if preview.chars().count() > 48 { format!("{}…", preview.chars().take(48).collect::<String>()) } else { preview });
                 let r = nav_item(ui, &mut self.st, p.id, title, None, i == self.pg, p.level, sub);
                 if r.clicked() { clicked = Some(i); }
@@ -1273,6 +1288,8 @@ impl NotesApp {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
         let mut test = false;
+        #[allow(unused_mut)]
+        let (mut restore, mut import, mut backup_to): (Option<std::path::PathBuf>, Vec<std::path::PathBuf>, Option<std::path::PathBuf>) = (None, vec![], None);
         let before = serde_json::to_string(&self.st.p).unwrap_or_default();
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("settings")).frame(frame).show(ctx, |ui| {
@@ -1492,11 +1509,20 @@ impl NotesApp {
                                 let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
                                 if ui.button(tr("Save a backup…")).clicked() {
-                                    if let Some(path) = rfd::FileDialog::new().set_file_name("leaf-notes-backup.json").save_file() {
-                                        let r = serde_json::to_vec_pretty(&self.store).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
-                                        self.st.status = match r { Ok(_) => format!("Backup saved to {}", path.display()), Err(e) => format!("⚠ Backup failed: {e}") };
-                                        self.st.status_age = 0.0;
-                                    }
+                                    if let Some(path) = rfd::FileDialog::new().set_file_name("leaf-notes-backup.json").save_file() { backup_to = Some(path); }
+                                }
+                            });
+                            row(ui, "Restore a backup", "Adds the notebooks from a backup file as extra notebooks. Nothing you have now is replaced.", |ui| {
+                                let _ = &ui;
+                                #[cfg(not(target_os = "android"))]
+                                if ui.button(tr("Restore…")).clicked() { if let Some(f) = rfd::FileDialog::new().add_filter("Leaf Notes backup", &["json"]).pick_file() { restore = Some(f); } }
+                            });
+                            row(ui, "Import Markdown", "Each Markdown file becomes a page in this section; a folder becomes a new section.", |ui| {
+                                let _ = &ui;
+                                #[cfg(not(target_os = "android"))]
+                                {
+                                    if ui.button(tr("Folder…")).clicked() { if let Some(d) = rfd::FileDialog::new().pick_folder() { import = vec![d]; } }
+                                    if ui.button(tr("Files…")).clicked() { if let Some(f) = rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown", "txt"]).pick_files() { import = f; } }
                                 }
                             });
                             row(ui, "Recently deleted", &tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()), |ui| { if ui.button(tr("Open")).clicked() { self.st.show_trash = true; } });
@@ -1515,6 +1541,13 @@ impl NotesApp {
         });
         if modal.should_close() { open = false; }
         if test { self.test_ai(); }
+        if let Some(f) = restore { self.restore_backup(&f); }
+        if let Some(path) = backup_to {
+            // locked sections stay sealed in backups too
+            let r = serde_json::to_vec_pretty(&self.sealed().unwrap_or_else(|| self.store.clone())).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
+            self.st.say(match r { Ok(_) => tf!("Backup saved to {path}", path = path.display()), Err(e) => tf!("⚠ Backup failed: {e}", e = e) });
+        }
+        if !import.is_empty() { self.import_markdown(import); }
         if serde_json::to_string(&self.st.p).unwrap_or_default() != before { apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
         if !open { self.st.show_settings = false; self.st.dirty = true; }
     }
@@ -1607,6 +1640,9 @@ impl NotesApp {
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
         if self.st.show_settings { self.settings_window(ctx); }
         if self.st.sync_ask.is_some() { self.sync_ask_window(ctx); }
+        if self.st.history.is_some() { self.history_window(ctx); }
+        if self.st.compare.is_some() { self.compare_window(ctx); }
+        if self.st.lock_prompt.is_some() { self.lock_window(ctx); }
         if self.st.switcher.is_some() { self.switcher_window(ctx); }
         if self.st.study.is_some() { self.study_window(ctx); }
         if self.st.mic_prompt { self.mic_window(ctx); }

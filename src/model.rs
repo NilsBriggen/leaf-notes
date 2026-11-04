@@ -43,7 +43,22 @@ pub enum TrashItem { Page { notebook: u64, section: u64, page: Page }, Section {
 pub struct Notebook { pub id: u64, pub name: String, pub color: [u8; 3], pub sections: Vec<Section> }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Section { pub id: u64, pub name: String, pub color: [u8; 3], pub pages: Vec<Page> }
+pub struct Section {
+    pub id: u64, pub name: String, pub color: [u8; 3], pub pages: Vec<Page>,
+    /// Password-locked: the pages, encrypted (see vault.rs). While locked, `pages` holds only a placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub lock: Option<Lock>,
+}
+
+/// A locked section's encrypted pages: base64 salt (for the password), nonce and data.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct Lock { pub salt: String, pub nonce: String, pub data: String }
+
+impl Section {
+    /// The page shown in place of a locked section's pages (its id is the section's, which no page has).
+    pub fn placeholder(&self) -> Page { Page { id: self.id, title: "🔒 Locked".into(), created: 0, kind: PageKind::Locked, ..Page::new("") } }
+    /// Locked and not opened in this session.
+    pub fn sealed(&self) -> bool { self.lock.is_some() && self.pages.iter().all(|p| p.kind == PageKind::Locked) }
+}
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum Paper { #[default] Plain, Ruled, Grid, Dots, Cornell, Music }
@@ -53,7 +68,7 @@ pub const PAPERS: [(Paper, &str, &str); 6] = [(Paper::Plain, "▢", "Plain"), (P
 
 /// What a page is: free-form notes, or a deck of flashcards.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Debug)]
-pub enum PageKind { #[default] Notes, Deck }
+pub enum PageKind { #[default] Notes, Deck, Locked }
 
 /// One flashcard in a deck page.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -73,6 +88,8 @@ pub struct Page {
     #[serde(default)] pub recordings: Vec<Recording>,
     #[serde(default)] pub kind: PageKind,
     #[serde(default)] pub cards: Vec<DeckCard>,
+    /// Set on the copy sync makes when two devices changed this page at once: the page it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub other_of: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
@@ -128,7 +145,7 @@ pub const PALETTE: [[u8; 3]; 8] = [
 
 impl Page {
     pub fn new(title: &str) -> Self {
-        Page { id: new_id(), title: title.into(), created: now_secs(), level: 0, paper: Paper::Plain, blocks: vec![], strokes: vec![], recordings: vec![], kind: PageKind::Notes, cards: vec![] }
+        Page { id: new_id(), title: title.into(), created: now_secs(), level: 0, paper: Paper::Plain, blocks: vec![], strokes: vec![], recordings: vec![], kind: PageKind::Notes, cards: vec![], other_of: None }
     }
     /// The page as Markdown (blocks in reading order), used for search, AI context and export.
     pub fn plain_text(&self) -> String {
@@ -171,6 +188,20 @@ impl Kind {
 }
 
 /// Turn Markdown (e.g. an AI reply) into note blocks: code fences, $$math$$, checklists, tables, text.
+/// A page made from a Markdown file: its notes stacked down the page.
+pub fn page_from_markdown(title: &str, md: &str, width: f32) -> Page {
+    let mut p = Page::new(title);
+    let mut y = 8.0;
+    for k in blocks_from_markdown(md) {
+        // a rough height so the notes don't overlap before they're first drawn (they size themselves then)
+        let lines = match &k { Kind::Text { text, .. } => text.lines().map(|l| 1 + l.len() / 70).sum::<usize>(), Kind::Checklist { items } => items.len(), Kind::Table { rows } => rows.len() + 1, Kind::Code { code, .. } => code.lines().count() + 2, _ => 3 };
+        let w = if matches!(k, Kind::Checklist { .. } | Kind::Table { .. }) { 380.0 } else { width };
+        p.blocks.push(block(24.0, y, w, k));
+        y += 26.0 * lines.max(1) as f32 + 18.0;
+    }
+    p
+}
+
 pub fn blocks_from_markdown(md: &str) -> Vec<Kind> {
     let mut out = vec![];
     let mut text = String::new();
@@ -500,17 +531,17 @@ pub fn sample() -> Store {
         DeckCard::new("Fourier coefficient $a_n$", r"$a_n = \frac{2}{T}\int_0^T f(t)\cos(n\omega t)\,dt$"),
         DeckCard::new("What is the Gibbs phenomenon?", "The overshoot near a jump that never goes away as you add terms"),
     ];
-    let lect = Section { id: new_id(), name: "Lectures".into(), color: PALETTE[0], pages: vec![p, sub, deck, Page::new("Week 2 — Convolution"), Page::new("Week 1 — Intro")] };
+    let lect = Section { id: new_id(), name: "Lectures".into(), color: PALETTE[0], pages: vec![p, sub, deck, Page::new("Week 2 — Convolution"), Page::new("Week 1 — Intro")], lock: None };
     let mut idea = Page::new("App ideas");
     idea.blocks = vec![block(24.0, 8.0, 400.0, text("Sketch the onboarding flow with the pen, then convert it."))];
-    let ideas = Section { id: new_id(), name: "Ideas".into(), color: PALETTE[2], pages: vec![idea] };
+    let ideas = Section { id: new_id(), name: "Ideas".into(), color: PALETTE[2], pages: vec![idea], lock: None };
     let mut q = Page::new("Quick notes");
     q.blocks = vec![block(24.0, 8.0, 400.0, text("Tap anywhere on the page to type."))];
-    let quick = Section { id: new_id(), name: "Quick Notes".into(), color: PALETTE[4], pages: vec![q] };
+    let quick = Section { id: new_id(), name: "Quick Notes".into(), color: PALETTE[4], pages: vec![q], lock: None };
     let study = Notebook { id: new_id(), name: "Study".into(), color: PALETTE[0], sections: vec![lect, ideas, quick] };
     let mut pl = Page::new("Groceries");
     pl.blocks = vec![block(24.0, 8.0, 300.0, Kind::Checklist { items: vec![(false, "Oats".into()), (false, "Lemons".into())] })];
-    let personal = Notebook { id: new_id(), name: "Personal".into(), color: PALETTE[3], sections: vec![Section { id: new_id(), name: "Home".into(), color: PALETTE[3], pages: vec![pl] }] };
+    let personal = Notebook { id: new_id(), name: "Personal".into(), color: PALETTE[3], sections: vec![Section { id: new_id(), name: "Home".into(), color: PALETTE[3], pages: vec![pl], lock: None }] };
     Store { notebooks: vec![study, personal], trash: vec![], study: Default::default() }
 }
 

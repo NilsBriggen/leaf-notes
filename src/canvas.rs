@@ -4,7 +4,7 @@ use crate::chrome::format_date;
 use crate::*;
 use eframe::egui::{Align2, FontId, Rect, RichText, Sense};
 
-pub(crate) enum PageAction { Export, Copy, Delete, Duplicate, Go(usize, usize, usize), ToggleFav, Study, Pdf(bool) }
+pub(crate) enum PageAction { Export, Copy, Delete, Duplicate, History, Unlock(String), Go(usize, usize, usize), ToggleFav, Study, Pdf(bool) }
 
 /// Whole-page PDF export in progress: the page is shown tile by tile at a fixed zoom and each
 /// tile is photographed (so the PDF looks exactly like the page, maths and all).
@@ -36,6 +36,11 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
     crate::card(ui).inner_margin(egui::Margin { left: 40, right: 12, top: 20, bottom: 0 })
         .outer_margin(egui::Margin { left: edge(st.p.show_nav), right: edge(st.p.show_ai), top: 0, bottom: 12 }).show(ui, |ui| {
         ui.label(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2));
+        if page.kind == PageKind::Locked {
+            if let Some(pw) = locked_view(ui, st) { action = Some(PageAction::Unlock(pw)); }
+            ui.set_min_height(ui.available_height());
+            return;
+        }
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 60.0).clamp(160.0, 680.0);
@@ -78,6 +83,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 if star.clicked() { action = Some(PageAction::ToggleFav); }
                 egui::Popup::menu(&m).show(|ui| {
                     if ui.button(tr("⧉  Duplicate page")).clicked() { action = Some(PageAction::Duplicate); ui.close(); }
+                    if ui.button(tr("🕓  Page history…")).clicked() { action = Some(PageAction::History); ui.close(); }
                     if ui.button(tr("⎘  Copy as Markdown")).clicked() { action = Some(PageAction::Copy); ui.close(); }
                     if crate::export::printout_source(page, &|id| st.heights.get(&id).copied()).is_some() {
                         if ui.button(tr("⇩  Export printout with notes (PDF)…")).tip("The original PDF pages, with your ink and typed notes on top").clicked() { action = Some(PageAction::Pdf(false)); ui.close(); }
@@ -974,6 +980,25 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             }
         });
     });
+}
+
+/// A locked section: the password field. Returns the password when Unlock is pressed.
+fn locked_view(ui: &mut egui::Ui, st: &mut St) -> Option<String> {
+    let mut go = false;
+    ui.add_space(60.0);
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(380.0);
+        ui.label(RichText::new("🔒").size(46.0));
+        ui.label(RichText::new(tr("This section is locked")).font(crate::rich::serif(24.0)).color(ui.visuals().strong_text_color()));
+        ui.label(RichText::new(tr("Its pages are encrypted. Enter the password to open them.")).weak());
+        ui.add_space(10.0);
+        let r = ui.add(egui::TextEdit::singleline(&mut st.unlock_pw).password(true).hint_text(tr("Password")).desired_width(280.0));
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { go = true; }
+        if !st.unlock_err.is_empty() { ui.label(RichText::new(&st.unlock_err).color(Color32::from_rgb(200, 60, 50))); }
+        ui.add_space(6.0);
+        if ui.add(egui::Button::new(RichText::new(tr("Unlock")).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(140.0, 34.0))).clicked() { go = true; }
+    });
+    go.then(|| std::mem::take(&mut st.unlock_pw))
 }
 
 /// The card editor of a flashcard deck. Returns true when "Study" is pressed.

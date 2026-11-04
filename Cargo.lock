@@ -2260,6 +2260,7 @@ dependencies = [
  "lopdf",
  "ndk-context",
  "rfd",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.11.1",
