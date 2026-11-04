@@ -19,8 +19,15 @@ pub fn set(code: &str) {
 
 /// The system's language code ("de", "fr", …), or "en".
 fn system() -> String {
-    // Linux and other Unix desktops; Windows and Android fall back to English unless chosen in Settings
-    // shortcut: no system-language lookup on Windows/Android, add one if people ask for it.
+    #[cfg(target_os = "android")]
+    return crate::droid::language().unwrap_or_default();
+    #[cfg(windows)]
+    {
+        let mut buf = [0u16; 85];
+        let n = unsafe { windows_sys::Win32::Globalization::GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
+        if n > 1 { return String::from_utf16_lossy(&buf[..(n - 1) as usize]).to_lowercase(); }
+    }
+    #[allow(unreachable_code)]
     ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.is_empty() && v != "C" && v != "POSIX").unwrap_or_default().to_lowercase()
 }
 

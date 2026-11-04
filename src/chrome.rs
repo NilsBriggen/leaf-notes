@@ -1538,6 +1538,8 @@ impl NotesApp {
                                 let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
                                 if ui.button(tr("Restore…")).clicked() { if let Some(f) = rfd::FileDialog::new().add_filter("Leaf Notes backup", &["json"]).pick_file() { restore = Some(f); } }
+                                #[cfg(target_os = "android")]
+                                if ui.button(tr("Restore…")).clicked() { let _ = crate::droid::pick(4, "application/json,*/*", false); }
                             });
                             row(ui, "Import Markdown", "Each Markdown file becomes a page in this section; a folder becomes a new section.", |ui| {
                                 let _ = &ui;
@@ -1546,6 +1548,8 @@ impl NotesApp {
                                     if ui.button(tr("Folder…")).clicked() { if let Some(d) = rfd::FileDialog::new().pick_folder() { import = vec![d]; } }
                                     if ui.button(tr("Files…")).clicked() { if let Some(f) = rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown", "txt"]).pick_files() { import = f; } }
                                 }
+                                #[cfg(target_os = "android")]
+                                if ui.button(tr("Files…")).clicked() { let _ = crate::droid::pick(5, "text/*", true); }
                             });
                             row(ui, "Recently deleted", &tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()), |ui| { if ui.button(tr("Open")).clicked() { self.st.show_trash = true; } });
                             row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| { if ui.button(tr("Show")).clicked() { self.st.show_shortcuts = true; } });

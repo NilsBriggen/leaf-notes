@@ -19,10 +19,16 @@ fn broken() -> bool { BROKEN.load(std::sync::atomic::Ordering::Relaxed) }
 fn fail() { BROKEN.store(true, std::sync::atomic::Ordering::Relaxed); }
 
 /// Where secrets are kept right now, for the settings window.
-pub fn place() -> &'static str { crate::tr(if broken() { "this device's Leaf Notes folder (no system keyring available)" } else { "your system's keyring" }) }
+pub fn place() -> &'static str {
+    if cfg!(target_os = "android") { return crate::tr("Android's key store"); }
+    crate::tr(if broken() { "this device's Leaf Notes folder (no system keyring available)" } else { "your system's keyring" })
+}
 
 /// Fill `value` from the keyring when the file had none (a value still in an older file wins, and moves over on the next save).
 pub fn load(name: &str, value: &mut String) {
+    // Android: the settings file holds the secret encrypted by the key store
+    #[cfg(target_os = "android")]
+    if let Some(sealed) = value.strip_prefix("aks:") { *value = crate::droid::unprotect(sealed).unwrap_or_default(); }
     if broken() { return; }
     #[cfg(not(target_os = "android"))]
     match keyring::Entry::new("Leaf Notes", name).and_then(|e| e.get_password()) {
@@ -36,6 +42,20 @@ pub fn load(name: &str, value: &mut String) {
 
 /// Keep `value` in the keyring. Returns what the file should hold: nothing once it's in the keyring, the value itself if there's no keyring.
 pub fn store(name: &str, value: &str) -> String {
+    #[cfg(target_os = "android")]
+    {
+        // encrypted by a key that never leaves the Android key store (cached: saves happen often)
+        static SEALED: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
+        if value.is_empty() { return String::new(); }
+        let mut cache = SEALED.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = cache.get_or_insert_with(HashMap::new);
+        if let Some((plain, sealed)) = cache.get(name) { if plain == value { return format!("aks:{sealed}"); } }
+        return match crate::droid::protect(value) {
+            Some(sealed) => { cache.insert(name.into(), (value.into(), sealed.clone())); format!("aks:{sealed}") }
+            None => value.to_string(), // no key store: kept in the app's private folder as before
+        };
+    }
+    #[allow(unreachable_code)]
     if broken() { return value.to_string(); }
     let was = known(name);
     if was.as_deref() == Some(value) { return String::new(); }

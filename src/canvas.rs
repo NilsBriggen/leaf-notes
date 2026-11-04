@@ -1369,8 +1369,10 @@ pub(crate) fn open_path(p: &std::path::Path) {
     let _ = std::process::Command::new("xdg-open").arg(p).spawn();
     #[cfg(windows)]
     let _ = std::process::Command::new("explorer").arg(p).spawn();
-    #[cfg(not(any(target_os = "linux", windows)))]
-    let _ = p; // shortcut: Android needs an intent via JNI to open attachments; add when phones need it.
+    #[cfg(target_os = "android")]
+    crate::droid::open(p, &p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+    #[cfg(not(any(target_os = "linux", windows, target_os = "android")))]
+    let _ = p;
 }
 
 #[cfg(test)]

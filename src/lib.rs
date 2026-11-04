@@ -14,6 +14,8 @@ pub mod vault;
 mod locks;
 mod welcome;
 mod transcribe;
+#[cfg(target_os = "android")]
+mod droid;
 mod safety;
 pub mod headless;
 pub mod i18n;
@@ -178,6 +180,9 @@ struct St {
     restore_tool: bool,
     /// A narrow window or phone: side panels fold away after picking a page.
     narrow: bool,
+    /// When the Android file picker was opened (the app keeps checking for its answer for a while).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    picking_since: f64,
     /// Last input was touch: bigger buttons and spacing.
     touch_ui: bool,
     /// Time of the previous frame (for the save timer).
@@ -476,7 +481,7 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
@@ -501,7 +506,7 @@ impl NotesApp {
     }
 
     #[cfg(target_os = "android")]
-    pub fn with_android(mut self, app: android_activity::AndroidApp) -> Self { audio::set_activity(app.activity_as_ptr()); self.android = Some(app); self }
+    pub fn with_android(mut self, app: android_activity::AndroidApp) -> Self { self.android = Some(app); self }
 
     fn clamp(&mut self) {
         let s = &mut self.store;
@@ -895,7 +900,31 @@ impl NotesApp {
             if let Some(p) = d.pick_file() { self.insert_file(&p, how); }
         }
         #[cfg(target_os = "android")]
-        { self.st.path_prompt = Some((how, "/sdcard/Download/".into())); }
+        {
+            let (kind, mime) = match how { Ins::Picture => (1, "image/*"), Ins::Printout => (2, "application/pdf,image/*,text/*"), Ins::Attach => (3, "*/*") };
+            if let Err(e) = droid::pick(kind, mime, false) { self.st.say(tf!("⚠ {e}", e = e)); }
+            self.st.picking_since = now_f();
+        }
+    }
+
+    /// Android: files from the picker or shared from other apps.
+    #[cfg(target_os = "android")]
+    fn take_incoming(&mut self) {
+        for (kind, path) in droid::incoming() {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            match kind {
+                1 => self.insert_file(&path, Ins::Picture),
+                2 => self.insert_file(&path, Ins::Printout),
+                3 => self.insert_file(&path, Ins::Attach),
+                4 => self.restore_backup(&path),
+                5 => self.import_markdown(vec![path.clone()]),
+                9 => if let Ok(t) = std::fs::read_to_string(&path) { self.insert_markdown(&t); },
+                // shared from another app: by kind of file
+                _ => self.insert_file(&path, match ext.as_str() { "pdf" => Ins::Printout, "png" | "jpg" | "jpeg" | "webp" => Ins::Picture, "md" | "txt" => Ins::Printout, _ => Ins::Attach }),
+            }
+            let _ = std::fs::remove_file(&path); // the app keeps its own copy
+            self.st.picking_since = -1e9;
+        }
     }
 
     /// A new empty page on the chosen background (or the one from Settings).
@@ -1246,6 +1275,8 @@ impl eframe::App for NotesApp {
             });
         }
         self.st.index.tick(&self.store, data_dir().join("files"), self.st.persist, now_f());
+        #[cfg(target_os = "android")]
+        self.take_incoming();
         self.title_bar(ui);
         self.ribbon(ui);
         self.status_bar(ui);
@@ -1380,7 +1411,7 @@ impl eframe::App for NotesApp {
             // stall until the next touch. A small thread wakes it while something is pending.
             let busy = self.st.dirty || self.st.recorder.is_some() || self.st.player.is_some() || self.st.capture.is_some()
                 || !self.st.ai_rx.is_empty() || self.st.sync_rx.is_some() || self.st.google_rx.is_some() || self.st.focus.is_some()
-                || self.st.mic_wait.is_some() || self.st.bars == [0.0; 4] || (!wants && self.keyboard_shown) || self.st.index.busy() || self.st.transcribe.is_some();
+                || self.st.mic_wait.is_some() || self.st.bars == [0.0; 4] || (!wants && self.keyboard_shown) || self.st.index.busy() || self.st.transcribe.is_some() || now_f() - self.st.picking_since < 120.0;
             WAKE_FAST.store(busy, std::sync::atomic::Ordering::Relaxed);
             static TICKER: std::sync::Once = std::sync::Once::new();
             TICKER.call_once(|| {
@@ -1391,7 +1422,8 @@ impl eframe::App for NotesApp {
                         std::thread::sleep(std::time::Duration::from_millis(400));
                         idle += 1;
                         // fast while busy; every 30 s otherwise (sync checks, clocks)
-                        if WAKE_FAST.load(std::sync::atomic::Ordering::Relaxed) || idle >= 75 { idle = 0; ctx.request_repaint(); }
+                        // also when a file was picked or shared (Android delivers it to Java)
+                        if WAKE_FAST.load(std::sync::atomic::Ordering::Relaxed) || idle >= 75 || droid::has_incoming() { idle = 0; ctx.request_repaint(); }
                     }
                 });
             });
@@ -1435,6 +1467,8 @@ impl eframe::App for NotesApp {
 #[unsafe(no_mangle)]
 fn android_main(app: android_activity::AndroidApp) {
     if let Some(p) = app.internal_data_path() { let _ = ANDROID_DATA.set(p); }
+    // before the app starts: loading the settings already asks the activity (key store, language)
+    audio::set_activity(app.activity_as_ptr());
     let options = eframe::NativeOptions { android_app: Some(app.clone()), ..Default::default() };
     let _ = eframe::run_native("Leaf Notes", options, Box::new(move |cc| Ok(Box::new(NotesApp::new(cc, None).with_android(app)))));
 }

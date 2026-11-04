@@ -35,6 +35,10 @@ rfd = "0.17"
 # passwords and sign-ins in Windows Credential Manager / the Secret Service (GNOME Keyring, KWallet) / macOS Keychain
 keyring = { version = "3.6", features = ["windows-native", "apple-native", "async-secret-service", "async-io", "crypto-rust"] }
 
+[target.'cfg(windows)'.dependencies]
+# the system language ("Same as system")
+windows-sys = { version = "0.59", features = ["Win32_Globalization"] }
+
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
@@ -58,6 +62,7 @@ name = "android.permission.INTERNET"
 name = "android.permission.RECORD_AUDIO"
 
 [package.metadata.android.application]
+has_code = true
 label = "Leaf Notes"
 icon = "@mipmap/ic_launcher"
 # no title bar: the app draws its own top bar, and an invisible title bar would only push it down
@@ -66,6 +71,22 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar"
 [package.metadata.android.application.activity]
 config_changes = "orientation|screenSize|keyboardHidden"
 orientation = "unspecified"
+# a small Java subclass (android/java, added by tools/android-java.sh) for the file picker,
+# sharing into the app, opening attachments and the key store
+name = "org.leafnotes.app.LeafActivity"
+launch_mode = "singleTask"
+exported = true
+
+# "Share to Leaf Notes" from other apps
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.SEND", "android.intent.action.SEND_MULTIPLE"]
+categories = ["android.intent.category.DEFAULT"]
+data = [{ mime_type = "image/*" }, { mime_type = "application/pdf" }, { mime_type = "text/*" }]
+
+# keep the launcher entry (cargo-apk adds it only when no filter is given)
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.MAIN"]
+categories = ["android.intent.category.LAUNCHER"]
 
 [profile.release]
 opt-level = 2

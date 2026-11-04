@@ -81,6 +81,8 @@ jobs:
         run: |
           export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/27.1.12297006"
           cargo apk build --release --lib
+          # the Java part (file picker, sharing, key store); the app can't start without it
+          sh tools/android-java.sh target/release/apk/LeafNotes.apk
           cp target/release/apk/LeafNotes.apk LeafNotes-arm64.apk
       - uses: actions/upload-artifact@v4
         with:
