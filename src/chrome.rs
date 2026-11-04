@@ -200,6 +200,7 @@ impl NotesApp {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     if ui.add(egui::Button::new(RichText::new("⚙").size(16.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Settings").clicked() { self.st.show_settings ^= true; self.st.settings_tab = 0; }
+                    if ui.add(egui::Button::new(RichText::new("?").size(16.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Help").clicked() { self.st.show_help ^= true; }
                     let ai_on = self.st.p.show_ai;
                     let b = egui::Button::new(RichText::new(tr(if compact { "✦" } else { "✦  Assistant" })).color(if ai_on { Color32::WHITE } else { acc }))
                         .fill(if ai_on { accent_base() } else { v.extreme_bg_color }).stroke(EStroke::new(1.0, if ai_on { accent_base() } else { v.widgets.noninteractive.bg_stroke.color }))
@@ -1643,6 +1644,9 @@ impl NotesApp {
         if self.st.history.is_some() { self.history_window(ctx); }
         if self.st.compare.is_some() { self.compare_window(ctx); }
         if self.st.lock_prompt.is_some() { self.lock_window(ctx); }
+        if self.st.tour.is_some() { self.tour_window(ctx); }
+        if self.st.show_news { self.news_window(ctx); }
+        if self.st.show_help { self.help_window(ctx); }
         if self.st.switcher.is_some() { self.switcher_window(ctx); }
         if self.st.study.is_some() { self.study_window(ctx); }
         if self.st.mic_prompt { self.mic_window(ctx); }

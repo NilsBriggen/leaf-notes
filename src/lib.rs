@@ -11,6 +11,7 @@ pub mod sync;
 pub mod storage;
 pub mod vault;
 mod locks;
+mod welcome;
 mod safety;
 pub mod headless;
 pub mod i18n;
@@ -137,6 +138,8 @@ pub(crate) struct Prefs {
     pen_detect: bool,
     /// Interface language: "" follows the system, else "en", "de" or "fr".
     lang: String,
+    /// The version whose "What's new" was shown (the tour shows on a new install instead).
+    seen_version: String,
 }
 
 impl Default for Prefs {
@@ -144,7 +147,7 @@ impl Default for Prefs {
         Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
             hl_color: [253, 224, 71, 120], erase_partial: true, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
-            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new() }
+            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new() }
     }
 }
 
@@ -250,6 +253,10 @@ struct St {
     lock_prompt: Option<locks::LockPrompt>,
     unlock_pw: String,
     unlock_err: String,
+    /// The welcome tour's current step.
+    tour: Option<u8>,
+    show_news: bool,
+    show_help: bool,
     /// Android's status and navigation bars (top, bottom, left, right) in points, and when they were last asked for.
     bars: [f32; 4],
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -419,6 +426,7 @@ impl NotesApp {
             }
         };
         let mut ai: ai::AiSettings = if persist { load(SETTINGS_FILE).unwrap_or_default() } else { ai::AiSettings::default() };
+        let fresh_install = persist && !data_dir().join(PREFS_FILE).exists() && !data_dir().join(storage::LIBRARY).exists();
         let p: Prefs = if persist { load(PREFS_FILE).unwrap_or_default() } else { Prefs::default() };
         let mut sync: sync::SyncSettings = if persist { load(sync::SYNC_FILE).unwrap_or_default() } else { Default::default() };
         if persist {
@@ -442,7 +450,7 @@ impl NotesApp {
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
-            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), bars: [0.0; 4], bars_at: -10.0,
+            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
             sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
@@ -450,6 +458,7 @@ impl NotesApp {
         app.clamp();
         app.st.dirty = app.st.persist; // a first save moves secrets from older settings files into the keyring
         if let Some(m) = load_msg { app.st.say(m); app.st.status_age = -50.0; } // stays up for a minute
+        if app.st.persist { app.greet(fresh_install); }
         if !persist {
             // A representative moment for the preview picture: a formatted note targeted, the AI pane mid-conversation.
             app.st.last_text = app.page().blocks.get(1).map(|b| b.id);
