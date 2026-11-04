@@ -2,6 +2,7 @@
 //! The microphone is read on cpal's audio thread, turned into 16 kHz mono, and written to disk on a
 //! writer thread as it arrives, so a long recording doesn't fill memory.
 
+use crate::tf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use std::io::{Seek, SeekFrom, Write};
@@ -123,7 +124,7 @@ impl Recorder {
     pub fn start(path: &Path) -> Result<Recorder, String> {
         let host = cpal::default_host();
         let dev = host.default_input_device().ok_or("No microphone found.")?;
-        let sup = dev.default_input_config().map_err(|e| format!("The microphone can't be opened ({e}). Check that no other app is using it, and that microphone access is allowed in your system's privacy settings."))?;
+        let sup = dev.default_input_config().map_err(|e| tf!("The microphone can't be opened ({e}). Check that no other app is using it, and that microphone access is allowed in your system's privacy settings.", e = e))?;
         let (tx, rx) = channel::<Vec<i16>>();
         let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
         file.write_all(&wav_header(0)).map_err(|e| e.to_string())?;
@@ -146,7 +147,7 @@ impl Recorder {
             SampleFormat::I16 => input_stream::<i16>(&dev, cfg, tx),
             SampleFormat::U16 => input_stream::<u16>(&dev, cfg, tx),
             SampleFormat::I32 => input_stream::<i32>(&dev, cfg, tx),
-            f => Err(format!("Unsupported microphone format {f:?}")),
+            f => Err(tf!("Unsupported microphone format {f}", f = format!("{:?}", f))),
         }?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Recorder { stream: Some(stream), writer: Some(writer), path: path.to_path_buf() })
@@ -163,7 +164,7 @@ impl Recorder {
 /// Read one of our WAV files back as samples.
 pub fn load_wav(path: &Path) -> Result<Vec<i16>, String> {
     let b = std::fs::read(path).map_err(|e| e.to_string())?;
-    if b.len() < 44 || &b[..4] != b"RIFF" { return Err("Not a recording file".into()); }
+    if b.len() < 44 || &b[..4] != b"RIFF" { return Err(crate::tr("Not a recording file").into()); }
     Ok(b[44..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect())
 }
 
@@ -210,7 +211,7 @@ impl Player {
             SampleFormat::I16 => output_stream::<i16>(&dev, cfg, data, pos.clone(), playing.clone()),
             SampleFormat::U16 => output_stream::<u16>(&dev, cfg, data, pos.clone(), playing.clone()),
             SampleFormat::I32 => output_stream::<i32>(&dev, cfg, data, pos.clone(), playing.clone()),
-            f => Err(format!("Unsupported speaker format {f:?}")),
+            f => Err(tf!("Unsupported speaker format {f}", f = format!("{:?}", f))),
         }?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Player { _stream: stream, pos, playing, len, id })

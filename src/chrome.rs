@@ -10,6 +10,7 @@ fn want_focus(st: &mut St, r: &egui::Response) {
 
 /// Ribbon button: icon over a small label.
 pub(crate) fn rbtn(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
+    let label = tr(label);
     let lw = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(11.0), Color32::WHITE).size().x;
     let (rect, r) = ui.allocate_exact_size(Vec2::new((lw + 14.0).max(50.0), 50.0), Sense::click());
     let v = ui.visuals();
@@ -29,6 +30,7 @@ fn sbtn(ui: &mut egui::Ui, text: RichText, tip: &str, selected: bool) -> egui::R
 
 /// A captioned ribbon group followed by a divider.
 fn group(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let caption = tr(caption);
     ui.vertical(|ui| {
         let r = ui.horizontal(|ui| { ui.set_min_height(50.0); add(ui); }).response.rect;
         let (cr, _) = ui.allocate_exact_size(Vec2::new(r.width(), 13.0), Sense::hover());
@@ -66,7 +68,12 @@ pub(crate) fn format_date(secs: u64, time: bool) -> String {
     };
     const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     const DAYS: [&str; 7] = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
-    let mut s = format!("{}, {} {d}, {y}", DAYS[days.rem_euclid(7) as usize], MONTHS[(m - 1) as usize]);
+    let (wd, mo) = (DAYS[days.rem_euclid(7) as usize], MONTHS[(m - 1) as usize]);
+    let mut s = match crate::i18n::code() {
+        "de" => format!("{}, {d}. {} {y}", tr(wd), tr(mo)),
+        "fr" => format!("{} {d} {} {y}", tr(wd).to_lowercase(), tr(mo).to_lowercase()),
+        _ => format!("{wd}, {mo} {d}, {y}"),
+    };
     if time { s += &format!("  ·  {:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60); }
     s
 }
@@ -78,16 +85,18 @@ pub(crate) struct Study { pub title: String, pub cards: Vec<Card>, pub queue: Ve
 /// "just now", "5 min ago", "3 h ago"…
 fn ago(t: u64) -> String {
     let d = now_secs().saturating_sub(t);
-    if d < 60 { "just now".into() } else if d < 3600 { format!("{} min ago", d / 60) } else if d < 86_400 { format!("{} h ago", d / 3600) } else { format!("{} days ago", d / 86_400) }
+    if d < 60 { tr("just now").into() } else if d < 3600 { tf!("{n} min ago", n = d / 60) } else if d < 86_400 { tf!("{n} h ago", n = d / 3600) } else { tf!("{n} days ago", n = d / 86_400) }
 }
 
 fn heading(ui: &mut egui::Ui, text: &str) {
+    let text = tr(text);
     ui.label(RichText::new(text).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
     ui.add_space(2.0);
 }
 
 /// One setting: name and explanation on the left, its control on the right.
 fn row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
+    let (title, desc) = (tr(title), tr(desc));
     egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -103,6 +112,7 @@ fn row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egu
 
 /// Settings row whose choices sit on their own line under the description, in reading order.
 fn row_below(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
+    let (title, desc) = (tr(title), tr(desc));
     egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(title).size(14.0).color(ui.visuals().strong_text_color()));
@@ -171,7 +181,7 @@ impl NotesApp {
         egui::Panel::top("title").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 10 })).show(ui, |ui| {
             // Narrow windows (and phones): the tabs get their own row, then buttons shrink to icons.
             let full = ui.available_width();
-            let (two_rows, compact) = (full < 1080.0, full < 845.0);
+            let (two_rows, compact) = (full < if crate::i18n::code() == "en" { 1080.0 } else { 1180.0 }, full < 845.0);
             ui.horizontal(|ui| {
                 ui.set_min_height(34.0);
                 let v = ui.visuals().clone();
@@ -182,7 +192,7 @@ impl NotesApp {
                 ui.painter().rect_filled(tile, 9.0, accent_base());
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tile.shrink(5.0)));
                 leaf(&mut child, 20.0, mix(accent_base(), Color32::WHITE, 0.8), accent_base());
-                if full >= 560.0 { ui.label(RichText::new("Leaf Notes").font(rich::serif(19.0)).color(v.strong_text_color())); }
+                if full >= 560.0 { ui.label(RichText::new(tr("Leaf Notes")).font(rich::serif(19.0)).color(v.strong_text_color())); }
                 if !two_rows {
                     ui.add_space(18.0);
                     self.tabs(ui);
@@ -191,7 +201,7 @@ impl NotesApp {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     if ui.add(egui::Button::new(RichText::new("⚙").size(16.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Settings").clicked() { self.st.show_settings ^= true; self.st.settings_tab = 0; }
                     let ai_on = self.st.p.show_ai;
-                    let b = egui::Button::new(RichText::new(if compact { "✦" } else { "✦  Assistant" }).color(if ai_on { Color32::WHITE } else { acc }))
+                    let b = egui::Button::new(RichText::new(tr(if compact { "✦" } else { "✦  Assistant" })).color(if ai_on { Color32::WHITE } else { acc }))
                         .fill(if ai_on { accent_base() } else { v.extreme_bg_color }).stroke(EStroke::new(1.0, if ai_on { accent_base() } else { v.widgets.noninteractive.bg_stroke.color }))
                         .corner_radius(17).min_size(Vec2::new(0.0, 34.0));
                     if ui.add(b).tip("Show or hide the AI assistant").clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
@@ -206,7 +216,7 @@ impl NotesApp {
                     ui.painter().rect_stroke(pill, 17.0, if focused { EStroke::new(1.5, acc) } else { v.widgets.noninteractive.bg_stroke }, egui::StrokeKind::Inside);
                     ui.painter().text(Pos2::new(pill.left() + 16.0, pill.center().y - 1.0), Align2::CENTER_CENTER, "🔍", FontId::proportional(13.0), v.weak_text_color());
                     let key_w = if self.st.search.is_empty() && !focused && w > 170.0 {
-                        let g = ui.painter().layout_no_wrap("Ctrl F".into(), FontId::proportional(11.0), v.weak_text_color());
+                        let g = ui.painter().layout_no_wrap(tr("Ctrl F").into(), FontId::proportional(11.0), v.weak_text_color());
                         let key = Rect::from_center_size(Pos2::new(pill.right() - 14.0 - g.size().x / 2.0 - 5.0, pill.center().y), g.size() + Vec2::new(10.0, 4.0));
                         ui.painter().rect_filled(key, 5.0, v.widgets.inactive.weak_bg_fill);
                         ui.painter().galley(key.center() - g.size() / 2.0, g, v.weak_text_color());
@@ -215,7 +225,7 @@ impl NotesApp {
                     // (+2: the font's line box sits a little above the visual middle of the letters)
                     let field = Rect::from_min_max(Pos2::new(pill.left() + 30.0, pill.top() + 2.0), Pos2::new(pill.right() - 14.0 - key_w, pill.bottom() + 2.0));
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(Layout::left_to_right(Align::Center)));
-                    let r = child.add(egui::TextEdit::singleline(&mut self.st.search).id(id).hint_text("Search everything").frame(egui::Frame::NONE)
+                    let r = child.add(egui::TextEdit::singleline(&mut self.st.search).id(id).hint_text(tr("Search everything")).frame(egui::Frame::NONE)
                         .margin(egui::Margin::symmetric(4, 0)).desired_width(field.width()).font(FontId::proportional(14.0)));
                     if pill_resp.clicked() { r.request_focus(); }
                     want_focus(&mut self.st, &r);
@@ -228,7 +238,7 @@ impl NotesApp {
                         let pulse = (ui.input(|i| i.time) * 2.0).sin() > 0.0;
                         egui::Button::new(RichText::new(format!("{}  {:02}:{:02}  ■", if pulse { "●" } else { "○" }, secs / 60, secs % 60)).color(Color32::WHITE)).fill(red).corner_radius(17).min_size(Vec2::new(0.0, 34.0))
                     } else {
-                        egui::Button::new(RichText::new(if compact { "●" } else { "●  Record" }).color(red)).frame_when_inactive(false).corner_radius(17).min_size(Vec2::new(0.0, 34.0))
+                        egui::Button::new(RichText::new(tr(if compact { "●" } else { "●  Record" })).color(red)).frame_when_inactive(false).corner_radius(17).min_size(Vec2::new(0.0, 34.0))
                     };
                     if ui.add(rec_btn).tip("Record audio while you take notes; later, tap any note to hear what was said then").clicked() { self.st.rec_toggle = true; }
                 });
@@ -245,8 +255,8 @@ impl NotesApp {
         let v = ui.visuals().clone();
         let acc = accent(ui);
         let due = self.st.due_now;
-        let study = if due > 0 { format!("Study · {due}") } else { "Study".to_string() };
-        let names = [(Tab::Home, "Home"), (Tab::Insert, "Insert"), (Tab::Draw, "Draw"), (Tab::Ai, "AI"), (Tab::Study, study.as_str()), (Tab::View, "View")];
+        let study = if due > 0 { tf!("Study · {due}", due = due) } else { tr("Study").to_string() };
+        let names = [(Tab::Home, tr("Home")), (Tab::Insert, tr("Insert")), (Tab::Draw, tr("Draw")), (Tab::Ai, tr("AI")), (Tab::Study, study.as_str()), (Tab::View, tr("View"))];
         let font = FontId::proportional(14.0);
         let pad = if ui.available_width() < 440.0 { 16.0 } else { 30.0 };
         let widths: Vec<f32> = names.iter().map(|(_, n)| ui.painter().layout_no_wrap(n.to_string(), font.clone(), Color32::WHITE).size().x + pad).collect();
@@ -384,7 +394,7 @@ impl NotesApp {
             if rbtn(ui, "+", "Blank page", false).tip("New page (Ctrl+N)").clicked() { self.new_page(None); }
             let r = rbtn(ui, "▦", "Page on… ▾", false).tip("A new page on the background you pick");
             egui::Popup::menu(&r).show(|ui| {
-                for (p, icon, name) in PAPERS { if ui.button(format!("{icon}  {name}")).clicked() { self.new_page(Some(p)); ui.close(); } }
+                for (p, icon, name) in PAPERS { if ui.button(tf!("{icon}  {name}", icon = icon, name = tr(name))).clicked() { self.new_page(Some(p)); ui.close(); } }
             });
         });
     }
@@ -403,9 +413,9 @@ impl NotesApp {
             for i in 0..n {
                 let pen = self.st.p.pens[i];
                 let sel = self.st.tool == Tool::Pen && self.st.p.pen == i;
-                let r = pen_icon(ui, c4(pen.color), sel, Some(pen.kind)).tip(format!("{} · size {:.1}\nRight-click to remove", pen.kind.name(), pen.width));
+                let r = pen_icon(ui, c4(pen.color), sel, Some(pen.kind)).tip(tf!("{name} · size {width}\nRight-click to remove", name = tr(pen.kind.name()), width = format!("{:.1}", pen.width)));
                 if r.clicked() { self.st.tool = Tool::Pen; self.st.p.pen = i; self.st.dirty = true; }
-                r.context_menu(|ui| { if n > 1 && ui.button("Remove this pen").clicked() { remove = Some(i); ui.close(); } });
+                r.context_menu(|ui| { if n > 1 && ui.button(tr("Remove this pen")).clicked() { remove = Some(i); ui.close(); } });
             }
             if let Some(i) = remove {
                 self.st.p.pens.remove(i);
@@ -465,15 +475,15 @@ impl NotesApp {
                 crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
                 ui.end_row();
 
-                let tip = match self.st.force { Some(f) => format!("Pen thickness. Pen pressure now: {:.0}%", f * 100.0), None => "Pen thickness. Pressure comes from your pen, or from speed with a mouse".into() };
+                let tip = match self.st.force { Some(f) => tf!("Pen thickness. Pen pressure now: {pct}%", pct = format!("{:.0}", f * 100.0)), None => "Pen thickness. Pressure comes from your pen, or from speed with a mouse".into() };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Size").size(11.5).weak());
+                    ui.label(RichText::new(tr("Size")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 128.0;
                     ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).tip(tip);
                 });
-                ui.vertical_centered(|ui| ui.label(RichText::new("Colour").size(11.5).weak()));
+                ui.vertical_centered(|ui| ui.add(egui::Label::new(RichText::new(tr("Colour")).size(11.5).weak()).extend()));
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Smooth").size(11.5).weak());
+                    ui.label(RichText::new(tr("Smooth")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 50.0;
                     ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).tip("Smoothing: irons out shaky lines (see the sample above). More smoothing makes the line trail the pen a little.");
                 });
@@ -534,9 +544,9 @@ impl NotesApp {
         group(ui, "Equation from words", |ui| {
             ui.vertical(|ui| {
                 ui.add_space(4.0);
-                let r = ui.add(egui::TextEdit::singleline(&mut self.st.eq_prompt).hint_text("e.g. area of a circle").desired_width(170.0));
+                let r = ui.add(egui::TextEdit::singleline(&mut self.st.eq_prompt).hint_text(tr("e.g. area of a circle")).desired_width(170.0));
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                if ui.button("∑ Insert equation").clicked() || enter { self.equation_from_words(); }
+                if ui.button(tr("∑ Insert equation")).clicked() || enter { self.equation_from_words(); }
             });
         });
         group(ui, "Handwriting", |ui| {
@@ -548,7 +558,7 @@ impl NotesApp {
             ui.vertical(|ui| {
                 ui.add_space(8.0);
                 let ready = self.st.ai.ready();
-                ui.label(RichText::new(if ready { "● Connected with your key" } else { "○ No key yet" }).size(11.5).color(if ready { accent(ui) } else { ui.visuals().weak_text_color() }));
+                ui.label(RichText::new(tr(if ready { "● Connected with your key" } else { "○ No key yet" })).size(11.5).color(if ready { accent(ui) } else { ui.visuals().weak_text_color() }));
                 ui.label(RichText::new(&self.st.ai.model).size(10.5).weak());
             });
         });
@@ -559,12 +569,12 @@ impl NotesApp {
         let (is_deck, n_cards) = (page.kind == PageKind::Deck, page.deck().len());
         let due_all = self.st.due_now;
         group(ui, "Today", |ui| {
-            if rbtn(ui, "⏰", &format!("Review due ({due_all})"), due_all > 0).tip("Cards from all your decks that are due for review").clicked() { self.start_review(); }
+            if rbtn(ui, "⏰", &tf!("Review due ({due_all})", due_all = due_all), due_all > 0).tip("Cards from all your decks that are due for review").clicked() { self.start_review(); }
         });
         group(ui, "Decks", |ui| {
             if rbtn(ui, "+", "New deck", false).tip("A new page of flashcards in this section").clicked() { self.new_deck("New deck", vec![]); }
             ui.add_enabled_ui(is_deck && n_cards > 0, |ui| {
-                if rbtn(ui, "▶", &format!("Study deck ({n_cards})"), false).tip("Go through this deck's cards").clicked() { self.start_deck(); }
+                if rbtn(ui, "▶", &tf!("Study deck ({n_cards})", n_cards = n_cards), false).tip("Go through this deck's cards").clicked() { self.start_deck(); }
             });
         });
         group(ui, "Make a deck from these notes", |ui| {
@@ -586,7 +596,7 @@ impl NotesApp {
         let cards = self.due_cards();
         if cards.is_empty() { self.st.say("Nothing due today — nice! Cards come back here once you've studied them."); return; }
         let total = cards.len();
-        self.st.study = Some(Study { title: "Due today".into(), queue: (0..total).collect(), cards, total, shown: false, tally: [0; 3] });
+        self.st.study = Some(Study { title: tr("Due today").into(), queue: (0..total).collect(), cards, total, shown: false, tally: [0; 3] });
     }
 
     /// Study the open deck: cards that are due or new first, then the rest.
@@ -594,7 +604,7 @@ impl NotesApp {
         let p = &self.store.notebooks[self.nb].sections[self.sec].pages[self.pg];
         let cards = p.deck();
         if cards.is_empty() { self.st.say("Add a card with both a front and a back first."); return; }
-        let title = if p.title.is_empty() { "Untitled deck".into() } else { p.title.clone() };
+        let title = if p.title.is_empty() { tr("Untitled deck").into() } else { p.title.clone() };
         let now = now_secs();
         let (mut due, mut later): (Vec<usize>, Vec<usize>) = (0..cards.len()).partition(|&i| self.store.study.get(&cards[i].key).is_none_or(|s| s.due <= now));
         due.append(&mut later);
@@ -618,15 +628,15 @@ impl NotesApp {
             ui.painter().line_segment([c + Vec2::new(0.0, 9.0), c + Vec2::new(0.0, 15.0)], EStroke::new(2.2, acc));
             ui.painter().line_segment([c + Vec2::new(-6.0, 15.0), c + Vec2::new(6.0, 15.0)], EStroke::new(2.2, acc));
             ui.add_space(4.0);
-            ui.label(RichText::new("Allow the microphone?").font(rich::serif(23.0)).color(ui.visuals().strong_text_color()));
+            ui.label(RichText::new(tr("Allow the microphone?")).font(rich::serif(23.0)).color(ui.visuals().strong_text_color()));
             ui.add_space(4.0);
-            ui.label("Leaf Notes records only while the red Record button is on. Each recording is saved with its page, on this device only, and is linked to the notes you write so you can tap a note to hear that moment again.");
+            ui.label(tr("Leaf Notes records only while the red Record button is on. Each recording is saved with its page, on this device only, and is linked to the notes you write so you can tap a note to hear that moment again."));
             #[cfg(target_os = "android")]
-            ui.label(RichText::new("Android will ask you to confirm next.").weak());
+            ui.label(RichText::new(tr("Android will ask you to confirm next.")).weak());
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new("Allow and record").color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(150.0, 34.0))).clicked() { allow = true; }
-                if ui.add(egui::Button::new("Not now").min_size(Vec2::new(100.0, 34.0))).clicked() { no = true; }
+                if ui.add(egui::Button::new(RichText::new(tr("Allow and record")).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(150.0, 34.0))).clicked() { allow = true; }
+                if ui.add(egui::Button::new(tr("Not now")).min_size(Vec2::new(100.0, 34.0))).clicked() { no = true; }
             });
         });
         if allow { self.st.mic_prompt = false; self.st.p.mic_ok = true; self.st.dirty = true; self.st.rec_toggle = true; }
@@ -645,7 +655,7 @@ impl NotesApp {
             ui.set_width(600.0);
             let acc = accent(ui);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Study").font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
+                ui.label(RichText::new(tr("Study")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
                 ui.label(RichText::new(format!("·  {}", sd.title)).size(14.0).weak());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).clicked() { close = true; } });
             });
@@ -659,22 +669,22 @@ impl NotesApp {
                 None => {
                     ui.vertical_centered(|ui| {
                         ui.add_space(20.0);
-                        ui.label(RichText::new("All done 🎉").font(rich::serif(26.0)));
-                        ui.label(RichText::new(format!("{} cards · {} again · {} good · {} easy", sd.total, sd.tally[0], sd.tally[1], sd.tally[2])).weak());
+                        ui.label(RichText::new(tr("All done 🎉")).font(rich::serif(26.0)));
+                        ui.label(RichText::new(tf!("{total} cards · {x} again · {x2} good · {x3} easy", total = sd.total, x = sd.tally[0], x2 = sd.tally[1], x3 = sd.tally[2])).weak());
                         ui.add_space(14.0);
                         ui.horizontal(|ui| {
                             ui.add_space((ui.available_width() - 220.0).max(0.0) / 2.0);
-                            if ui.add(egui::Button::new(RichText::new("Study again").color(Color32::WHITE)).fill(acc).min_size(Vec2::new(110.0, 32.0))).clicked() {
+                            if ui.add(egui::Button::new(RichText::new(tr("Study again")).color(Color32::WHITE)).fill(acc).min_size(Vec2::new(110.0, 32.0))).clicked() {
                                 sd.queue = (0..sd.cards.len()).collect(); sd.total = sd.queue.len(); sd.tally = [0; 3]; sd.shown = false;
                             }
-                            if ui.add(egui::Button::new("Close").min_size(Vec2::new(100.0, 32.0))).clicked() { close = true; }
+                            if ui.add(egui::Button::new(tr("Close")).min_size(Vec2::new(100.0, 32.0))).clicked() { close = true; }
                         });
                         ui.add_space(10.0);
                     });
                 }
                 Some(i) => {
                     let card = sd.cards[i].clone();
-                    ui.label(RichText::new(format!("Card {} of {}", done + 1, sd.total)).size(11.5).weak());
+                    ui.label(RichText::new(tf!("Card {x} of {total}", x = done + 1, total = sd.total)).size(11.5).weak());
                     egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(16).inner_margin(egui::Margin::same(24)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.set_min_height(170.0);
@@ -689,10 +699,10 @@ impl NotesApp {
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         if !sd.shown {
-                            if ui.add(egui::Button::new(RichText::new("Show answer   Space").color(Color32::WHITE)).fill(acc).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() { sd.shown = true; }
+                            if ui.add(egui::Button::new(RichText::new(tr("Show answer   Space")).color(Color32::WHITE)).fill(acc).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() { sd.shown = true; }
                         } else {
                             let w = (ui.available_width() - 16.0) / 3.0;
-                            for (k, (label, col)) in [("Again   1", Color32::from_rgb(214, 82, 62)), ("Good   2", acc), ("Easy   3", Color32::from_rgb(21, 128, 61))].into_iter().enumerate() {
+                            for (k, (label, col)) in [(tr("Again   1"), Color32::from_rgb(214, 82, 62)), (tr("Good   2"), acc), (tr("Easy   3"), Color32::from_rgb(21, 128, 61))].into_iter().enumerate() {
                                 if ui.add(egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(col).min_size(Vec2::new(w, 38.0))).clicked() { rate = Some(k); }
                             }
                         }
@@ -752,7 +762,7 @@ impl NotesApp {
         });
         group(ui, "Help", |ui| {
             if rbtn(ui, "⌨", "Shortcuts", self.st.show_shortcuts).clicked() { self.st.show_shortcuts ^= true; }
-            if rbtn(ui, "🗑", &format!("Deleted ({})", self.store.trash.len()), self.st.show_trash).clicked() { self.st.show_trash ^= true; }
+            if rbtn(ui, "🗑", &tf!("Deleted ({trash_n})", trash_n = self.store.trash.len()), self.st.show_trash).clicked() { self.st.show_trash ^= true; }
         });
     }
 
@@ -766,10 +776,10 @@ impl NotesApp {
                 return;
             }
             let left = (end - now) as u64;
-            let label = format!("{}  {:02}:{:02}  ■", if brk { "☕ Break" } else { "⏱ Focus" }, left / 60, left % 60);
+            let label = format!("{}  {:02}:{:02}  ■", tr(if brk { "☕ Break" } else { "⏱ Focus" }), left / 60, left % 60);
             if ui.add(egui::Button::new(RichText::new(label).size(11.5).color(accent(ui))).frame_when_inactive(false)).tip("Stop the timer").clicked() { self.st.focus = None; }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-        } else if ui.add(egui::Button::new(RichText::new("⏱ Focus 25").size(11.5)).frame_when_inactive(false)).tip("25 minutes of focused study, then a 5-minute break").clicked() {
+        } else if ui.add(egui::Button::new(RichText::new(tr("⏱ Focus 25")).size(11.5)).frame_when_inactive(false)).tip("25 minutes of focused study, then a 5-minute break").clicked() {
             self.st.focus = Some((now + 25.0 * 60.0, false));
             self.st.say("Focus time: 25 minutes. You've got this.");
         }
@@ -796,16 +806,16 @@ impl NotesApp {
 
     fn tasks_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("All tasks").font(rich::serif(18.0)).color(ui.visuals().strong_text_color()));
+            ui.label(RichText::new(tr("All tasks")).font(rich::serif(18.0)).color(ui.visuals().strong_text_color()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if ui.add(egui::Button::new("✕").frame_when_inactive(false)).tip("Back to pages").clicked() { self.st.tasks = false; } });
         });
-        ui.label(RichText::new("Open to-dos from every notebook. Tick them off here.").size(11.5).weak());
+        ui.label(RichText::new(tr("Open to-dos from every notebook. Tick them off here.")).size(11.5).weak());
         ui.separator();
         let tasks = self.open_tasks();
         let mut tick = None;
         let mut go = None;
         egui::ScrollArea::vertical().id_salt("tasks-scroll").auto_shrink([false; 2]).show(ui, |ui| {
-            if tasks.is_empty() { ui.add_space(20.0); ui.vertical_centered(|ui| ui.label(RichText::new("Nothing to do 🎉\nAdd a checklist, or start a line with [ ].").weak())); }
+            if tasks.is_empty() { ui.add_space(20.0); ui.vertical_centered(|ui| ui.label(RichText::new(tr("Nothing to do 🎉\nAdd a checklist, or start a line with [ ].")).weak())); }
             let mut last_page = None;
             for (at, title, bid, idx, text, _) in &tasks {
                 if last_page != Some(*at) {
@@ -844,30 +854,30 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 let page = &self.store.notebooks[self.nb].sections[self.sec].pages[self.pg];
                 let words: usize = page.blocks.iter().map(|b| b.kind.summary().split_whitespace().count().max(match &b.kind { Kind::Text { text, .. } => text.split_whitespace().count(), _ => 0 })).sum();
-                let info = if page.kind == PageKind::Deck { format!("{} cards · {} ready to study", page.cards.len(), page.deck().len()) } else { format!("{} words · {} notes · {} ink strokes", words, page.blocks.len(), page.strokes.len()) };
+                let info = if page.kind == PageKind::Deck { tf!("{n} cards · {ready} ready to study", n = page.cards.len(), ready = page.deck().len()) } else { tf!("{words} words · {notes} notes · {strokes} ink strokes", words = words, notes = page.blocks.len(), strokes = page.strokes.len()) };
                 ui.label(RichText::new(info).size(11.5).weak());
                 if !self.st.status.is_empty() && self.st.status_age < 10.0 {
                     ui.add_space(12.0);
                     ui.label(RichText::new(&self.st.status).size(11.5).color(if self.st.status.starts_with('⚠') { Color32::from_rgb(220, 80, 60) } else { accent(ui) }));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new(if self.st.dirty { "Saving…" } else { "✓ Saved" }).size(11.5).weak());
+                    ui.label(RichText::new(tr(if self.st.dirty { "Saving…" } else { "✓ Saved" })).size(11.5).weak());
                     if self.st.persist && self.st.sync.on() {
                         let err = !self.st.sync_err.is_empty();
                         let (t, tip) = if self.st.sync_rx.is_some() { ("🔄 Syncing…".to_string(), "Syncing with your other devices".to_string()) }
-                            else if err { ("⚠ Not synced".into(), format!("{}\nClick for sync settings", self.st.sync_err)) }
-                            else if self.st.sync_ok > 0 { (format!("🔄 Synced {}", ago(self.st.sync_ok)), "Click to sync now".into()) }
+                            else if err { ("⚠ Not synced".into(), tf!("{sync_err}\nClick for sync settings", sync_err = self.st.sync_err)) }
+                            else if self.st.sync_ok > 0 { (tf!("🔄 Synced {x}", x = ago(self.st.sync_ok)), "Click to sync now".into()) }
                             else { ("🔄 Sync".into(), "Click to sync now".into()) };
                         let col = if err { Color32::from_rgb(220, 80, 60) } else { ui.visuals().weak_text_color() };
-                        if ui.add(egui::Button::new(RichText::new(t).size(11.5).color(col)).frame_when_inactive(false)).tip(tip).clicked() {
+                        if ui.add(egui::Button::new(RichText::new(tr(&t)).size(11.5).color(col)).frame_when_inactive(false)).tip(tip).clicked() {
                             if err { self.st.show_settings = true; self.st.settings_tab = 5; } else { self.st.sync_now = true; }
                         }
                     }
                     self.focus_timer(ui);
                     if (self.st.zoom_now - 1.0).abs() > 0.02 && ui.add(egui::Button::new(RichText::new(format!("{:.0}%", self.st.zoom_now * 100.0)).size(11.5)).frame_when_inactive(false)).tip("Page zoom — click for actual size").clicked() { self.st.zoom_req = Some(ZoomReq::To(1.0)); }
-                    if !self.st.ai_rx.is_empty() { ui.label(RichText::new("AI working…").size(11.5).color(accent(ui))); ui.spinner(); }
+                    if !self.st.ai_rx.is_empty() { ui.label(RichText::new(tr("AI working…")).size(11.5).color(accent(ui))); ui.spinner(); }
                     if self.st.tool != Tool::Type {
-                        ui.label(RichText::new(match self.st.tool { Tool::Pen => "✏ Pen", Tool::Highlighter => "Highlighter", Tool::Eraser => "Eraser", Tool::Lasso => "Select ink", Tool::Shape(_) => "Shape", Tool::Type => "" }).size(11.5).weak());
+                        ui.label(RichText::new(tr(match self.st.tool { Tool::Pen => "✏ Pen", Tool::Highlighter => "Highlighter", Tool::Eraser => "Eraser", Tool::Lasso => "Select ink", Tool::Shape(_) => "Shape", Tool::Type => "" })).size(11.5).weak());
                     }
                 });
             });
@@ -878,11 +888,11 @@ impl NotesApp {
         egui::Panel::left("sections").show_separator_line(false).resizable(false).exact_size(204.0).frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 14, right: 10, top: 2, bottom: 12 })).show(ui, |ui| {
             self.notebook_switcher(ui);
             ui.add_space(6.0);
-            let jump = ui.add(egui::Button::new(RichText::new("↗  Jump to a page…").size(13.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
+            let jump = ui.add(egui::Button::new(RichText::new(tr("↗  Jump to a page…")).size(13.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
                 .tip("Quick switcher (Ctrl+K)");
             if jump.clicked() { self.st.switcher = Some((String::new(), 0)); }
             let open_tasks = self.open_tasks().len();
-            let t = ui.add(egui::Button::new(RichText::new(format!("☑  All tasks{}", if open_tasks > 0 { format!("  ·  {open_tasks}") } else { String::new() })).size(13.0).color(if self.st.tasks { accent(ui) } else { ui.visuals().weak_text_color() }))
+            let t = ui.add(egui::Button::new(RichText::new(tf!("☑  All tasks{x}", x = if open_tasks > 0 { format!("  ·  {open_tasks}") } else { String::new() })).size(13.0).color(if self.st.tasks { accent(ui) } else { ui.visuals().weak_text_color() }))
                 .frame_when_inactive(false).selected(self.st.tasks).min_size(Vec2::new(ui.available_width(), 30.0))).tip("Every open to-do from every notebook");
             if t.clicked() { self.st.tasks ^= true; }
             // favourite pages, wherever they live
@@ -892,7 +902,7 @@ impl NotesApp {
             })).collect();
             if !favs.is_empty() {
                 ui.add_space(6.0);
-                ui.label(RichText::new("FAVOURITES").size(10.5).weak());
+                ui.label(RichText::new(tr("FAVOURITES")).size(10.5).weak());
                 for (id, title, at) in favs {
                     let cur = at == (self.nb, self.sec, self.pg);
                     let r = nav_item(ui, &mut self.st, id, &format!("★  {title}"), None, cur, 0, None);
@@ -901,7 +911,7 @@ impl NotesApp {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("SECTIONS").size(10.5).weak());
+                ui.label(RichText::new(tr("SECTIONS")).size(10.5).weak());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.add(egui::Button::new(RichText::new("+").size(15.0).color(accent(ui))).frame_when_inactive(false)).tip("New section").clicked() { self.add_section(); }
                 });
@@ -916,21 +926,21 @@ impl NotesApp {
                     let r = nav_item(ui, &mut self.st, s.id, &s.name, Some(c3(s.color)), i == self.sec, 0, None);
                     if r.clicked() { clicked = Some(i); }
                     r.context_menu(|ui| {
-                        if ui.button("Rename").clicked() { self.st.rename = Some((s.id, s.name.clone())); ui.close(); }
+                        if ui.button(tr("Rename")).clicked() { self.st.rename = Some((s.id, s.name.clone())); ui.close(); }
                         ui.horizontal(|ui| for c in PALETTE {
                             let (rect, cr) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
                             ui.painter().rect_filled(rect, 4.0, c3(c));
                             if cr.clicked() { recolor = Some((i, c)); ui.close(); }
                         });
-                        if i > 0 && ui.button("Move up").clicked() { swap = Some((i, i - 1)); ui.close(); }
-                        if i + 1 < count && ui.button("Move down").clicked() { swap = Some((i, i + 1)); ui.close(); }
+                        if i > 0 && ui.button(tr("Move up")).clicked() { swap = Some((i, i - 1)); ui.close(); }
+                        if i + 1 < count && ui.button(tr("Move down")).clicked() { swap = Some((i, i + 1)); ui.close(); }
                         if nb_count > 1 {
-                            ui.menu_button("Move to notebook", |ui| for (id, name) in &names {
+                            ui.menu_button(tr("Move to notebook"), |ui| for (id, name) in &names {
                                 if *id != nb.id && ui.button(name).clicked() { move_to = Some((i, *id)); ui.close(); }
                             });
                         }
                         ui.separator();
-                        if ui.button(RichText::new("Delete section").color(Color32::from_rgb(200, 60, 50))).clicked() { self.st.rename = None; recolor = None; move_to = None; swap = None; clicked = None; ui.close(); self.st.status = format!("delete:{}", s.id); }
+                        if ui.button(RichText::new(tr("Delete section")).color(Color32::from_rgb(200, 60, 50))).clicked() { self.st.rename = None; recolor = None; move_to = None; swap = None; clicked = None; ui.close(); self.st.status = format!("delete:{id}", id = s.id); }
                     });
                 }
             });
@@ -959,11 +969,11 @@ impl NotesApp {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let t = ui.add(egui::Button::new("▾").frame_when_inactive(false)).tip("New page on a background, or a flashcard deck");
                     egui::Popup::menu(&t).show(|ui| {
-                        for (p, icon, name) in PAPERS { if ui.button(format!("{icon}  {name}")).clicked() { self.new_page(Some(p)); ui.close(); } }
+                        for (p, icon, name) in PAPERS { if ui.button(tf!("{icon}  {name}", icon = icon, name = tr(name))).clicked() { self.new_page(Some(p)); ui.close(); } }
                         ui.separator();
-                        if ui.button("▤  Flashcard deck").clicked() { self.new_deck("New deck", vec![]); ui.close(); }
+                        if ui.button(tr("▤  Flashcard deck")).clicked() { self.new_deck("New deck", vec![]); ui.close(); }
                     });
-                    if ui.add(egui::Button::new(RichText::new("+ Page").color(accent(ui))).frame_when_inactive(false)).tip("New page (Ctrl+N)").clicked() { self.new_page(None); }
+                    if ui.add(egui::Button::new(RichText::new(tr("+ Page")).color(accent(ui))).frame_when_inactive(false)).tip("New page (Ctrl+N)").clicked() { self.new_page(None); }
                 });
             });
             ui.add_space(2.0);
@@ -1001,16 +1011,16 @@ impl NotesApp {
         let mut action = 0;
         egui::Popup::menu(&r).show(|ui| {
             ui.set_min_width(200.0);
-            ui.label(RichText::new("NOTEBOOKS").size(10.5).weak());
+            ui.label(RichText::new(tr("NOTEBOOKS")).size(10.5).weak());
             for (i, n) in self.store.notebooks.iter().enumerate() {
                 let r = nav_item(ui, &mut self.st, n.id, &n.name, Some(c3(n.color)), i == self.nb, 0, None);
                 if r.clicked() { pick = Some(i); ui.close(); }
             }
             ui.separator();
-            if ui.button("+  New notebook").clicked() { action = 1; ui.close(); }
-            if ui.button("✎  Rename this notebook").clicked() { action = 2; ui.close(); }
-            if ui.button("🗑  Recently deleted").clicked() { action = 3; ui.close(); }
-            if self.store.notebooks.len() > 1 && ui.button(RichText::new("Delete this notebook").color(Color32::from_rgb(200, 60, 50))).clicked() { action = 4; ui.close(); }
+            if ui.button(tr("+  New notebook")).clicked() { action = 1; ui.close(); }
+            if ui.button(tr("✎  Rename this notebook")).clicked() { action = 2; ui.close(); }
+            if ui.button(tr("🗑  Recently deleted")).clicked() { action = 3; ui.close(); }
+            if self.store.notebooks.len() > 1 && ui.button(RichText::new(tr("Delete this notebook")).color(Color32::from_rgb(200, 60, 50))).clicked() { action = 4; ui.close(); }
         });
         if let Some(i) = pick { self.go_to(i, 0, 0); }
         match action {
@@ -1052,24 +1062,24 @@ impl NotesApp {
                 // a one-line preview of the page, like the first line of a letter
                 let first = p.blocks.iter().filter(|b| matches!(&b.kind, Kind::Text { heading: 0, .. } | Kind::Checklist { .. })).min_by(|a, b| a.pos[1].total_cmp(&b.pos[1]));
                 let preview = first.map(|b| b.kind.summary().replace(['*', '=', '$', '`'], "")).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| format_date(p.created, false));
-                let preview = if p.kind == PageKind::Deck { format!("▤ Flashcards · {} cards", p.cards.len()) } else { preview };
+                let preview = if p.kind == PageKind::Deck { tf!("▤ Flashcards · {n} cards", n = p.cards.len()) } else { preview };
                 let sub = Some(if preview.chars().count() > 48 { format!("{}…", preview.chars().take(48).collect::<String>()) } else { preview });
                 let r = nav_item(ui, &mut self.st, p.id, title, None, i == self.pg, p.level, sub);
                 if r.clicked() { clicked = Some(i); }
                 r.context_menu(|ui| {
-                    if ui.button("Rename").clicked() { self.st.rename = Some((p.id, title.to_string())); ui.close(); }
-                    if ui.button("Duplicate").clicked() { act = Some((i, 4)); ui.close(); }
-                    if ui.button(if p.level == 0 { "Make subpage" } else { "Promote to page" }).clicked() { act = Some((i, 1)); ui.close(); }
-                    if i > 0 && ui.button("Move up").clicked() { act = Some((i, 2)); ui.close(); }
-                    if i + 1 < n && ui.button("Move down").clicked() { act = Some((i, 3)); ui.close(); }
-                    ui.menu_button("Move to section", |ui| {
+                    if ui.button(tr("Rename")).clicked() { self.st.rename = Some((p.id, title.to_string())); ui.close(); }
+                    if ui.button(tr("Duplicate")).clicked() { act = Some((i, 4)); ui.close(); }
+                    if ui.button(tr(if p.level == 0 { "Make subpage" } else { "Promote to page" })).clicked() { act = Some((i, 1)); ui.close(); }
+                    if i > 0 && ui.button(tr("Move up")).clicked() { act = Some((i, 2)); ui.close(); }
+                    if i + 1 < n && ui.button(tr("Move down")).clicked() { act = Some((i, 3)); ui.close(); }
+                    ui.menu_button(tr("Move to section"), |ui| {
                         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| for (id, label) in &targets {
                             if *id != section.id && ui.button(label).clicked() { move_to = Some((i, *id)); ui.close(); }
                         });
                     });
-                    if ui.button("Copy as Markdown").clicked() { act = Some((i, 5)); ui.close(); }
+                    if ui.button(tr("Copy as Markdown")).clicked() { act = Some((i, 5)); ui.close(); }
                     ui.separator();
-                    if ui.button(RichText::new("Delete page").color(Color32::from_rgb(200, 60, 50))).clicked() { self.st.status = format!("delete:{}", p.id); ui.close(); }
+                    if ui.button(RichText::new(tr("Delete page")).color(Color32::from_rgb(200, 60, 50))).clicked() { self.st.status = format!("delete:{id}", id = p.id); ui.close(); }
                 });
             }
         });
@@ -1087,7 +1097,7 @@ impl NotesApp {
             let title = p.title.clone();
             if let Some(s) = self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).find(|s| s.id == to) { s.pages.push(p); }
             self.st.dirty = true;
-            self.st.say(format!("Moved “{title}”."));
+            self.st.say(tf!("Moved “{title}”.", title = title));
             self.clamp();
         }
         if let Some(i) = clicked { self.go_to(nb, sec, i); }
@@ -1102,7 +1112,7 @@ impl NotesApp {
         });
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-            for (t, label) in [(None, "All"), (Some(Tag::None), "Any tag"), (Some(Tag::Todo), "☐ To Do"), (Some(Tag::Important), "★ Important"), (Some(Tag::Question), "? Question")] {
+            for (t, label) in [(None, tr("All")), (Some(Tag::None), tr("Any tag")), (Some(Tag::Todo), tr("☐ To Do")), (Some(Tag::Important), tr("★ Important")), (Some(Tag::Question), tr("? Question"))] {
                 if ui.add(egui::Button::new(RichText::new(label).size(12.0)).selected(self.st.tag_filter == t).corner_radius(10)).clicked() { self.st.tag_filter = t; }
             }
         });
@@ -1167,7 +1177,7 @@ impl NotesApp {
                     }
                 }
             }
-            if found == 0 { ui.add_space(20.0); ui.vertical_centered(|ui| ui.label(RichText::new(if filter.is_some() { "No tagged notes yet.\nTag a note from the Home tab." } else { "No matches." }).weak())); }
+            if found == 0 { ui.add_space(20.0); ui.vertical_centered(|ui| ui.label(RichText::new(tr(if filter.is_some() { "No tagged notes yet.\nTag a note from the Home tab." } else { "No matches." })).weak())); }
         });
         if let Some((pid, bid)) = toggle {
             if let Some(b) = self.find_page(pid).and_then(|p| p.blocks.iter_mut().find(|b| b.id == bid)) {
@@ -1184,7 +1194,7 @@ impl NotesApp {
             let acc = accent(ui);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("✦").size(17.0).color(acc));
-                ui.label(RichText::new("Assistant").size(16.0).strong());
+                ui.label(RichText::new(tr("Assistant")).size(16.0).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.add(egui::Button::new("✕").frame_when_inactive(false)).tip("Close").clicked() { self.st.p.show_ai = false; }
                     if ui.add(egui::Button::new("⚙").frame_when_inactive(false)).tip("AI settings").clicked() { self.st.show_settings = true; self.st.settings_tab = 3; }
@@ -1192,13 +1202,13 @@ impl NotesApp {
                 });
             });
             if self.st.ai.ready() {
-                ui.label(RichText::new(format!("{} · your own key", self.st.ai.model)).size(11.0).weak());
+                ui.label(RichText::new(tf!("{model} · your own key", model = self.st.ai.model)).size(11.0).weak());
             } else {
                 egui::Frame::new().fill(ui.visuals().selection.bg_fill).corner_radius(8).inner_margin(10).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Bring your own AI key").strong());
-                    ui.label(RichText::new("Works with Anthropic, OpenAI, OpenRouter or a local model. Your key stays on this device.").size(12.0));
-                    if ui.button("Add a key…").clicked() { self.st.show_settings = true; self.st.settings_tab = 3; }
+                    ui.label(RichText::new(tr("Bring your own AI key")).strong());
+                    ui.label(RichText::new(tr("Works with Anthropic, OpenAI, OpenRouter or a local model. Your key stays on this device.")).size(12.0));
+                    if ui.button(tr("Add a key…")).clicked() { self.st.show_settings = true; self.st.settings_tab = 3; }
                 });
             }
             ui.add_space(4.0);
@@ -1206,7 +1216,7 @@ impl NotesApp {
                 ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
                 for (label, prompt) in [("Summarize", "Summarize this page in a few bullet points."), ("Action items", "List the action items from this page as a checklist."),
                     ("Quiz me", "Write 3 short quiz questions about this page. Put the answers at the end."), ("Explain", "Explain the main idea of this page simply, with one example.")] {
-                    if ui.add(egui::Button::new(RichText::new(label).size(12.0)).corner_radius(10)).clicked() { self.chat(prompt.into()); }
+                    if ui.add(egui::Button::new(RichText::new(tr(label)).size(12.0)).corner_radius(10)).clicked() { self.chat(prompt.into()); }
                 }
             });
             ui.add_space(4.0);
@@ -1216,7 +1226,7 @@ impl NotesApp {
             egui::ScrollArea::vertical().id_salt("ai-scroll").max_height(h.max(60.0)).stick_to_bottom(true).auto_shrink([false; 2]).show(ui, |ui| {
                 if self.st.ai_log.is_empty() {
                     ui.add_space(30.0);
-                    ui.vertical_centered(|ui| ui.label(RichText::new("Ask anything about this page.\nAnswers can be inserted as notes,\nincluding equations and checklists.").weak()));
+                    ui.vertical_centered(|ui| ui.label(RichText::new(tr("Ask anything about this page.\nAnswers can be inserted as notes,\nincluding equations and checklists.")).weak()));
                 }
                 let w = ui.available_width();
                 for (i, (from_ai, text)) in self.st.ai_log.iter().enumerate() {
@@ -1226,8 +1236,8 @@ impl NotesApp {
                             let _ = rich::view(ui, text, 13.5, 0, &colors);
                             if !text.starts_with('⚠') {
                                 ui.horizontal(|ui| {
-                                    if ui.small_button("↧ Insert").tip("Add to the page as notes").clicked() { insert = Some(i); }
-                                    if ui.small_button("⧉ Copy").clicked() { ui.ctx().copy_text(text.clone()); }
+                                    if ui.small_button(tr("↧ Insert")).tip("Add to the page as notes").clicked() { insert = Some(i); }
+                                    if ui.small_button(tr("⧉ Copy")).clicked() { ui.ctx().copy_text(text.clone()); }
                                 });
                             }
                         });
@@ -1241,16 +1251,16 @@ impl NotesApp {
                     }
                     ui.add_space(6.0);
                 }
-                if !self.st.ai_rx.is_empty() { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Thinking…").weak()); }); }
+                if !self.st.ai_rx.is_empty() { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(tr("Thinking…")).weak()); }); }
             });
             if let Some(i) = insert { let t = self.st.ai_log[i].1.clone(); self.insert_markdown(&t); }
             ui.add_space(4.0);
-            let r = ui.add(egui::TextEdit::multiline(&mut self.st.ai_prompt).hint_text("Ask about this page…").desired_rows(2).desired_width(f32::INFINITY));
+            let r = ui.add(egui::TextEdit::multiline(&mut self.st.ai_prompt).hint_text(tr("Ask about this page…")).desired_rows(2).desired_width(f32::INFINITY));
             let enter = r.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Shift+Enter for a new line").size(10.5).weak());
+                ui.label(RichText::new(tr("Shift+Enter for a new line")).size(10.5).weak());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let send = ui.add(egui::Button::new(RichText::new("Send ➤").color(Color32::WHITE)).fill(acc)).clicked();
+                    let send = ui.add(egui::Button::new(RichText::new(tr("Send ➤")).color(Color32::WHITE)).fill(acc)).clicked();
                     if (send || enter) && !self.st.ai_prompt.trim().is_empty() {
                         let p = std::mem::take(&mut self.st.ai_prompt);
                         self.chat(p.trim().to_string());
@@ -1269,7 +1279,7 @@ impl NotesApp {
             let size = Vec2::new((ctx.content_rect().width() - 80.0).clamp(560.0, 780.0), (ctx.content_rect().height() - 120.0).clamp(360.0, 560.0));
             ui.set_width(size.x);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Settings").font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
+                ui.label(RichText::new(tr("Settings")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { open = false; }
                 });
@@ -1282,7 +1292,7 @@ impl NotesApp {
                     ui.set_width(170.0);
                     for (i, (icon, name)) in [("🎨", "Appearance"), ("✏", "Pen & input"), ("¶", "Notes & pages"), ("✦", "AI"), ("💾", "Your data"), ("🔄", "Sync")].iter().enumerate() {
                         let sel = self.st.settings_tab == i as u8;
-                        let r = ui.add(egui::Button::new(RichText::new(format!("{icon}   {name}")).size(14.0).color(if sel { accent(ui) } else { ui.visuals().text_color() }))
+                        let r = ui.add(egui::Button::new(RichText::new(tf!("{icon}   {name}", icon = icon, name = tr(name))).size(14.0).color(if sel { accent(ui) } else { ui.visuals().text_color() }))
                             .selected(sel).frame_when_inactive(false).min_size(Vec2::new(166.0, 34.0)));
                         if r.clicked() { self.st.settings_tab = i as u8; }
                     }
@@ -1298,7 +1308,7 @@ impl NotesApp {
                             heading(ui, "Appearance");
                             row_below(ui, "Theme", "Light, dark, or match your computer.", |ui| {
                                 let mut mode = if p.follow_system { 2 } else if p.dark { 1 } else { 0 };
-                                for (i, l) in ["Light", "Dark", "System"].iter().enumerate() { ui.selectable_value(&mut mode, i, *l); }
+                                for (i, l) in ["Light", "Dark", "System"].iter().enumerate() { ui.selectable_value(&mut mode, i, tr(l)); }
                                 p.follow_system = mode == 2;
                                 if mode < 2 { p.dark = mode == 1; }
                             });
@@ -1316,33 +1326,36 @@ impl NotesApp {
                                 let mut z = ctx.zoom_factor();
                                 if ui.add(egui::Slider::new(&mut z, 0.7..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed() { ctx.set_zoom_factor(z); p.zoom = z; }
                             });
+                            row_below(ui, "Language", "Choose the language of menus, buttons and messages.", |ui| {
+                                for (code, name) in crate::i18n::LANGUAGES { ui.selectable_value(&mut p.lang, code.to_string(), if code.is_empty() { tr(name) } else { name }); }
+                            });
                             row(ui, "Serif headings", "Page titles and headings in a book-style typeface.", |ui| { toggle(ui, &mut p.serif); });
                             row(ui, "Show the assistant pane", "The AI pane on the right of the page.", |ui| { toggle(ui, &mut p.show_ai); });
                             row(ui, "Keep the toolbar open", "Off: the toolbar folds away until you click a tab.", |ui| { toggle(ui, &mut p.ribbon_open); });
                         }
                         1 => {
                             heading(ui, "Pen & input");
-                            ui.label(RichText::new("A stylus always draws. Choose what else may draw when a pen, highlighter or shape is picked. Otherwise the mouse keeps working as usual (click notes, drag to move the page) and a finger scrolls.").weak());
+                            ui.label(RichText::new(tr("A stylus always draws. Choose what else may draw when a pen, highlighter or shape is picked. Otherwise the mouse keeps working as usual (click notes, drag to move the page) and a finger scrolls.")).weak());
                             row(ui, "Draw with the mouse or trackpad", "On Linux, drawing tablets act like a mouse — switch this on to draw with them.", |ui| { toggle(ui, &mut p.draw_mouse); });
                             row(ui, "Draw with a finger", "Some phones report finger pressure like a pen; on those, fingers may still draw.", |ui| { toggle(ui, &mut p.draw_finger); });
                             row(ui, "Pressure-sensitive lines", "Press harder for thicker ink (fountain pen, pencil). Off: even lines.", |ui| { toggle(ui, &mut p.pressure); });
                             row(ui, "Smoothing", "Irons out shaky lines; higher values trail the pen slightly.", |ui| { ui.add(egui::Slider::new(&mut p.stabilizer, 0.0..=1.0).show_value(false)); });
                             row(ui, "Straighten highlighter strokes", "Nearly straight highlights snap to a ruler-straight line.", |ui| { toggle(ui, &mut p.straighten_hl); });
                             row_below(ui, "Eraser", "Erase only what you touch, or whole strokes.", |ui| {
-                                ui.selectable_value(&mut p.erase_partial, true, "Partial");
-                                ui.selectable_value(&mut p.erase_partial, false, "Whole strokes");
+                                ui.selectable_value(&mut p.erase_partial, true, tr("Partial"));
+                                ui.selectable_value(&mut p.erase_partial, false, tr("Whole strokes"));
                             });
-                            row(ui, "Pen case", "Restore the original six pens.", |ui| { if ui.button("Reset pens").clicked() { p.pens = default_pens(); p.pen = 0; } });
+                            row(ui, "Pen case", "Restore the original six pens.", |ui| { if ui.button(tr("Reset pens")).clicked() { p.pens = default_pens(); p.pen = 0; } });
                         }
                         2 => {
                             heading(ui, "Notes & pages");
                             row(ui, "Text size", "Size of text in your notes.", |ui| { ui.add(egui::Slider::new(&mut p.note_size, 12.0..=22.0).step_by(0.5).suffix(" pt")); });
                             row_below(ui, "Line spacing", "Room between lines of text.", |ui| {
-                                for (v, l) in [(1.3, "Compact"), (1.55, "Comfortable"), (1.8, "Airy")] { ui.selectable_value(&mut p.line, v, l); }
+                                for (v, l) in [(1.3, "Compact"), (1.55, "Comfortable"), (1.8, "Airy")] { ui.selectable_value(&mut p.line, v, tr(l)); }
                             });
                             row(ui, "New note width", "How wide a new text note starts.", |ui| { ui.add(egui::Slider::new(&mut p.note_width, 280.0..=900.0).step_by(10.0).suffix(" px")); });
                             row_below(ui, "Paper for new pages", "Change any page's paper in View ▸ Paper.", |ui| {
-                                for (v, _, l) in PAPERS { ui.selectable_value(&mut p.new_paper, v, l); }
+                                for (v, _, l) in PAPERS { ui.selectable_value(&mut p.new_paper, v, tr(l)); }
                             });
                             row(ui, "Click empty paper to type", "Off: add notes from the Insert tab only.", |ui| { toggle(ui, &mut p.click_to_type); });
                             row(ui, "Continue lists", "Enter after a list item starts the next one.", |ui| { toggle(ui, &mut p.auto_lists); });
@@ -1350,31 +1363,31 @@ impl NotesApp {
                         3 => {
                             heading(ui, "AI (bring your own key)");
                             let a = &mut self.st.ai;
-                            ui.label(RichText::new("Pick a service, paste your key. Your key stays on this device and is sent only to the server below.").weak());
+                            ui.label(RichText::new(tr("Pick a service, paste your key. Your key stays on this device and is sent only to the server below.")).weak());
                             ui.horizontal_wrapped(|ui| {
-                                if ui.button("Anthropic").clicked() { *a = ai::AiSettings { api_key: a.api_key.clone(), ..Default::default() }; }
-                                if ui.button("OpenAI").clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.openai.com/v1".into(); a.model = "gpt-4o".into(); }
-                                if ui.button("OpenRouter").clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://openrouter.ai/api/v1".into(); a.model = "anthropic/claude-sonnet-5.5".into(); }
-                                if ui.button("Ollama (on this computer)").clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "http://localhost:11434/v1".into(); a.model = "llama3.2-vision".into(); }
+                                if ui.button(tr("Anthropic")).clicked() { *a = ai::AiSettings { api_key: a.api_key.clone(), ..Default::default() }; }
+                                if ui.button(tr("OpenAI")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.openai.com/v1".into(); a.model = "gpt-4o".into(); }
+                                if ui.button(tr("OpenRouter")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://openrouter.ai/api/v1".into(); a.model = "anthropic/claude-sonnet-5.5".into(); }
+                                if ui.button(tr("Ollama (on this computer)")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "http://localhost:11434/v1".into(); a.model = "llama3.2-vision".into(); }
                             });
                             egui::Grid::new("ai_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                                ui.label("Service");
+                                ui.label(tr("Service"));
                                 ui.horizontal(|ui| {
-                                    ui.radio_value(&mut a.provider, ai::Provider::Anthropic, "Anthropic API");
-                                    ui.radio_value(&mut a.provider, ai::Provider::OpenAiCompatible, "OpenAI-compatible");
+                                    ui.radio_value(&mut a.provider, ai::Provider::Anthropic, tr("Anthropic API"));
+                                    ui.radio_value(&mut a.provider, ai::Provider::OpenAiCompatible, tr("OpenAI-compatible"));
                                 });
                                 ui.end_row();
-                                ui.label("Server address"); ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(300.0)); ui.end_row();
-                                ui.label("API key"); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text("paste your key").desired_width(300.0)); ui.end_row();
-                                ui.label("Model"); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(300.0)); ui.end_row();
+                                ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(300.0)); ui.end_row();
+                                ui.label(tr("API key")); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text(tr("paste your key")).desired_width(300.0)); ui.end_row();
+                                ui.label(tr("Model")); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(300.0)); ui.end_row();
                             });
-                            ui.label(RichText::new(format!("Your key is kept in {}.", crate::keys::place())).size(11.5).weak());
+                            ui.label(RichText::new(tf!("Your key is kept in {place}.", place = crate::keys::place())).size(11.5).weak());
                             row(ui, "Use this AI for handwriting", "Off: the built-in recognizer reads handwriting offline. On: sent to your AI (better for cursive; needs a model that reads images).", |ui| { toggle(ui, &mut p.ink_ai); });
                             ui.horizontal(|ui| {
-                                if ui.button("Test connection").clicked() { test = true; }
+                                if ui.button(tr("Test connection")).clicked() { test = true; }
                                 if self.st.ai_rx.iter().any(|(j, _)| matches!(j, Job::Test)) { ui.spinner(); }
                                 match &self.st.test_result {
-                                    Some(Ok(_)) => { ui.label(RichText::new("✓ Connected").color(accent(ui))); }
+                                    Some(Ok(_)) => { ui.label(RichText::new(tr("✓ Connected")).color(accent(ui))); }
                                     Some(Err(e)) => { ui.label(RichText::new(format!("⚠ {e}")).color(Color32::from_rgb(220, 80, 60))); }
                                     None => {}
                                 }
@@ -1382,52 +1395,52 @@ impl NotesApp {
                         }
                         5 => {
                             heading(ui, "Sync");
-                            ui.label(RichText::new("Keep your notes the same on all your devices. Changes merge note by note; if the same page was changed on two devices at once, you keep both versions.").weak());
+                            ui.label(RichText::new(tr("Keep your notes the same on all your devices. Changes merge note by note; if the same page was changed on two devices at once, you keep both versions.")).weak());
                             let (mut g_start, mut g_cancel, mut g_out) = (false, false, false);
                             let s = &mut self.st.sync;
                             let before = s.clone();
                             row_below(ui, "Sync through", "Choose the same place on every device.", |ui| {
-                                ui.selectable_value(&mut s.via, sync::Via::Off, "Off");
-                                ui.selectable_value(&mut s.via, sync::Via::Google, "Google Drive");
-                                ui.selectable_value(&mut s.via, sync::Via::Folder, "A synced folder");
-                                ui.selectable_value(&mut s.via, sync::Via::WebDav, "A WebDAV server");
+                                ui.selectable_value(&mut s.via, sync::Via::Off, tr("Off"));
+                                ui.selectable_value(&mut s.via, sync::Via::Google, tr("Google Drive"));
+                                ui.selectable_value(&mut s.via, sync::Via::Folder, tr("A synced folder"));
+                                ui.selectable_value(&mut s.via, sync::Via::WebDav, tr("A WebDAV server"));
                             });
                             match s.via {
                                 sync::Via::Folder => row_below(ui, "Folder", "A folder that Dropbox, OneDrive, Google Drive, iCloud or Syncthing keeps in sync. Leaf Notes puts a LeafNotes folder inside it.", |ui| {
-                                    ui.add(egui::TextEdit::singleline(&mut s.folder).hint_text("e.g. /home/you/Dropbox").desired_width(320.0));
+                                    ui.add(egui::TextEdit::singleline(&mut s.folder).hint_text(tr("e.g. /home/you/Dropbox")).desired_width(320.0));
                                     #[cfg(not(target_os = "android"))]
-                                    if ui.button("Choose…").clicked() { if let Some(d) = rfd::FileDialog::new().pick_folder() { s.folder = d.display().to_string(); } }
+                                    if ui.button(tr("Choose…")).clicked() { if let Some(d) = rfd::FileDialog::new().pick_folder() { s.folder = d.display().to_string(); } }
                                 }),
                                 sync::Via::WebDav => {
-                                    ui.label(RichText::new("Works with Nextcloud, ownCloud, Koofr, Box and most NAS boxes. Nextcloud: https://your-cloud/remote.php/dav/files/USERNAME/ with an app password (Settings ▸ Security).").size(12.0).weak());
+                                    ui.label(RichText::new(tr("Works with Nextcloud, ownCloud, Koofr, Box and most NAS boxes. Nextcloud: https://your-cloud/remote.php/dav/files/USERNAME/ with an app password (Settings ▸ Security).")).size(12.0).weak());
                                     egui::Grid::new("dav_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                                        ui.label("Server address"); ui.add(egui::TextEdit::singleline(&mut s.url).hint_text("https://").desired_width(320.0)); ui.end_row();
-                                        ui.label("User name"); ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(320.0)); ui.end_row();
-                                        ui.label("Password"); ui.add(egui::TextEdit::singleline(&mut s.password).password(true).desired_width(320.0)); ui.end_row();
+                                        ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut s.url).hint_text(tr("https://")).desired_width(320.0)); ui.end_row();
+                                        ui.label(tr("User name")); ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(320.0)); ui.end_row();
+                                        ui.label(tr("Password")); ui.add(egui::TextEdit::singleline(&mut s.password).password(true).desired_width(320.0)); ui.end_row();
                                     });
                                 }
                                 sync::Via::Google => {
                                     if !sync::google_ready() {
-                                        ui.label(RichText::new("Google Drive sign-in isn't set up in this build yet.").weak());
+                                        ui.label(RichText::new(tr("Google Drive sign-in isn't set up in this build yet.")).weak());
                                     } else if s.google_token.is_empty() {
-                                        ui.label(RichText::new("Your notes go to a “Leaf Notes” folder in your Google Drive. Leaf Notes can only see the files it made itself, nothing else in your Drive.").size(12.0).weak());
+                                        ui.label(RichText::new(tr("Your notes go to a “Leaf Notes” folder in your Google Drive. Leaf Notes can only see the files it made itself, nothing else in your Drive.")).size(12.0).weak());
                                         ui.horizontal(|ui| {
                                             match &self.st.google_rx {
                                                 Some((url, _)) => {
                                                     ui.spinner();
-                                                    ui.label("Finish signing in in your browser…");
-                                                    ui.hyperlink_to("Open the page again", url);
-                                                    if ui.button("Cancel").clicked() { g_cancel = true; }
+                                                    ui.label(tr("Finish signing in in your browser…"));
+                                                    ui.hyperlink_to(tr("Open the page again"), url);
+                                                    if ui.button(tr("Cancel")).clicked() { g_cancel = true; }
                                                 }
                                                 None => {
-                                                    if ui.add(egui::Button::new(RichText::new("Sign in with Google").color(Color32::WHITE)).fill(accent(ui)).corner_radius(8)).clicked() { g_start = true; }
-                                                    ui.hyperlink_to(RichText::new("Privacy policy").size(12.0), "https://leafnotes.briggen.dev/privacy");
+                                                    if ui.add(egui::Button::new(RichText::new(tr("Sign in with Google")).color(Color32::WHITE)).fill(accent(ui)).corner_radius(8)).clicked() { g_start = true; }
+                                                    ui.hyperlink_to(RichText::new(tr("Privacy policy")).size(12.0), "https://leafnotes.briggen.dev/privacy");
                                                 }
                                             }
                                         });
                                     } else {
-                                        let who = if s.google_email.is_empty() { "your Google account".to_string() } else { s.google_email.clone() };
-                                        row(ui, "Google Drive", &format!("Signed in as {who}. Notes are in the “Leaf Notes” folder."), |ui| { if ui.button("Sign out").clicked() { g_out = true; } });
+                                        let who = if s.google_email.is_empty() { tr("your Google account").to_string() } else { s.google_email.clone() };
+                                        row(ui, "Google Drive", &tf!("Signed in as {who}. Notes are in the “Leaf Notes” folder.", who = who), |ui| { if ui.button(tr("Sign out")).clicked() { g_out = true; } });
                                     }
                                 }
                                 sync::Via::Off => {}
@@ -1437,12 +1450,12 @@ impl NotesApp {
                             if on {
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
-                                    if ui.add_enabled(self.st.sync_rx.is_none(), egui::Button::new("Sync now")).clicked() { self.st.sync_now = true; }
-                                    if self.st.sync_rx.is_some() { ui.spinner(); ui.label("Syncing…"); }
+                                    if ui.add_enabled(self.st.sync_rx.is_none(), egui::Button::new(tr("Sync now"))).clicked() { self.st.sync_now = true; }
+                                    if self.st.sync_rx.is_some() { ui.spinner(); ui.label(tr("Syncing…")); }
                                     else if !self.st.sync_err.is_empty() { ui.label(RichText::new(format!("⚠ {}", self.st.sync_err)).color(Color32::from_rgb(220, 80, 60))); }
-                                    else if self.st.sync_ok > 0 { ui.label(RichText::new(format!("✓ Synced {}", ago(self.st.sync_ok))).color(accent(ui))); }
+                                    else if self.st.sync_ok > 0 { ui.label(RichText::new(tf!("✓ Synced {x}", x = ago(self.st.sync_ok))).color(accent(ui))); }
                                 });
-                                ui.label(RichText::new(format!("Sign-ins and passwords are kept in {}. Pictures, PDFs and recordings sync too.", crate::keys::place())).size(11.5).weak());
+                                ui.label(RichText::new(tf!("Sign-ins and passwords are kept in {place}. Pictures, PDFs and recordings sync too.", place = crate::keys::place())).size(11.5).weak());
                             }
                             if g_start {
                                 match sync::google_start() {
@@ -1473,12 +1486,12 @@ impl NotesApp {
                             row(ui, "Where your notes live", &dir.display().to_string(), |ui| {
                                 let _ = &ui; // the button below is desktop-only
                                 #[cfg(not(target_os = "android"))]
-                                if ui.button("Open folder").clicked() { let _ = std::fs::create_dir_all(&dir); crate::canvas::open_path(&dir); }
+                                if ui.button(tr("Open folder")).clicked() { let _ = std::fs::create_dir_all(&dir); crate::canvas::open_path(&dir); }
                             });
                             row(ui, "Backup", "Save a copy of every notebook as one file (pictures and attachments stay in the folder above).", |ui| {
                                 let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
-                                if ui.button("Save a backup…").clicked() {
+                                if ui.button(tr("Save a backup…")).clicked() {
                                     if let Some(path) = rfd::FileDialog::new().set_file_name("leaf-notes-backup.json").save_file() {
                                         let r = serde_json::to_vec_pretty(&self.store).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
                                         self.st.status = match r { Ok(_) => format!("Backup saved to {}", path.display()), Err(e) => format!("⚠ Backup failed: {e}") };
@@ -1486,14 +1499,14 @@ impl NotesApp {
                                     }
                                 }
                             });
-                            row(ui, "Recently deleted", &format!("{} item(s) waiting to be restored or removed.", self.store.trash.len()), |ui| { if ui.button("Open").clicked() { self.st.show_trash = true; } });
-                            row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| { if ui.button("Show").clicked() { self.st.show_shortcuts = true; } });
-                            row(ui, "Privacy and terms", &format!("Notes stay on your devices; secrets are kept in {}. Leaf Notes is free software under the GPL-3.0.", crate::keys::place()), |ui| {
-                                ui.hyperlink_to("Terms", "https://leafnotes.briggen.dev/terms");
-                                ui.hyperlink_to("Privacy policy", "https://leafnotes.briggen.dev/privacy");
+                            row(ui, "Recently deleted", &tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()), |ui| { if ui.button(tr("Open")).clicked() { self.st.show_trash = true; } });
+                            row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| { if ui.button(tr("Show")).clicked() { self.st.show_shortcuts = true; } });
+                            row(ui, "Privacy and terms", &tf!("Notes stay on your devices; secrets are kept in {place}. Leaf Notes is free software under the GPL-3.0.", place = crate::keys::place()), |ui| {
+                                ui.hyperlink_to(tr("Terms"), "https://leafnotes.briggen.dev/terms");
+                                ui.hyperlink_to(tr("Privacy policy"), "https://leafnotes.briggen.dev/privacy");
                             });
                             row(ui, "Reset settings", "Put every setting on this window back to how it started. Your notes are not touched.", |ui| {
-                                if ui.button("Reset").clicked() { let keep = (p.last, p.pens.clone()); *p = Prefs::default(); (p.last, p.pens) = keep; ctx.set_zoom_factor(1.0); }
+                                if ui.button(tr("Reset")).clicked() { let keep = (p.last, p.pens.clone()); *p = Prefs::default(); (p.last, p.pens) = keep; ctx.set_zoom_factor(1.0); }
                             });
                         }
                     }
@@ -1513,13 +1526,13 @@ impl NotesApp {
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         egui::Modal::new(egui::Id::unique("sync-ask")).frame(frame).show(ctx, |ui| {
             ui.set_width(460.0);
-            ui.label(RichText::new("Join your synced notes").font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
+            ui.label(RichText::new(tr("Join your synced notes")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
             ui.add_space(6.0);
-            ui.label(format!("The sync location already has notes ({pages} pages), and this device has its own. How should this device join?"));
+            ui.label(tf!("The sync location already has notes ({pages} pages), and this device has its own. How should this device join?", pages = pages));
             ui.add_space(12.0);
-            if ui.add(egui::Button::new(RichText::new("Combine both").size(14.0).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("Every notebook from both sides, on every device").clicked() { choice = Some(Some(sync::First::Merge)); }
-            if ui.add(egui::Button::new(RichText::new("Use only the synced notes").size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("This device's current notes are saved to a backup file first").clicked() { choice = Some(Some(sync::First::UseShared)); }
-            if ui.add(egui::Button::new("Not now — turn sync off").frame_when_inactive(false)).clicked() { choice = Some(None); }
+            if ui.add(egui::Button::new(RichText::new(tr("Combine both")).size(14.0).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("Every notebook from both sides, on every device").clicked() { choice = Some(Some(sync::First::Merge)); }
+            if ui.add(egui::Button::new(RichText::new(tr("Use only the synced notes")).size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("This device's current notes are saved to a backup file first").clicked() { choice = Some(Some(sync::First::UseShared)); }
+            if ui.add(egui::Button::new(tr("Not now — turn sync off")).frame_when_inactive(false)).clicked() { choice = Some(None); }
         });
         let Some(c) = choice else { return };
         self.st.sync_ask = None;
@@ -1529,8 +1542,8 @@ impl NotesApp {
                 if first == sync::First::UseShared {
                     let path = data_dir().join(format!("before-sync-{}.json", now_secs()));
                     match serde_json::to_vec(&self.store).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
-                        Ok(()) => self.st.say(format!("This device's notes were saved to {}", path.display())),
-                        Err(e) => { self.st.say(format!("⚠ Couldn't back up this device's notes ({e}), so nothing was replaced.")); return; }
+                        Ok(()) => self.st.say(tf!("This device's notes were saved to {path}", path = path.display())),
+                        Err(e) => { self.st.say(tf!("⚠ Couldn't back up this device's notes ({e}), so nothing was replaced.", e = e)); return; }
                     }
                 }
                 self.start_sync(Some(first));
@@ -1568,11 +1581,11 @@ impl NotesApp {
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)).corner_radius(16);
         let modal = egui::Modal::new(egui::Id::unique("switcher")).frame(frame).show(ctx, |ui| {
             ui.set_width(520.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Jump to a page…").font(FontId::proportional(18.0)).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
+            let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tr("Jump to a page…")).font(FontId::proportional(18.0)).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
             if !r.has_focus() { r.request_focus(); }
             if r.changed() { sel = 0; }
             ui.separator();
-            ui.label(RichText::new(if ql.is_empty() { "RECENT AND FAVOURITE PAGES" } else { "PAGES" }).size(10.5).weak());
+            ui.label(RichText::new(tr(if ql.is_empty() { "RECENT AND FAVOURITE PAGES" } else { "PAGES" })).size(10.5).weak());
             for (i, (_, title, path, at)) in hits.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
                 if i == sel || resp.hovered() { ui.painter().rect_filled(rect, 8.0, if i == sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
@@ -1581,10 +1594,10 @@ impl NotesApp {
                 if resp.clicked() { go = Some(*at); }
             }
             if !ql.is_empty() && hits.is_empty() {
-                if ui.button(format!("+  Create a page called “{}”", q.trim())).clicked() { create = true; }
+                if ui.button(tf!("+  Create a page called “{trim}”", trim = q.trim())).clicked() { create = true; }
                 if enter { create = true; }
             }
-            ui.label(RichText::new("↑↓ to choose · Enter to open · Esc to close").size(10.5).weak());
+            ui.label(RichText::new(tr("↑↓ to choose · Enter to open · Esc to close")).size(10.5).weak());
         });
         if let Some((a, b, c)) = go { self.go_to(a, b, c); return; }
         if create { let t = q.clone(); self.open_title(&t); return; }
@@ -1601,21 +1614,21 @@ impl NotesApp {
             let mut open = true;
             let mut restore = None;
             let mut purge = None;
-            egui::Window::new("Recently deleted").open(&mut open).collapsible(false).default_width(420.0).show(ctx, |ui| {
-                if self.store.trash.is_empty() { ui.label(RichText::new("Nothing here. Deleted pages, sections and notebooks wait here until you empty the bin.").weak()); }
+            egui::Window::new(tr("Recently deleted")).open(&mut open).collapsible(false).default_width(420.0).show(ctx, |ui| {
+                if self.store.trash.is_empty() { ui.label(RichText::new(tr("Nothing here. Deleted pages, sections and notebooks wait here until you empty the bin.")).weak()); }
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (i, t) in self.store.trash.iter().enumerate().rev() {
                         ui.horizontal(|ui| {
-                            ui.vertical(|ui| { ui.label(&t.label); ui.label(RichText::new(format!("Deleted {}", format_date(t.deleted, true))).size(11.0).weak()); });
+                            ui.vertical(|ui| { ui.label(&t.label); ui.label(RichText::new(tf!("Deleted {x}", x = format_date(t.deleted, true))).size(11.0).weak()); });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button("Delete forever").clicked() { purge = Some(i); }
-                                if ui.small_button("Restore").clicked() { restore = Some(i); }
+                                if ui.small_button(tr("Delete forever")).clicked() { purge = Some(i); }
+                                if ui.small_button(tr("Restore")).clicked() { restore = Some(i); }
                             });
                         });
                         ui.separator();
                     }
                 });
-                if !self.store.trash.is_empty() && ui.button("Empty the bin").clicked() { purge = Some(usize::MAX); }
+                if !self.store.trash.is_empty() && ui.button(tr("Empty the bin")).clicked() { purge = Some(usize::MAX); }
             });
             if let Some(i) = restore { self.restore(i); }
             match purge { Some(usize::MAX) => { self.store.trash.clear(); self.st.dirty = true; } Some(i) => { self.store.trash.remove(i); self.st.dirty = true; } None => {} }
@@ -1623,14 +1636,14 @@ impl NotesApp {
         }
         if self.st.show_shortcuts {
             let mut open = true;
-            egui::Window::new("Keyboard shortcuts").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Window::new(tr("Keyboard shortcuts")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).striped(true).show(ui, |ui| {
                     for (k, what) in [("Ctrl+N", "New page"), ("Ctrl+F", "Search all notes"), ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                         ("Ctrl+B / Ctrl+I", "Bold / italic"), ("Ctrl+Shift+H", "Highlight"), ("Ctrl+M", "Inline math"), ("Ctrl+`", "Inline code"),
                         ("T  P  H  E  L", "Type, pen, highlighter, eraser, select ink"), ("Delete", "Delete selected ink"), ("Esc", "Clear selection and search"),
                         ("Ctrl + / Ctrl −", "Zoom"), ("Two fingers", "Scroll while drawing (touch screens)"), ("Click empty paper", "Start a new note there"),
                         ("- , 1. , [ ] , #", "Start a list, checkbox or heading while typing")] {
-                        ui.label(RichText::new(k).monospace()); ui.label(what); ui.end_row();
+                        ui.label(RichText::new(tr(k)).monospace()); ui.label(tr(what)); ui.end_row();
                     }
                 });
             });
@@ -1639,10 +1652,10 @@ impl NotesApp {
         if let Some((how, mut path)) = self.st.path_prompt.clone() {
             let mut go = false;
             let mut cancel = false;
-            egui::Window::new(match how { Ins::Picture => "Insert picture", Ins::Printout => "Insert printout", Ins::Attach => "Attach file" }).collapsible(false).show(ctx, |ui| {
-                ui.label("File path on this device:");
+            egui::Window::new(tr(match how { Ins::Picture => "Insert picture", Ins::Printout => "Insert printout", Ins::Attach => "Attach file" })).collapsible(false).show(ctx, |ui| {
+                ui.label(tr("File path on this device:"));
                 ui.text_edit_singleline(&mut path);
-                ui.horizontal(|ui| { go = ui.button("Insert").clicked(); cancel = ui.button("Cancel").clicked(); });
+                ui.horizontal(|ui| { go = ui.button(tr("Insert")).clicked(); cancel = ui.button(tr("Cancel")).clicked(); });
             });
             self.st.path_prompt = if go || cancel { None } else { Some((how, path.clone())) };
             if go { self.insert_file(std::path::Path::new(&path), how); }

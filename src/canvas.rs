@@ -40,7 +40,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 60.0).clamp(160.0, 680.0);
             let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(31.0))
-                .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text("Untitled page").desired_width(w).margin(egui::Margin::ZERO));
+                .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(tr("Untitled page")).desired_width(w).margin(egui::Margin::ZERO));
             if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
             if r.changed() { st.dirty = true; }
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && page.blocks.is_empty() {
@@ -63,7 +63,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 if heads.len() >= 2 {
                     let o = ui.add(egui::Button::new(RichText::new("☰").size(16.0)).frame_when_inactive(false)).tip("Outline — jump to a heading");
                     egui::Popup::menu(&o).show(|ui| {
-                        ui.label(RichText::new("ON THIS PAGE").size(10.5).weak());
+                        ui.label(RichText::new(tr("ON THIS PAGE")).size(10.5).weak());
                         for (y, t) in &heads {
                             if ui.button(t).clicked() {
                                 let v = st.views.get(&page.id).copied().unwrap_or(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 800.0)));
@@ -77,16 +77,16 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                     .tip(if fav { "Remove from favourites" } else { "Add to favourites" });
                 if star.clicked() { action = Some(PageAction::ToggleFav); }
                 egui::Popup::menu(&m).show(|ui| {
-                    if ui.button("⧉  Duplicate page").clicked() { action = Some(PageAction::Duplicate); ui.close(); }
-                    if ui.button("⎘  Copy as Markdown").clicked() { action = Some(PageAction::Copy); ui.close(); }
+                    if ui.button(tr("⧉  Duplicate page")).clicked() { action = Some(PageAction::Duplicate); ui.close(); }
+                    if ui.button(tr("⎘  Copy as Markdown")).clicked() { action = Some(PageAction::Copy); ui.close(); }
                     if crate::export::printout_source(page, &|id| st.heights.get(&id).copied()).is_some() {
-                        if ui.button("⇩  Export printout with notes (PDF)…").tip("The original PDF pages, with your ink and typed notes on top").clicked() { action = Some(PageAction::Pdf(false)); ui.close(); }
-                        if ui.button("⇩  Export whole page as PDF…").clicked() { action = Some(PageAction::Pdf(true)); ui.close(); }
-                    } else if ui.button("⇩  Export as PDF…").tip("Just the part of the page you wrote on, with the title, on A4 pages").clicked() { action = Some(PageAction::Pdf(true)); ui.close(); }
-                    if ui.button("⇪  Export as Markdown…").clicked() { action = Some(PageAction::Export); ui.close(); }
-                    if page.kind == PageKind::Deck && ui.button("▶  Study this deck").clicked() { action = Some(PageAction::Study); ui.close(); }
+                        if ui.button(tr("⇩  Export printout with notes (PDF)…")).tip("The original PDF pages, with your ink and typed notes on top").clicked() { action = Some(PageAction::Pdf(false)); ui.close(); }
+                        if ui.button(tr("⇩  Export whole page as PDF…")).clicked() { action = Some(PageAction::Pdf(true)); ui.close(); }
+                    } else if ui.button(tr("⇩  Export as PDF…")).tip("Just the part of the page you wrote on, with the title, on A4 pages").clicked() { action = Some(PageAction::Pdf(true)); ui.close(); }
+                    if ui.button(tr("⇪  Export as Markdown…")).clicked() { action = Some(PageAction::Export); ui.close(); }
+                    if page.kind == PageKind::Deck && ui.button(tr("▶  Study this deck")).clicked() { action = Some(PageAction::Study); ui.close(); }
                     ui.separator();
-                    if ui.button(RichText::new("🗑  Delete page").color(Color32::from_rgb(200, 60, 50))).clicked() { action = Some(PageAction::Delete); ui.close(); }
+                    if ui.button(RichText::new(tr("🗑  Delete page")).color(Color32::from_rgb(200, 60, 50))).clicked() { action = Some(PageAction::Delete); ui.close(); }
                 });
             });
         });
@@ -95,7 +95,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
             ui.label(RichText::new(format_date(page.created, true)).size(12.0).weak());
             if !backlinks.is_empty() {
                 ui.add_space(14.0);
-                ui.label(RichText::new("↩ Linked from").size(12.0).weak());
+                ui.label(RichText::new(tr("↩ Linked from")).size(12.0).weak());
                 for (title, at) in backlinks {
                     let t = if title.trim().is_empty() { "Untitled page" } else { title.as_str() };
                     if ui.add(egui::Button::new(RichText::new(t).size(12.0).color(accent(ui))).corner_radius(10).min_size(Vec2::new(0.0, 22.0))).clicked() { action = Some(PageAction::Go(at.0, at.1, at.2)); }
@@ -253,7 +253,7 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         }
     }
     if page.blocks.is_empty() && page.strokes.is_empty() {
-        ui.painter().text(o + Vec2::new(28.0, 24.0), Align2::LEFT_TOP, "Click anywhere to type, or pick the pen to write.", FontId::proportional(14.0), ui.visuals().weak_text_color());
+        ui.painter().text(o + Vec2::new(28.0, 24.0), Align2::LEFT_TOP, tr("Click anywhere to type, or pick the pen to write."), FontId::proportional(14.0), ui.visuals().weak_text_color());
     }
     let later = playback_moment(page, st);
     // Highlighter goes under the notes, like a real highlighter behind the words; pen ink goes on top.
@@ -310,7 +310,7 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         for side in [[r.left_top(), r.right_top()], [r.right_top(), r.right_bottom()], [r.right_bottom(), r.left_bottom()], [r.left_bottom(), r.left_top()]] {
             painter.add(egui::Shape::dashed_line(&side, EStroke::new(1.2, acc), 5.0, 4.0));
         }
-        painter.text(r.left_top() - Vec2::new(0.0, 4.0), Align2::LEFT_BOTTOM, format!("{} selected · drag to move, corner to resize, knob to rotate", st.selected.len()), FontId::proportional(11.0), acc);
+        painter.text(r.left_top() - Vec2::new(0.0, 4.0), Align2::LEFT_BOTTOM, tf!("{selected_n} selected · drag to move, corner to resize, knob to rotate", selected_n = st.selected.len()), FontId::proportional(11.0), acc);
     }
     if st.lasso.len() > 1 {
         painter.add(egui::Shape::dashed_line(&st.lasso.iter().map(|p| *p + o.to_vec2()).collect::<Vec<_>>(), EStroke::new(1.5, accent(ui)), 6.0, 4.0));
@@ -521,7 +521,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                         if let Some((pts, kind)) = snap_shape(&s.points) {
                             s.points = pts;
                             st.snapped = true;
-                            st.status = format!("Snapped to a {kind}."); st.status_age = 0.0;
+                            st.status = tf!("Snapped to a {kind}.", kind = tr(kind)); st.status_age = 0.0;
                         }
                         st.still.1 = now;
                     }
@@ -591,7 +591,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                         let inside = s.points.iter().filter(|q| point_in_poly(Pos2::new(q[0], q[1]), &poly)).count();
                         inside * 2 > s.points.len()
                     }).map(|s| s.id).collect();
-                    st.say(if st.selected.is_empty() { "Nothing selected — draw a loop around the ink.".to_string() } else { format!("{} strokes selected — drag to move, or convert them.", st.selected.len()) });
+                    st.say(if st.selected.is_empty() { "Nothing selected — draw a loop around the ink.".to_string() } else { tf!("{n} strokes selected — drag to move, or convert them.", n = st.selected.len()) });
                 } else { st.selected.clear(); }
                 st.lasso.clear();
             }
@@ -709,23 +709,23 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
 
 fn block_menu(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction) {
     let textual = matches!(b.kind, Kind::Text { .. } | Kind::Math { .. } | Kind::Code { .. } | Kind::Checklist { .. });
-    if ui.button("⧉  Duplicate").clicked() { *act = BlockAction::Duplicate; ui.close(); }
+    if ui.button(tr("⧉  Duplicate")).clicked() { *act = BlockAction::Duplicate; ui.close(); }
     match &b.kind {
-        Kind::Image { file } => { if ui.button("↗  Open picture").clicked() { open_path(&data_dir().join("files").join(file)); ui.close(); } }
-        Kind::File { file, .. } => { if ui.button("↗  Open file").clicked() { open_path(&data_dir().join("files").join(file)); ui.close(); } }
-        Kind::Link { url, .. } => { if ui.button("⎘  Copy address").clicked() { ui.ctx().copy_text(url.clone()); ui.close(); } }
-        Kind::Math { src } => { if ui.button("⎘  Copy LaTeX").clicked() { ui.ctx().copy_text(src.clone()); ui.close(); } }
-        Kind::Table { .. } => { if ui.button("⎘  Copy as text").clicked() { ui.ctx().copy_text(b.kind.summary()); ui.close(); } }
-        _ => { if ui.button("⎘  Copy text").clicked() { ui.ctx().copy_text(match &b.kind { Kind::Text { text, .. } => text.clone(), Kind::Code { code, .. } => code.clone(), k => k.summary() }); ui.close(); } }
+        Kind::Image { file } => { if ui.button(tr("↗  Open picture")).clicked() { open_path(&data_dir().join("files").join(file)); ui.close(); } }
+        Kind::File { file, .. } => { if ui.button(tr("↗  Open file")).clicked() { open_path(&data_dir().join("files").join(file)); ui.close(); } }
+        Kind::Link { url, .. } => { if ui.button(tr("⎘  Copy address")).clicked() { ui.ctx().copy_text(url.clone()); ui.close(); } }
+        Kind::Math { src } => { if ui.button(tr("⎘  Copy LaTeX")).clicked() { ui.ctx().copy_text(src.clone()); ui.close(); } }
+        Kind::Table { .. } => { if ui.button(tr("⎘  Copy as text")).clicked() { ui.ctx().copy_text(b.kind.summary()); ui.close(); } }
+        _ => { if ui.button(tr("⎘  Copy text")).clicked() { ui.ctx().copy_text(match &b.kind { Kind::Text { text, .. } => text.clone(), Kind::Code { code, .. } => code.clone(), k => k.summary() }); ui.close(); } }
     }
-    ui.menu_button("🏷  Tag", |ui| {
-        for (t, label) in [(Tag::Todo, "☐ To Do"), (Tag::Important, "★ Important"), (Tag::Question, "? Question"), (Tag::None, "No tag")] {
+    ui.menu_button(tr("🏷  Tag"), |ui| {
+        for (t, label) in [(Tag::Todo, tr("☐ To Do")), (Tag::Important, tr("★ Important")), (Tag::Question, tr("? Question")), (Tag::None, tr("No tag"))] {
             if ui.button(label).clicked() { b.tag = t; *act = BlockAction::Changed; ui.close(); }
         }
     });
     // only notes made of text can sensibly become another kind of text note
     if textual {
-        let conv: Option<Kind> = ui.menu_button("⇄  Turn into", |ui| {
+        let conv: Option<Kind> = ui.menu_button(tr("⇄  Turn into"), |ui| {
             let mut out = None;
             let text = match &b.kind {
                 Kind::Text { text, .. } => text.clone(),
@@ -734,19 +734,19 @@ fn block_menu(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction) {
                 Kind::Checklist { items } => items.iter().map(|i| i.1.clone()).collect::<Vec<_>>().join("\n"),
                 other => other.summary(),
             };
-            if !matches!(b.kind, Kind::Text { .. }) && ui.button("Text").clicked() { out = Some(Kind::Text { text: text.clone(), heading: 0 }); }
-            if !matches!(b.kind, Kind::Math { .. }) && ui.button("Equation").clicked() { out = Some(Kind::Math { src: text.clone() }); }
-            if !matches!(b.kind, Kind::Checklist { .. }) && ui.button("Checklist").clicked() {
+            if !matches!(b.kind, Kind::Text { .. }) && ui.button(tr("Text")).clicked() { out = Some(Kind::Text { text: text.clone(), heading: 0 }); }
+            if !matches!(b.kind, Kind::Math { .. }) && ui.button(tr("Equation")).clicked() { out = Some(Kind::Math { src: text.clone() }); }
+            if !matches!(b.kind, Kind::Checklist { .. }) && ui.button(tr("Checklist")).clicked() {
                 out = Some(Kind::Checklist { items: text.lines().filter(|l| !l.trim().is_empty()).map(|l| (false, l.trim_start_matches(['-', '*', ' ']).to_string())).collect() });
             }
-            if !matches!(b.kind, Kind::Code { .. }) && ui.button("Code").clicked() { out = Some(Kind::Code { lang: "text".into(), code: text }); }
+            if !matches!(b.kind, Kind::Code { .. }) && ui.button(tr("Code")).clicked() { out = Some(Kind::Code { lang: "text".into(), code: text }); }
             if out.is_some() { ui.close(); }
             out
         }).inner.flatten();
         if let Some(k) = conv { b.kind = k; *act = BlockAction::Changed; }
     }
     ui.separator();
-    if ui.button(RichText::new("🗑  Delete").color(Color32::from_rgb(200, 60, 50))).clicked() { *act = BlockAction::Delete; ui.close(); }
+    if ui.button(RichText::new(tr("🗑  Delete")).color(Color32::from_rgb(200, 60, 50))).clicked() { *act = BlockAction::Delete; ui.close(); }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -776,7 +776,7 @@ fn popup_items(pp: &Popup, q: &str, titles: &[String]) -> Vec<(String, &'static 
                 ("Date and time", "🕓", Act::Date), ("Equation", "∑", Act::Block(0)), ("Table", "▦", Act::Block(1)),
                 ("Checklist", "☑", Act::Block(2)), ("Code", "{ }", Act::Block(3)),
             ];
-            all.into_iter().filter(|(l, ..)| l.to_lowercase().contains(&ql)).map(|(l, i, a)| (l.to_string(), i, a)).collect()
+            all.into_iter().filter(|(l, ..)| tr(l).to_lowercase().contains(&ql) || l.to_lowercase().contains(&ql)).map(|(l, i, a)| (l.to_string(), i, a)).collect()
         }
         PopKind::Link => {
             let mut v: Vec<(String, &'static str, Act)> = titles.iter().filter(|t| t.to_lowercase().contains(&ql)).take(7).map(|t| (t.clone(), "↗", Act::Link(t.clone()))).collect();
@@ -862,13 +862,13 @@ fn popup_ui(ui: &mut egui::Ui, ctx: &egui::Context, id: egui::Id, block_id: u64,
     egui::Area::new(egui::Id::unique(("popup", block_id))).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).inner_margin(6).show(ui, |ui| {
             ui.set_min_width(240.0);
-            ui.label(RichText::new(if pp.kind == PopKind::Slash { "INSERT" } else { "LINK TO A PAGE" }).size(10.5).weak());
-            if items.is_empty() { ui.label(RichText::new("No matches").weak()); }
+            ui.label(RichText::new(tr(if pp.kind == PopKind::Slash { "INSERT" } else { "LINK TO A PAGE" })).size(10.5).weak());
+            if items.is_empty() { ui.label(RichText::new(tr("No matches")).weak()); }
             for (i, (label, icon, _)) in items.iter().enumerate() {
-                let r = ui.add(egui::Button::new(RichText::new(format!("{icon}   {label}")).size(13.5)).selected(i == sel).frame_when_inactive(false).min_size(Vec2::new(236.0, 28.0)));
+                let r = ui.add(egui::Button::new(RichText::new(tf!("{icon}   {label}", icon = icon, label = tr(label))).size(13.5)).selected(i == sel).frame_when_inactive(false).min_size(Vec2::new(236.0, 28.0)));
                 if r.clicked() { picked = Some(i); }
             }
-            ui.label(RichText::new("↑↓ to choose · Enter to insert · Esc to close").size(10.5).weak());
+            ui.label(RichText::new(tr("↑↓ to choose · Enter to insert · Esc to close")).size(10.5).weak());
         });
     });
     picked
@@ -888,7 +888,7 @@ fn ensure_player(page: &Page, st: &mut St, i: usize) -> bool {
     if st.player.as_ref().is_some_and(|p| p.id == rec.id) { return true; }
     match crate::audio::Player::open(&data_dir().join("files").join(&rec.file), rec.id) {
         Ok(p) => { st.player = Some(p); true }
-        Err(e) => { st.say(format!("⚠ Can't play the recording: {e}")); false }
+        Err(e) => { st.say(tf!("⚠ Can't play the recording: {e}", e = e)); false }
     }
 }
 
@@ -928,8 +928,8 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             if recording_here {
                 let secs = st.recorder.as_ref().map_or(0.0, |r| (now_f() - r.3) as f32);
                 ui.label(RichText::new("●").color(red));
-                ui.label(RichText::new(format!("Recording  {}", mmss(secs))).color(red));
-                if ui.button("■ Stop").clicked() { st.rec_toggle = true; }
+                ui.label(RichText::new(tf!("Recording  {x}", x = mmss(secs))).color(red));
+                if ui.button(tr("■ Stop")).clicked() { st.rec_toggle = true; }
                 if page.recordings.is_empty() { return; }
                 ui.separator();
             }
@@ -949,7 +949,7 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             if ui.add(egui::Slider::new(&mut t, 0.0..=rec.secs.max(0.1)).show_value(false)).changed() && ensure_player(page, st, i) { st.player.as_ref().unwrap().seek(t); }
             ui.label(RichText::new(format!("{} / {}", mmss(t), mmss(rec.secs))).size(12.0).monospace().weak());
             let tip = "On: clicking a note or ink plays what was said while you wrote it";
-            if ui.add(egui::Button::new(RichText::new("👆 Tap notes to jump").size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
+            if ui.add(egui::Button::new(RichText::new(tr("👆 Tap notes to jump")).size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
             if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Remove this recording from the page (Undo brings it back)").clicked() {
                 st.snap(page);
                 let id = page.recordings[i].id;
@@ -968,7 +968,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
     let status = |c: &DeckCard| match study.get(&format!("card{}", c.id)) {
         None => ("new".to_string(), acc),
         Some(s) if s.due <= now => ("due".to_string(), Color32::from_rgb(214, 120, 40)),
-        Some(s) => { let d = (s.due - now).div_ceil(86_400); (if d <= 1 { "next tomorrow".into() } else { format!("next in {d} days") }, weak) }
+        Some(s) => { let d = (s.due - now).div_ceil(86_400); (if d <= 1 { "next tomorrow".into() } else { tf!("next in {d} days", d = d) }, weak) }
     };
     let ready = page.deck().len();
     let (due, new) = page.cards.iter().fold((0, 0), |(d, n), c| match status(c).0.as_str() { "due" => (d + 1, n), "new" if !c.front.trim().is_empty() && !c.back.trim().is_empty() => (d, n + 1), _ => (d, n) });
@@ -976,12 +976,12 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
     // summary and the main action
     ui.horizontal(|ui| {
         let chip = |ui: &mut egui::Ui, t: String, c: Color32| { egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| ui.label(RichText::new(t).size(12.5).color(c))); };
-        chip(ui, format!("▤  {} cards", page.cards.len()), ui.visuals().text_color());
-        if due > 0 { chip(ui, format!("{due} due"), Color32::from_rgb(214, 120, 40)); }
-        if new > 0 { chip(ui, format!("{new} new"), acc); }
+        chip(ui, tf!("▤  {cards_n} cards", cards_n = page.cards.len()), ui.visuals().text_color());
+        if due > 0 { chip(ui, tf!("{due} due", due = due), Color32::from_rgb(214, 120, 40)); }
+        if new > 0 { chip(ui, tf!("{new} new", new = new), acc); }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(12.0);
-            let b = ui.add_enabled(ready > 0, egui::Button::new(RichText::new(format!("▶  Study{}", if due + new > 0 { format!(" ({})", due + new) } else { String::new() })).size(15.0).color(Color32::WHITE)).fill(acc).corner_radius(18).min_size(Vec2::new(150.0, 36.0)));
+            let b = ui.add_enabled(ready > 0, egui::Button::new(RichText::new(tf!("▶  Study{x}", x = if due + new > 0 { format!(" ({})", due + new) } else { String::new() })).size(15.0).color(Color32::WHITE)).fill(acc).corner_radius(18).min_size(Vec2::new(150.0, 36.0)));
             if b.tip("Go through the cards; due and new ones come first").clicked() { study_now = true; }
         });
     });
@@ -999,7 +999,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
                 .inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{}", i + 1)).size(13.0).weak());
-                    ui.label(RichText::new(label).size(11.0).color(col));
+                    ui.label(RichText::new(tr(&label)).size(11.0).color(col));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Delete this card").clicked() { remove = Some(i); }
                         if i + 1 < n && ui.add(egui::Button::new("↓").frame_when_inactive(false)).tip("Move down").clicked() { swap = Some((i, i + 1)); }
@@ -1007,7 +1007,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
                     });
                 });
                 ui.columns(2, |cols| {
-                    for (k, (side, text, hint)) in [("FRONT", &mut c.front, "Question or term"), ("BACK", &mut c.back, "Answer")].into_iter().enumerate() {
+                    for (k, (side, text, hint)) in [(tr("FRONT"), &mut c.front, tr("Question or term")), (tr("BACK"), &mut c.back, tr("Answer"))].into_iter().enumerate() {
                         let ui = &mut cols[k];
                         ui.label(RichText::new(side).size(10.5).weak());
                         let id = egui::Id::unique((if k == 0 { "cardf" } else { "cardb" }, c.id));
@@ -1029,8 +1029,8 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
             });
             ui.add_space(8.0);
         }
-        if page.cards.is_empty() { ui.label(RichText::new("No cards yet.").weak()); }
-        let add = ui.add(egui::Button::new(RichText::new("+  Add card").size(14.0).color(acc)).min_size(Vec2::new(ui.available_width(), 40.0)).corner_radius(12)
+        if page.cards.is_empty() { ui.label(RichText::new(tr("No cards yet.")).weak()); }
+        let add = ui.add(egui::Button::new(RichText::new(tr("+  Add card")).size(14.0).color(acc)).min_size(Vec2::new(ui.available_width(), 40.0)).corner_radius(12)
             .fill(ui.visuals().faint_bg_color).stroke(EStroke::new(1.0, acc.gamma_multiply(0.5))));
         if add.clicked() {
             let c = DeckCard::new("", "");
@@ -1039,7 +1039,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
             page.cards.push(c);
         }
         ui.add_space(6.0);
-        ui.label(RichText::new("Tip: Tab jumps from front to back. Use $x^2$ for maths and **bold** for emphasis.").size(11.5).weak());
+        ui.label(RichText::new(tr("Tip: Tab jumps from front to back. Use $x^2$ for maths and **bold** for emphasis.")).size(11.5).weak());
         ui.add_space(30.0);
     });
     if let Some(i) = remove { st.snap(page); page.cards.remove(i); }
@@ -1116,7 +1116,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
                 let out = egui::TextEdit::multiline(text).id(id).frame(egui::Frame::NONE).desired_rows(1).desired_width(w)
-                    .hint_text("Type here…  **bold**, - list, $x^2$").layouter(&mut layouter).show(ui);
+                    .hint_text(tr("Type here…  **bold**, - list, $x^2$")).layouter(&mut layouter).show(ui);
                 let r = &out.response;
                 focus(r, st);
                 if let Some(i) = popup_ui(ui, &ctx, id, b.id, text, &out, st) { changed |= apply_popup(&ctx, id, b.id, text, i, st); }
@@ -1148,9 +1148,9 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             if st.editing == Some(b.id) {
                 egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(8).inner_margin(10).show(ui, |ui| {
                     ui.set_width(w - 20.0);
-                    if src.trim().is_empty() { ui.label(RichText::new("Type LaTeX below, or tap the symbols.").weak()); } else { math::math_label(ui, src, 22.0); }
+                    if src.trim().is_empty() { ui.label(RichText::new(tr("Type LaTeX below, or tap the symbols.")).weak()); } else { math::math_label(ui, src, 22.0); }
                     ui.add_space(6.0);
-                    let r = ui.add(egui::TextEdit::multiline(src).id(id).code_editor().desired_rows(1).desired_width(f32::INFINITY).hint_text(r"e.g. \frac{a}{b} or x^2 + y^2 = r^2"));
+                    let r = ui.add(egui::TextEdit::multiline(src).id(id).code_editor().desired_rows(1).desired_width(f32::INFINITY).hint_text(tr(r"e.g. \frac{a}{b} or x^2 + y^2 = r^2")));
                     focus(&r, st);
                     changed |= r.changed();
                     ui.add_space(4.0);
@@ -1165,10 +1165,10 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                         }
                     });
                     ui.add_space(4.0);
-                    if ui.add(egui::Button::new(RichText::new("Done").color(Color32::WHITE)).fill(acc)).clicked() { st.editing = None; }
+                    if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(acc)).clicked() { st.editing = None; }
                 });
             } else if src.trim().is_empty() {
-                if ui.add(egui::Label::new(RichText::new("∑  Empty equation — click to write one").weak()).sense(Sense::click())).clicked() { st.editing = Some(b.id); st.focus_id = Some(id); }
+                if ui.add(egui::Label::new(RichText::new(tr("∑  Empty equation — click to write one")).weak()).sense(Sense::click())).clicked() { st.editing = Some(b.id); st.focus_id = Some(id); }
             } else if math::math_label(ui, src, 22.0).tip("Click to edit").clicked() {
                 st.editing = Some(b.id);
                 st.focus_id = Some(id);
@@ -1184,7 +1184,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 ui.horizontal(|ui| {
                     changed |= ui.checkbox(done, "").changed();
                     // Multi-line so long items wrap; Enter still makes a new item.
-                    let mut te = egui::TextEdit::multiline(t).id(egui::Id::unique(("chk", b.id, i))).frame(egui::Frame::NONE).desired_rows(1).desired_width(w - 40.0).hint_text("To do…");
+                    let mut te = egui::TextEdit::multiline(t).id(egui::Id::unique(("chk", b.id, i))).frame(egui::Frame::NONE).desired_rows(1).desired_width(w - 40.0).hint_text(tr("To do…"));
                     if *done { te = te.text_color(ui.visuals().weak_text_color()); }
                     let r = ui.add(te);
                     focus(&r, st);
@@ -1205,9 +1205,9 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     let (r, _) = ui.allocate_exact_size(Vec2::new(80.0, 4.0), Sense::hover());
                     ui.painter().rect_filled(r, 2.0, ui.visuals().widgets.inactive.weak_bg_fill);
                     ui.painter().rect_filled(Rect::from_min_size(r.min, Vec2::new(r.width() * done as f32 / items.len() as f32, r.height())), 2.0, acc);
-                    ui.label(RichText::new(format!("{done} of {} done", items.len())).size(11.0).weak());
+                    ui.label(RichText::new(tf!("{done} of {items_n} done", done = done, items_n = items.len())).size(11.0).weak());
                 }
-                if active && ui.small_button("+ item").clicked() { items.push((false, String::new())); st.focus_id = Some(egui::Id::unique(("chk", b.id, items.len() - 1))); changed = true; }
+                if active && ui.small_button(tr("+ item")).clicked() { items.push((false, String::new())); st.focus_id = Some(egui::Id::unique(("chk", b.id, items.len() - 1))); changed = true; }
             });
         }
         Kind::Table { rows } => {
@@ -1236,10 +1236,10 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             });
             if active {
                 ui.horizontal_wrapped(|ui| { // wraps inside narrow notes
-                    if ui.small_button("+ row").clicked() { rows.push(vec![String::new(); cols]); changed = true; }
-                    if ui.small_button("+ column").clicked() { for r in rows.iter_mut() { r.push(String::new()); } changed = true; }
-                    if rows.len() > 1 && ui.small_button("− row").clicked() { rows.pop(); changed = true; }
-                    if cols > 1 && ui.small_button("− column").clicked() { for r in rows.iter_mut() { r.pop(); } changed = true; }
+                    if ui.small_button(tr("+ row")).clicked() { rows.push(vec![String::new(); cols]); changed = true; }
+                    if ui.small_button(tr("+ column")).clicked() { for r in rows.iter_mut() { r.push(String::new()); } changed = true; }
+                    if rows.len() > 1 && ui.small_button(tr("− row")).clicked() { rows.pop(); changed = true; }
+                    if cols > 1 && ui.small_button(tr("− column")).clicked() { for r in rows.iter_mut() { r.pop(); } changed = true; }
                 });
             }
         }
@@ -1249,7 +1249,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("{ }").size(11.0).color(acc));
                     changed |= ui.add(egui::TextEdit::singleline(lang).desired_width(90.0).font(egui::TextStyle::Small).frame(egui::Frame::NONE)).changed();
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { if ui.small_button("⧉ Copy").clicked() { ui.ctx().copy_text(code.clone()); } });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { if ui.small_button(tr("⧉ Copy")).clicked() { ui.ctx().copy_text(code.clone()); } });
                 });
                 let r = ui.add(egui::TextEdit::multiline(code).id(id).code_editor().desired_rows(2).desired_width(w - 16.0).frame(egui::Frame::NONE));
                 focus(&r, st);
@@ -1272,31 +1272,31 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                     ui.painter().image(t.id(), rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                 }
-                None => { ui.label(RichText::new("⚠ This picture's file is missing").weak()); }
+                None => { ui.label(RichText::new(tr("⚠ This picture's file is missing")).weak()); }
             }
         }
         Kind::File { file, name, size } => {
             egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(8).inner_margin(8).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("📄").size(24.0));
-                    ui.vertical(|ui| { ui.label(RichText::new(&*name).strong()); ui.label(RichText::new(format!("{:.1} KB", *size as f64 / 1024.0)).small().weak()); });
-                    if ui.button("Open").clicked() { open_path(&data_dir().join("files").join(&*file)); }
+                    ui.vertical(|ui| { ui.label(RichText::new(&*name).strong()); ui.label(RichText::new(tf!("{x} KB", x = format!("{:.1}", *size as f64 / 1024.0))).small().weak()); });
+                    if ui.button(tr("Open")).clicked() { open_path(&data_dir().join("files").join(&*file)); }
                 });
             });
         }
         Kind::Link { url, title } => {
             if st.editing == Some(b.id) {
                 egui::Grid::new(("link", b.id)).num_columns(2).show(ui, |ui| {
-                    ui.label("Address");
+                    ui.label(tr("Address"));
                     let r = ui.add(egui::TextEdit::singleline(url).id(id).desired_width(w - 80.0));
                     focus(&r, st);
                     changed |= r.changed();
                     ui.end_row();
-                    ui.label("Title");
-                    changed |= ui.add(egui::TextEdit::singleline(title).hint_text("optional").desired_width(w - 80.0)).changed();
+                    ui.label(tr("Title"));
+                    changed |= ui.add(egui::TextEdit::singleline(title).hint_text(tr("optional")).desired_width(w - 80.0)).changed();
                     ui.end_row();
                 });
-                if ui.add(egui::Button::new(RichText::new("Done").color(Color32::WHITE)).fill(acc)).clicked() { st.editing = None; }
+                if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(acc)).clicked() { st.editing = None; }
             } else {
                 egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(8).inner_margin(8).show(ui, |ui| {
                     ui.set_width(w - 16.0);

@@ -4,6 +4,7 @@
 //! Each device keeps the last state it agreed on with the shared copy (the "base"), so changes merge
 //! note by note: what changed here, what changed elsewhere, and both are kept. A page changed on two
 //! devices at once is kept twice. Nothing is ever deleted because of a conflict.
+use crate::tf;
 use crate::model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -96,16 +97,16 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
             match remote.put_notes(&bytes, tag.as_deref())? { Put::Done(t) => t, Put::Changed => continue }
         };
         let b = serde_json::to_vec(&Base { target: s.target(), tag, files: have, store: merged.clone() }).map_err(|e| e.to_string())?;
-        write_atomic(&home.join(BASE_FILE), &b).map_err(|e| format!("Couldn't save the sync state: {e}"))?;
+        write_atomic(&home.join(BASE_FILE), &b).map_err(|e| tf!("Couldn't save the sync state: {e}", e = e))?;
         return Ok(Outcome::Synced { store: merged, up, down });
     }
-    Err("Another device kept syncing at the same moment — trying again shortly.".into())
+    Err(crate::tr("Another device kept syncing at the same moment — trying again shortly.").into())
 }
 
 fn parse_shared(bytes: &[u8]) -> Result<(Store, Vec<String>), String> {
-    let v: Value = serde_json::from_slice(bytes).map_err(|_| "The synced notes file is damaged, so nothing was changed. Your notes on this device are safe.".to_string())?;
-    if v.get("format").and_then(Value::as_u64).unwrap_or(0) > FORMAT { return Err("The synced notes come from a newer Leaf Notes — update this app to keep syncing.".into()); }
-    let store: Store = serde_json::from_value(v.get("store").cloned().unwrap_or(Value::Null)).map_err(|e| format!("The synced notes couldn't be read ({e}), so nothing was changed."))?;
+    let v: Value = serde_json::from_slice(bytes).map_err(|_| crate::tr("The synced notes file is damaged, so nothing was changed. Your notes on this device are safe.").to_string())?;
+    if v.get("format").and_then(Value::as_u64).unwrap_or(0) > FORMAT { return Err(crate::tr("The synced notes come from a newer Leaf Notes — update this app to keep syncing.").into()); }
+    let store: Store = serde_json::from_value(v.get("store").cloned().unwrap_or(Value::Null)).map_err(|e| tf!("The synced notes couldn't be read ({e}), so nothing was changed.", e = e))?;
     let files = v.get("files").and_then(Value::as_array).map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect()).unwrap_or_default();
     Ok((store, files))
 }
@@ -148,7 +149,7 @@ pub fn merge(base: &Store, local: &Store, remote: &Store) -> Result<Store, Strin
     if l == b || l == r { return Ok(remote.clone()); }
     if r == b { return Ok(local.clone()); }
     let v = mv(&b, &l, &r, false).unwrap_or(l);
-    let mut s: Store = serde_json::from_value(v).map_err(|e| format!("Couldn't combine the changes ({e}); nothing was changed."))?;
+    let mut s: Store = serde_json::from_value(v).map_err(|e| tf!("Couldn't combine the changes ({e}); nothing was changed.", e = e))?;
     dedupe(&mut s);
     Ok(s)
 }
@@ -270,13 +271,13 @@ fn hash(b: &[u8]) -> String {
 impl Remote {
     fn new(s: &SyncSettings, quick: bool) -> Result<Remote, String> {
         match s.via {
-            Via::Off => Err("Sync is off.".into()),
+            Via::Off => Err(crate::tr("Sync is off.").into()),
             Via::Folder => {
                 let root = PathBuf::from(s.folder.trim());
                 // never create the chosen folder itself: a half-typed path must not litter the disk
-                if !root.is_dir() { return Err(format!("The folder {} doesn't exist.", root.display())); }
+                if !root.is_dir() { return Err(tf!("The folder {root} doesn't exist.", root = root.display())); }
                 let d = root.join("LeafNotes");
-                std::fs::create_dir_all(d.join("files")).map_err(|e| format!("Can't write to {}: {e}", d.display()))?;
+                std::fs::create_dir_all(d.join("files")).map_err(|e| tf!("Can't write to {d}: {e}", d = d.display(), e = e))?;
                 Ok(Remote::Folder(d))
             }
             Via::Google => {
@@ -293,7 +294,7 @@ impl Remote {
                 let url = s.url.trim().trim_end_matches('/');
                 let lan = ["http://localhost", "http://127.", "http://192.168.", "http://10."].iter().any(|p| url.starts_with(p)) || url.split('/').nth(2).is_some_and(|h| h.split(':').next().unwrap_or("").ends_with(".local"));
                 // the password travels with every request, so only over an encrypted connection (or the home network)
-                if !url.starts_with("https://") && !(url.starts_with("http://") && lan) { return Err("The server address must start with https://".into()); }
+                if !url.starts_with("https://") && !(url.starts_with("http://") && lan) { return Err(crate::tr("The server address must start with https://").into()); }
                 let agent = agent(quick);
                 let auth = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", s.user.trim(), s.password)));
                 let r = Remote::Dav { agent, dir: format!("{url}/LeafNotes/"), auth };
@@ -312,10 +313,10 @@ impl Remote {
             Some(data) => agent.run(b.body(data).map_err(|e| e.to_string())?),
             None => agent.run(b.body(()).map_err(|e| e.to_string())?),
         };
-        let resp = r.map_err(|e| format!("Couldn't reach the sync server: {e}"))?;
+        let resp = r.map_err(|e| tf!("Couldn't reach the sync server: {e}", e = e))?;
         match resp.status().as_u16() {
-            401 | 403 => Err("The sync server refused the user name or password.".into()),
-            507 => Err("The sync server is full.".into()),
+            401 | 403 => Err(crate::tr("The sync server refused the user name or password.").into()),
+            507 => Err(crate::tr("The sync server is full.").into()),
             _ => Ok(resp),
         }
     }
@@ -324,8 +325,8 @@ impl Remote {
         let s = self.dav("MKCOL", path, &[], None)?.status().as_u16();
         match s {
             200..=299 | 301 | 405 => Ok(()), // 405: already there
-            404 | 409 => Err("The server address doesn't point to a folder on the server.".into()),
-            _ => Err(format!("The sync server answered {s} when creating its folder.")),
+            404 | 409 => Err(crate::tr("The server address doesn't point to a folder on the server.").into()),
+            _ => Err(tf!("The sync server answered {s} when creating its folder.", s = s)),
         }
     }
 
@@ -333,7 +334,7 @@ impl Remote {
         match self {
             Remote::Folder(d) => match std::fs::read(d.join(NOTES)) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Got::Missing),
-                Err(e) => Err(format!("Couldn't read the synced notes: {e}")),
+                Err(e) => Err(tf!("Couldn't read the synced notes: {e}", e = e)),
                 Ok(b) => { let t = hash(&b); Ok(if known == Some(t.as_str()) { Got::Same } else { Got::Data(b, t) }) }
             },
             Remote::Drive { folder, .. } => match self.drive_find(NOTES, folder)? {
@@ -341,8 +342,8 @@ impl Remote {
                 Some((_, v)) if known == Some(v.as_str()) => Ok(Got::Same),
                 Some((id, v)) => {
                     let mut resp = self.gd("GET", &format!("{API}/files/{id}?alt=media"), None)?;
-                    if resp.status().as_u16() != 200 { return Err(format!("Google Drive answered {} when reading the notes.", resp.status())); }
-                    let b = resp.body_mut().with_config().limit(1 << 31).read_to_vec().map_err(|e| format!("The download of the notes broke off: {e}"))?;
+                    if resp.status().as_u16() != 200 { return Err(tf!("Google Drive answered {status} when reading the notes.", status = resp.status())); }
+                    let b = resp.body_mut().with_config().limit(1 << 31).read_to_vec().map_err(|e| tf!("The download of the notes broke off: {e}", e = e))?;
                     Ok(Got::Data(b, v))
                 }
             },
@@ -354,10 +355,10 @@ impl Remote {
                     304 => Ok(Got::Same),
                     200 => {
                         let tag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-                        let b = resp.body_mut().with_config().limit(1 << 31).read_to_vec().map_err(|e| format!("The download of the notes broke off: {e}"))?;
+                        let b = resp.body_mut().with_config().limit(1 << 31).read_to_vec().map_err(|e| tf!("The download of the notes broke off: {e}", e = e))?;
                         Ok(Got::Data(b, tag))
                     }
-                    s => Err(format!("The sync server answered {s} when reading the notes.")),
+                    s => Err(tf!("The sync server answered {s} when reading the notes.", s = s)),
                 }
             }
         }
@@ -372,7 +373,7 @@ impl Remote {
                 if now.as_deref().map(hash).as_deref() != expect { return Ok(Put::Changed); }
                 // shortcut: a device writing between this check and the rename can still be overwritten; the folder app keeps versions
                 if now.is_some() { let _ = std::fs::copy(&path, d.join("notes.prev.json")); }
-                write_atomic(&path, bytes).map_err(|e| format!("Couldn't write the synced notes: {e}"))?;
+                write_atomic(&path, bytes).map_err(|e| tf!("Couldn't write the synced notes: {e}", e = e))?;
                 Ok(Put::Done(hash(bytes)))
             }
             Remote::Drive { folder, .. } => {
@@ -390,7 +391,7 @@ impl Remote {
                 match resp.status().as_u16() {
                     200..=299 => Ok(Put::Done(resp.headers().get("etag").and_then(|v| v.to_str().ok()).unwrap_or("").to_string())),
                     412 => Ok(Put::Changed),
-                    s => Err(format!("The sync server answered {s} when saving the notes.")),
+                    s => Err(tf!("The sync server answered {s} when saving the notes.", s = s)),
                 }
             }
         }
@@ -402,17 +403,17 @@ impl Remote {
                 let to = d.join("files").join(name);
                 if to.exists() { return Ok(()); }
                 let tmp = to.with_extension("part");
-                std::fs::copy(from, &tmp).and_then(|_| std::fs::rename(&tmp, &to)).map_err(|e| format!("Couldn't copy {name}: {e}"))
+                std::fs::copy(from, &tmp).and_then(|_| std::fs::rename(&tmp, &to)).map_err(|e| tf!("Couldn't copy {name}: {e}", name = name, e = e))
             }
             Remote::Drive { files, .. } => {
                 if self.drive_find(name, files)?.is_some() { return Ok(()); }
-                let data = std::fs::read(from).map_err(|e| format!("Couldn't read {name}: {e}"))?;
+                let data = std::fs::read(from).map_err(|e| tf!("Couldn't read {name}: {e}", name = name, e = e))?;
                 self.drive_upload(None, name, files, data).map(|_| ())
             }
             Remote::Dav { .. } => {
-                let data = std::fs::read(from).map_err(|e| format!("Couldn't read {name}: {e}"))?;
+                let data = std::fs::read(from).map_err(|e| tf!("Couldn't read {name}: {e}", name = name, e = e))?;
                 let s = self.dav("PUT", &format!("files/{name}"), &[], Some(data))?.status().as_u16();
-                if (200..300).contains(&s) { Ok(()) } else { Err(format!("The sync server answered {s} when uploading {name}.")) }
+                if (200..300).contains(&s) { Ok(()) } else { Err(tf!("The sync server answered {s} when uploading {name}.", s = s, name = name)) }
             }
         }
     }
@@ -425,14 +426,14 @@ impl Remote {
             Remote::Folder(d) => {
                 let from = d.join("files").join(name);
                 if !from.exists() { return Ok(false); }
-                std::fs::copy(&from, &tmp).map(|_| ()).map_err(|e| format!("Couldn't copy {name}: {e}"))
+                std::fs::copy(&from, &tmp).map(|_| ()).map_err(|e| tf!("Couldn't copy {name}: {e}", name = name, e = e))
             }
             Remote::Drive { files, .. } => {
                 let Some((id, _)) = self.drive_find(name, files)? else { return Ok(false) };
                 let resp = self.gd("GET", &format!("{API}/files/{id}?alt=media"), None)?;
-                if resp.status().as_u16() != 200 { return Err(format!("Google Drive answered {} when downloading {name}.", resp.status())); }
+                if resp.status().as_u16() != 200 { return Err(tf!("Google Drive answered {status} when downloading {name}.", status = resp.status(), name = name)); }
                 let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-                std::io::copy(&mut resp.into_body().into_reader().take(1 << 33), &mut f).map(|_| ()).map_err(|e| format!("The download of {name} broke off: {e}"))
+                std::io::copy(&mut resp.into_body().into_reader().take(1 << 33), &mut f).map(|_| ()).map_err(|e| tf!("The download of {name} broke off: {e}", name = name, e = e))
             }
             Remote::Dav { .. } => {
                 let resp = self.dav("GET", &format!("files/{name}"), &[], None)?;
@@ -440,9 +441,9 @@ impl Remote {
                     404 => return Ok(false),
                     200 => {
                         let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-                        std::io::copy(&mut resp.into_body().into_reader().take(1 << 33), &mut f).map(|_| ()).map_err(|e| format!("The download of {name} broke off: {e}"))
+                        std::io::copy(&mut resp.into_body().into_reader().take(1 << 33), &mut f).map(|_| ()).map_err(|e| tf!("The download of {name} broke off: {e}", name = name, e = e))
                     }
-                    s => Err(format!("The sync server answered {s} when downloading {name}.")),
+                    s => Err(tf!("The sync server answered {s} when downloading {name}.", s = s, name = name)),
                 }
             }
         };
@@ -475,16 +476,16 @@ pub fn google_ready() -> bool { !GOOGLE_SECRET.is_empty() }
 impl Remote {
     fn gd(&self, method: &str, url: &str, body: Option<(&str, Vec<u8>)>) -> Result<ureq::http::Response<ureq::Body>, String> {
         let Remote::Drive { agent, token, .. } = self else { unreachable!() };
-        let b = ureq::http::Request::builder().method(method).uri(url).header("authorization", format!("Bearer {token}"));
+        let b = ureq::http::Request::builder().method(method).uri(url).header("authorization", format!("Bearer {token}", token = token));
         let r = match body {
             Some((ct, data)) => agent.run(b.header("content-type", ct).body(data).map_err(|e| e.to_string())?),
             None => agent.run(b.body(()).map_err(|e| e.to_string())?),
         };
-        let resp = r.map_err(|e| format!("Couldn't reach Google Drive: {e}"))?;
+        let resp = r.map_err(|e| tf!("Couldn't reach Google Drive: {e}", e = e))?;
         match resp.status().as_u16() {
-            401 => Err("Google Drive refused the sign-in — sign in again in Settings ▸ Sync.".into()),
-            403 => Err("Google Drive refused access (is the Drive API on for this app, or is the Drive full?).".into()),
-            429 => Err("Google Drive asks to slow down — trying again shortly.".into()),
+            401 => Err(crate::tr("Google Drive refused the sign-in — sign in again in Settings ▸ Sync.").into()),
+            403 => Err(crate::tr("Google Drive refused access (is the Drive API on for this app, or is the Drive full?).").into()),
+            429 => Err(crate::tr("Google Drive asks to slow down — trying again shortly.").into()),
             _ => Ok(resp),
         }
     }
@@ -492,8 +493,8 @@ impl Remote {
     fn json(&self, method: &str, url: &str, body: Option<Value>) -> Result<Value, String> {
         let mut resp = self.gd(method, url, body.map(|v| ("application/json; charset=UTF-8", v.to_string().into_bytes())))?;
         let st = resp.status().as_u16();
-        let v: Value = resp.body_mut().read_json().map_err(|e| format!("Google Drive sent an unexpected answer ({st}): {e}"))?;
-        if (200..300).contains(&st) { Ok(v) } else { Err(format!("Google Drive answered {st}: {}", v["error"]["message"].as_str().unwrap_or(""))) }
+        let v: Value = resp.body_mut().read_json().map_err(|e| tf!("Google Drive sent an unexpected answer ({st}): {e}", st = st, e = e))?;
+        if (200..300).contains(&st) { Ok(v) } else { Err(tf!("Google Drive answered {st}: {x}", st = st, x = v["error"]["message"].as_str().unwrap_or(""))) }
     }
 
     /// (id, version) of the oldest file with this name in a folder: every device picks the same one.
@@ -506,23 +507,23 @@ impl Remote {
     fn drive_folder(&self, name: &str, parent: &str) -> Result<String, String> {
         if let Some((id, _)) = self.drive_find(name, parent)? { return Ok(id); }
         let v = self.json("POST", &format!("{API}/files?fields=id"), Some(serde_json::json!({ "name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent] })))?;
-        v["id"].as_str().map(String::from).ok_or("Google Drive didn't create the folder.".into())
+        v["id"].as_str().map(String::from).ok_or(crate::tr("Google Drive didn't create the folder.").into())
     }
 
     /// Resumable upload (works for any size): a new file, or new contents for `existing`.
     fn drive_upload(&self, existing: Option<&str>, name: &str, parent: &str, data: Vec<u8>) -> Result<Value, String> {
         let up = "https://www.googleapis.com/upload/drive/v3/files";
         let (method, url, meta) = match existing {
-            Some(id) => ("PATCH", format!("{up}/{id}?uploadType=resumable&fields=id,version"), serde_json::json!({})),
-            None => ("POST", format!("{up}?uploadType=resumable&fields=id,version"), serde_json::json!({ "name": name, "parents": [parent] })),
+            Some(id) => ("PATCH", format!("{up}/{id}?uploadType=resumable&fields=id,version", up = up, id = id), serde_json::json!({})),
+            None => ("POST", format!("{up}?uploadType=resumable&fields=id,version", up = up), serde_json::json!({ "name": name, "parents": [parent] })),
         };
         let resp = self.gd(method, &url, Some(("application/json; charset=UTF-8", meta.to_string().into_bytes())))?;
         let st = resp.status().as_u16();
         let loc = resp.headers().get("location").and_then(|v| v.to_str().ok()).map(String::from);
-        let Some(loc) = loc.filter(|_| st == 200) else { return Err(format!("Google Drive answered {st} when starting the upload of {name}.")) };
+        let Some(loc) = loc.filter(|_| st == 200) else { return Err(tf!("Google Drive answered {st} when starting the upload of {name}.", st = st, name = name)) };
         let mut resp = self.gd("PUT", &loc, Some(("application/octet-stream", data)))?;
         let st = resp.status().as_u16();
-        if !(200..300).contains(&st) { return Err(format!("Google Drive answered {st} when uploading {name}.")); }
+        if !(200..300).contains(&st) { return Err(tf!("Google Drive answered {st} when uploading {name}.", st = st, name = name)); }
         resp.body_mut().read_json().map_err(|e| e.to_string())
     }
 }
@@ -530,12 +531,12 @@ impl Remote {
 /// A short-lived access token from the saved sign-in.
 fn google_access(agent: &ureq::Agent, refresh: &str) -> Result<String, String> {
     let mut resp = agent.post(TOKEN_URL).send_form([("client_id", GOOGLE_ID), ("client_secret", GOOGLE_SECRET), ("refresh_token", refresh), ("grant_type", "refresh_token")])
-        .map_err(|e| format!("Couldn't reach Google: {e}"))?;
-    let v: Value = resp.body_mut().read_json().map_err(|e| format!("Google sent an unexpected answer: {e}"))?;
+        .map_err(|e| tf!("Couldn't reach Google: {e}", e = e))?;
+    let v: Value = resp.body_mut().read_json().map_err(|e| tf!("Google sent an unexpected answer: {e}", e = e))?;
     match v["access_token"].as_str() {
         Some(t) => Ok(t.to_string()),
-        None if v["error"] == "invalid_grant" => Err("Your Google sign-in expired or was removed — sign in again in Settings ▸ Sync.".into()),
-        None => Err(format!("Google refused the sign-in: {}", v["error_description"].as_str().or(v["error"].as_str()).unwrap_or("unknown error"))),
+        None if v["error"] == "invalid_grant" => Err(crate::tr("Your Google sign-in expired or was removed — sign in again in Settings ▸ Sync.").into()),
+        None => Err(tf!("Google refused the sign-in: {x}", x = v["error_description"].as_str().or(v["error"].as_str()).unwrap_or("unknown error"))),
     }
 }
 
@@ -546,7 +547,7 @@ pub struct SignIn { listener: std::net::TcpListener, verifier: String, state: St
 pub fn google_start() -> Result<(String, SignIn), String> {
     use base64::Engine;
     use sha2::Digest;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("Couldn't start the sign-in: {e}"))?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| tf!("Couldn't start the sign-in: {e}", e = e))?;
     let redirect = format!("http://127.0.0.1:{}", listener.local_addr().map_err(|e| e.to_string())?.port());
     let rand = |n: usize| -> Result<String, String> {
         let mut b = vec![0u8; n];
@@ -566,7 +567,7 @@ pub fn google_finish(s: SignIn) -> Result<(String, String), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(300);
     s.listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let code = loop {
-        if std::time::Instant::now() > deadline { return Err("Sign-in timed out — try again.".into()); }
+        if std::time::Instant::now() > deadline { return Err(crate::tr("Sign-in timed out — try again.").into()); }
         let (mut conn, _) = match s.listener.accept() {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => { std::thread::sleep(Duration::from_millis(200)); continue; }
@@ -585,13 +586,13 @@ pub fn google_finish(s: SignIn) -> Result<(String, String), String> {
         let msg = if ok { "Signed in. You can close this tab and go back to Leaf Notes." } else { "Sign-in didn't finish. Go back to Leaf Notes and try again." };
         let page = format!("<!doctype html><meta charset=utf-8><title>Leaf Notes</title><body style=\"font:18px sans-serif;margin:15vh auto;max-width:30em;text-align:center\"><h2>Leaf Notes</h2><p>{msg}</p>");
         let _ = conn.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len()).as_bytes());
-        if q.get("state") != Some(&s.state) { return Err("Sign-in didn't match this request — try again.".into()); }
-        match q.get("code") { Some(c) => break c.clone(), None => return Err(if q.get("error").map(String::as_str) == Some("access_denied") { "Sign-in was cancelled.".into() } else { "Google didn't sign you in — try again.".into() }) }
+        if q.get("state") != Some(&s.state) { return Err(crate::tr("Sign-in didn't match this request — try again.").into()); }
+        match q.get("code") { Some(c) => break c.clone(), None => return Err(if q.get("error").map(String::as_str) == Some("access_denied") { crate::tr("Sign-in was cancelled.").into() } else { crate::tr("Google didn't sign you in — try again.").into() }) }
     };
     let mut resp = agent(false).post(TOKEN_URL).send_form([("client_id", GOOGLE_ID), ("client_secret", GOOGLE_SECRET), ("code", code.as_str()), ("code_verifier", s.verifier.as_str()), ("redirect_uri", s.redirect.as_str()), ("grant_type", "authorization_code")])
-        .map_err(|e| format!("Couldn't reach Google: {e}"))?;
-    let v: Value = resp.body_mut().read_json().map_err(|e| format!("Google sent an unexpected answer: {e}"))?;
-    let Some(refresh) = v["refresh_token"].as_str() else { return Err(format!("Google didn't sign you in: {}", v["error_description"].as_str().or(v["error"].as_str()).unwrap_or("no lasting sign-in was given"))) };
+        .map_err(|e| tf!("Couldn't reach Google: {e}", e = e))?;
+    let v: Value = resp.body_mut().read_json().map_err(|e| tf!("Google sent an unexpected answer: {e}", e = e))?;
+    let Some(refresh) = v["refresh_token"].as_str() else { return Err(tf!("Google didn't sign you in: {x}", x = v["error_description"].as_str().or(v["error"].as_str()).unwrap_or("no lasting sign-in was given"))) };
     Ok((refresh.to_string(), id_email(v["id_token"].as_str().unwrap_or(""))))
 }
 
@@ -642,14 +643,14 @@ mod tests {
         let base = sample();
         let (mut l, mut r) = (base.clone(), base.clone());
         // here: edit one page's title, delete another; there: write on a third, add a page
-        page_mut(&mut l, "Week 1 — Intro").title = "Week 1 — Introduction".into();
+        page_mut(&mut l, "Week 1 — Intro").title = crate::tr("Week 1 — Introduction").into();
         l.notebooks[1].sections[0].pages.clear();
         page_mut(&mut r, "Week 2 — Convolution").blocks.push(Block { id: 7, pos: [0.0, 0.0], width: 300.0, tag: Default::default(), kind: Kind::Text { text: "flip and slide".into(), heading: 0 }, t: 0.0 });
         r.notebooks[0].sections[0].pages.push(Page::new("Week 3"));
         r.study.insert("card1".into(), CardState { bx: 2, due: 5 });
         let m = merge(&base, &l, &r).unwrap();
         let t = titles(&m);
-        assert!(t.contains(&"Week 1 — Introduction".to_string()) && t.contains(&"Week 3".to_string()) && !t.contains(&"Groceries".to_string()), "{t:?}");
+        assert!(t.contains(&crate::tr("Week 1 — Introduction").to_string()) && t.contains(&"Week 3".to_string()) && !t.contains(&"Groceries".to_string()), "{t:?}");
         assert!(text(page_mut(&mut m.clone(), "Week 2 — Convolution")).contains("flip and slide"));
         assert_eq!(m.study.get("card1"), Some(&CardState { bx: 2, due: 5 }));
         // the same text block edited on both sides: the page is kept twice, nothing lost
@@ -659,14 +660,14 @@ mod tests {
         }
         let m2 = merge(&m, &l2, &r2).unwrap();
         let t2 = titles(&m2);
-        assert!(t2.contains(&"Week 2 — Convolution (other device)".to_string()), "{t2:?}");
+        assert!(t2.contains(&crate::tr("Week 2 — Convolution (other device)").to_string()), "{t2:?}");
         let all: String = m2.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).map(text).collect();
         assert!(all.contains("here") && all.contains("there"));
         // deleted here but edited there: kept
         let (mut l3, mut r3) = (m.clone(), m.clone());
         l3.notebooks[0].sections[0].pages.retain(|p| p.title != "Week 3");
-        page_mut(&mut r3, "Week 3").title = "Week 3 — Sampling".into();
-        assert!(titles(&merge(&m, &l3, &r3).unwrap()).contains(&"Week 3 — Sampling".to_string()));
+        page_mut(&mut r3, "Week 3").title = crate::tr("Week 3 — Sampling").into();
+        assert!(titles(&merge(&m, &l3, &r3).unwrap()).contains(&crate::tr("Week 3 — Sampling").to_string()));
         // both sides added to Recently deleted: both kept
         let (mut l4, mut r4) = (m.clone(), m.clone());
         l4.trash.push(Trashed { label: "a".into(), deleted: 1, item: TrashItem::Notebook(l4.notebooks[1].clone()) });

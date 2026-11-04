@@ -19,7 +19,7 @@ fn broken() -> bool { BROKEN.load(std::sync::atomic::Ordering::Relaxed) }
 fn fail() { BROKEN.store(true, std::sync::atomic::Ordering::Relaxed); }
 
 /// Where secrets are kept right now, for the settings window.
-pub fn place() -> &'static str { if broken() { "this device's Leaf Notes folder (no system keyring available)" } else { "your system's keyring" } }
+pub fn place() -> &'static str { crate::tr(if broken() { "this device's Leaf Notes folder (no system keyring available)" } else { "your system's keyring" }) }
 
 /// Fill `value` from the keyring when the file had none (a value still in an older file wins, and moves over on the next save).
 pub fn load(name: &str, value: &mut String) {

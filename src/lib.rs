@@ -9,6 +9,9 @@ pub(crate) mod canvas;
 mod chrome;
 pub mod sync;
 pub mod headless;
+pub mod i18n;
+mod i18n_table;
+pub(crate) use i18n::tr;
 
 /// Frames the window has drawn in a `--screenshot` run (none means the system isn't giving it any).
 pub static SHOT_FRAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -40,7 +43,8 @@ pub(crate) trait Tip { fn tip(self, text: impl Into<egui::WidgetText>) -> Self; 
 impl Tip for egui::Response {
     fn tip(self, text: impl Into<egui::WidgetText>) -> Self {
         let text = text.into();
-        if text.text().trim().is_empty() { self } else { self.on_hover_text(text) }
+        let translated = tr(text.text()).to_string();
+        if translated.trim().is_empty() { self } else if translated != text.text() { self.on_hover_text(translated) } else { self.on_hover_text(text) }
     }
 }
 
@@ -125,6 +129,8 @@ pub(crate) struct Prefs {
     mic_ok: bool,
     /// This device has shown a touch without pressure, so pressure means a stylus here (some phones report it for fingers too).
     pen_detect: bool,
+    /// Interface language: "" follows the system, else "en", "de" or "fr".
+    lang: String,
 }
 
 impl Default for Prefs {
@@ -132,7 +138,7 @@ impl Default for Prefs {
         Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
             hl_color: [253, 224, 71, 120], erase_partial: true, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
-            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false }
+            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new() }
     }
 }
 
@@ -246,7 +252,7 @@ impl St {
         self.redo.clear();
         self.dirty = true;
     }
-    fn say(&mut self, msg: impl Into<String>) { self.status = msg.into(); self.status_age = 0.0; }
+    fn say(&mut self, msg: impl Into<String>) { let m = msg.into(); self.status = tr(&m).to_string(); self.status_age = 0.0; }
     /// The pen in hand (the pen case is never left empty).
     fn pen(&mut self) -> &mut Pen {
         if self.p.pens.is_empty() { self.p.pens = default_pens(); }
@@ -322,6 +328,7 @@ fn card(ui: &egui::Ui) -> egui::Frame {
 
 /// Push the person's look-and-feel preferences into the places that read them.
 fn apply_prefs(ctx: &egui::Context, p: &Prefs) {
+    i18n::set(&p.lang);
     use std::sync::atomic::Ordering::Relaxed;
     ACCENT.store(u32::from_be_bytes([0, p.accent[0], p.accent[1], p.accent[2]]), Relaxed);
     rich::LINE_X100.store((p.line.clamp(1.2, 2.0) * 100.0) as u32, Relaxed);
@@ -476,7 +483,7 @@ impl NotesApp {
                 let at = sec.pages.len() - 1;
                 let (nb, s) = (self.nb, self.sec);
                 self.go_to(nb, s, at);
-                self.st.say(format!("Created the page “{}”.", title.trim()));
+                self.st.say(tf!("Created the page “{trim}”.", trim = title.trim()));
             }
         }
     }
@@ -530,7 +537,7 @@ impl NotesApp {
             }
         }
         self.st.dirty = true;
-        self.st.say(format!("Restored {}", t.label));
+        self.st.say(tf!("Restored {label}", label = t.label));
     }
 
     fn duplicate_page(&mut self, nb: usize, sec: usize, pg: usize) {
@@ -556,7 +563,7 @@ impl NotesApp {
         sy.google_token = keys::store("google-token", &sy.google_token);
         let r = save(STORE_FILE, &self.store).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &self.st.p)).and_then(|_| save(sync::SYNC_FILE, &sy));
         self.st.sync_pending = true;
-        if let Err(e) = r { self.st.say(format!("⚠ Could not save: {e}")); self.st.dirty = true; }
+        if let Err(e) = r { self.st.say(tf!("⚠ Could not save: {e}", e = e)); self.st.dirty = true; }
     }
 
     fn undo(&mut self, redo: bool) {
@@ -589,7 +596,7 @@ impl NotesApp {
         let full = format!("{}--- Current note page ---\n{page}\n--- Request ---\n{prompt}", if history.is_empty() { String::new() } else { format!("--- Conversation so far ---\n{history}") });
         self.st.ai_log.push((false, prompt));
         self.st.p.show_ai = true;
-        self.start_job(Job::Chat, "You are a helpful assistant inside a note-taking app. Reply in concise Markdown. Use $...$ for inline math and put display math on its own line as $$...$$. Write action items as '- [ ] item'.", full, None);
+        self.start_job(Job::Chat, &format!("You are a helpful assistant inside a note-taking app. Reply in concise Markdown. Use $...$ for inline math and put display math on its own line as $$...$$. Write action items as '- [ ] item'.{}", crate::i18n::reply_hint()), full, None);
     }
 
     fn rewrite(&mut self, mode: Rewrite, instruction: &str) {
@@ -599,7 +606,7 @@ impl NotesApp {
         let Kind::Text { text, .. } = &b.kind else { return };
         let (pid, bid, text) = (page.id, b.id, text.clone());
         self.st.say("AI is writing…");
-        self.start_job(Job::Rewrite { page: pid, block: bid, mode }, "You edit notes. Keep the author's Markdown formatting and $math$. Reply with only the resulting text.", format!("{instruction}\n\n---\n{text}"), None);
+        self.start_job(Job::Rewrite { page: pid, block: bid, mode }, "You edit notes. Keep the author's Markdown formatting and $math$. Reply with only the resulting text.", format!("{instruction}\n\n---\n{text}", instruction = instruction, text = text), None);
     }
 
     fn equation_from_words(&mut self) {
@@ -607,7 +614,7 @@ impl NotesApp {
         if desc.trim().is_empty() { self.st.say("Describe the equation first, e.g. “quadratic formula”."); return; }
         let pid = self.page().id;
         self.st.say("Writing the equation…");
-        self.start_job(Job::Equation { page: pid }, "You write LaTeX math.", format!("Write the LaTeX for: {desc}\nReply with only the LaTeX expression, no $ signs, no code fences."), None);
+        self.start_job(Job::Equation { page: pid }, "You write LaTeX math.", format!("Write the LaTeX for: {desc}\nReply with only the LaTeX expression, no $ signs, no code fences.", desc = desc), None);
     }
 
     fn ink_convert(&mut self, math: bool) {
@@ -627,7 +634,7 @@ impl NotesApp {
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let t = if math { hw::recognize_math(&owned) } else { hw::recognize_text(&owned) };
-                let _ = tx.send(if t.trim().is_empty() { Err("Couldn't read that handwriting — try writing a little larger and more separated.".into()) } else { Ok(t) });
+                let _ = tx.send(if t.trim().is_empty() { Err(tr("Couldn't read that handwriting — try writing a little larger and more separated.").into()) } else { Ok(t) });
             });
             self.st.ai_rx.push((Job::Ink { math, page: pid, strokes: ids, at, width }, rx));
             self.st.say(if math { "Reading your handwriting as math (offline)…" } else { "Reading your handwriting (offline)…" });
@@ -666,7 +673,7 @@ impl NotesApp {
                     if cards.is_empty() { self.st.say("⚠ The AI didn't return any flashcards — try again."); continue; }
                     let n = cards.len();
                     self.new_deck(&format!("{title} — cards"), cards);
-                    self.st.say(format!("Made a deck of {n} cards — edit anything you like, then press Study."));
+                    self.st.say(tf!("Made a deck of {n} cards — edit anything you like, then press Study.", n = n));
                 }
                 (Job::Chat, Err(e)) => { self.st.ai_log.push((true, format!("⚠ {e}"))); self.st.say(e); }
                 (_, Err(e)) => self.st.say(format!("⚠ {e}")),
@@ -710,7 +717,7 @@ impl NotesApp {
                         self.st.heights.insert(b.id, width * h as f32 / w.max(1) as f32);
                         if let Some(p) = self.find_page(page) { p.blocks.push(b); }
                     }
-                    self.st.say(format!("Printout added{extra} — pick a pen to write on it."));
+                    self.st.say(tf!("Printout added{extra} — pick a pen to write on it.", extra = extra));
                 }
             }
         }
@@ -766,7 +773,7 @@ impl NotesApp {
         if how == Ins::Printout && matches!(ext.as_str(), "md" | "markdown" | "txt") {
             match std::fs::read_to_string(path) {
                 Ok(t) => { self.insert_markdown(&t); self.st.say("Printed the text onto the page."); }
-                Err(e) => self.st.say(format!("⚠ Could not read {}: {e}", path.display())),
+                Err(e) => self.st.say(tf!("⚠ Could not read {path}: {e}", path = path.display(), e = e)),
             }
             return;
         }
@@ -774,7 +781,7 @@ impl NotesApp {
         let stored = format!("{}.{ext}", new_id());
         let dir = data_dir().join("files");
         match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(path, dir.join(&stored))) {
-            Err(e) => self.st.say(format!("⚠ Could not add {}: {e}", path.display())),
+            Err(e) => self.st.say(tf!("⚠ Could not add {path}: {e}", path = path.display(), e = e)),
             Ok(size) => {
                 let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 self.insert(if is_image { Kind::Image { file: stored.clone() } } else { Kind::File { file: stored.clone(), name, size } });
@@ -802,8 +809,8 @@ impl NotesApp {
         {
             let mut d = rfd::FileDialog::new();
             match how {
-                Ins::Picture => d = d.add_filter("Pictures", &["png", "jpg", "jpeg"]),
-                Ins::Printout => d = d.add_filter("Printable files", &["pdf", "png", "jpg", "jpeg", "md", "txt"]),
+                Ins::Picture => d = d.add_filter(tr("Pictures"), &["png", "jpg", "jpeg"]),
+                Ins::Printout => d = d.add_filter(tr("Printable files"), &["pdf", "png", "jpg", "jpeg", "md", "txt"]),
                 Ins::Attach => {}
             }
             if let Some(p) = d.pick_file() { self.insert_file(&p, how); }
@@ -830,7 +837,7 @@ impl NotesApp {
         let name = format!("{}.md", if page.title.trim().is_empty() { "Untitled page" } else { page.title.as_str() }.replace(['/', '\\', ':'], "-"));
         #[cfg(not(target_os = "android"))]
         if let Some(p) = rfd::FileDialog::new().set_file_name(&name).add_filter("Markdown", &["md"]).save_file() {
-            match std::fs::write(&p, md) { Ok(_) => self.st.say(format!("Exported to {}", p.display())), Err(e) => self.st.say(format!("⚠ Export failed: {e}")) }
+            match std::fs::write(&p, md) { Ok(_) => self.st.say(tf!("Exported to {p}", p = p.display())), Err(e) => self.st.say(tf!("⚠ Export failed: {e}", e = e)) }
         }
         #[cfg(target_os = "android")]
         {
@@ -859,7 +866,7 @@ impl NotesApp {
         if !whole && export::printout_source(&page, &hf).is_some() {
             let Some(out) = self.ask_save_path(&file, "pdf") else { return };
             match export::export_printout(&page, &data_dir().join("files"), &hf, self.st.p.note_size, &out) {
-                Ok(n) => self.st.say(format!("Exported the printout with your notes on {n} page(s) to {}", out.display())),
+                Ok(n) => self.st.say(tf!("Exported the printout with your notes on {n} page(s) to {out}", n = n, out = out.display())),
                 Err(e) => self.st.say(format!("⚠ {e}")),
             }
             return;
@@ -903,7 +910,7 @@ impl NotesApp {
         }
         let n = cards.len();
         self.new_deck(&format!("{title} — cards"), cards);
-        self.st.say(format!("Suggested {n} cards — edit or delete any you don't want, then press Study."));
+        self.st.say(tf!("Suggested {n} cards — edit or delete any you don't want, then press Study.", n = n));
     }
 
     /// Ask the AI for flashcards written as "question :: answer" lines; they become a new deck.
@@ -913,7 +920,7 @@ impl NotesApp {
         let text = page.plain_text();
         if text.split_whitespace().count() < 8 { self.st.say("Write a few notes on this page first."); return; }
         self.st.say("Writing flashcards…");
-        self.start_job(Job::Cards { title }, "You write short, clear study flashcards.",
+        self.start_job(Job::Cards { title }, &format!("You write short, clear study flashcards.{}", crate::i18n::reply_hint()),
             format!("Write 6 to 12 flashcards from these notes. One per line, exactly in the form: question :: answer\nKeep answers short. Use $...$ for maths. No numbering, no other text.\n\n{text}"), None);
     }
 
@@ -943,7 +950,7 @@ impl NotesApp {
 
     fn poll_sync(&mut self) {
         let Some((_, rx)) = &self.st.sync_rx else { return };
-        let r = match rx.try_recv() { Ok(r) => r, Err(std::sync::mpsc::TryRecvError::Empty) => return, Err(_) => Err("Sync stopped unexpectedly — trying again shortly.".into()) };
+        let r = match rx.try_recv() { Ok(r) => r, Err(std::sync::mpsc::TryRecvError::Empty) => return, Err(_) => Err(tr("Sync stopped unexpectedly — trying again shortly.").into()) };
         let Some((sent, _)) = self.st.sync_rx.take() else { return };
         match r {
             Ok(sync::Outcome::AskFirst { pages }) => self.st.sync_ask = Some(pages),
@@ -958,7 +965,7 @@ impl NotesApp {
                             self.store = m;
                             match open.and_then(|id| self.locate(id)) { Some((a, b, c)) => (self.nb, self.sec, self.pg) = (a, b, c), None => self.clamp() }
                             self.save_now();
-                            self.st.say(if down > 0 { format!("Synced changes from your other devices ({down} file(s)).") } else { "Synced changes from your other devices.".into() });
+                            self.st.say(if down > 0 { tf!("Synced changes from your other devices ({down} file(s)).", down = down) } else { "Synced changes from your other devices.".into() });
                         }
                         self.st.sync_pending = meanwhile;
                         self.st.sync_ok = now_secs();
@@ -1085,7 +1092,7 @@ impl eframe::App for NotesApp {
             let dir = data_dir().join("files");
             let r = std::fs::create_dir_all(&dir).map_err(|e| e.to_string())
                 .and_then(|_| image::save_buffer(dir.join(&file), img.as_raw(), img.size[0] as u32, img.size[1] as u32, image::ColorType::Rgba8).map_err(|e| e.to_string()));
-            match r { Ok(()) => { self.insert(Kind::Image { file }); self.st.editing = None; self.st.say("Pasted the picture onto the page."); } Err(e) => self.st.say(format!("⚠ Couldn't paste the picture: {e}")) }
+            match r { Ok(()) => { self.insert(Kind::Image { file }); self.st.editing = None; self.st.say("Pasted the picture onto the page."); } Err(e) => self.st.say(tf!("⚠ Couldn't paste the picture: {e}", e = e)) }
         }
         for f in ctx.input(|i| i.raw.dropped_files.clone()) { let p = f.path().to_path_buf(); if !p.as_os_str().is_empty() { self.insert_file(&p, Ins::Printout); } }
         self.st.due_now = self.due_cards().len();
