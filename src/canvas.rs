@@ -980,6 +980,7 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             ui.label(RichText::new(format!("{} / {}", mmss(t), mmss(rec.secs))).size(12.0).monospace().weak());
             let tip = "On: clicking a note or ink plays what was said while you wrote it";
             if ui.add(egui::Button::new(RichText::new(tr("👆 Tap notes to jump")).size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
+            if ui.add(egui::Button::new(RichText::new(tr("✍ Text")).size(12.0)).corner_radius(10)).tip("Turn this recording into text with your AI key; each paragraph is linked to its moment").clicked() { st.transcribe_req = Some(rec.id); }
             if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Remove this recording from the page (Undo brings it back)").clicked() {
                 st.snap(page);
                 let id = page.recordings[i].id;

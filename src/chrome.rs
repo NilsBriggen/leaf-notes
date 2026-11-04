@@ -1179,7 +1179,9 @@ impl NotesApp {
                             }
                             continue;
                         }
-                        let text = p.plain_text();
+                        // also handwriting and PDF text read in the background
+                        let mut text = p.plain_text();
+                        if let Some(extra) = self.st.index.text(p.id) { text.push('\n'); text.push_str(extra); }
                         let lower = text.to_lowercase();
                         let Some(at) = lower.find(&q) else { continue };
                         found += 1;
@@ -1414,6 +1416,9 @@ impl NotesApp {
                                 ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(300.0)); ui.end_row();
                                 ui.label(tr("API key")); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text(tr("paste your key")).desired_width(300.0)); ui.end_row();
                                 ui.label(tr("Model")); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(300.0)); ui.end_row();
+                                if a.provider == ai::Provider::OpenAiCompatible {
+                                    ui.label(tr("Speech to text")); ui.add(egui::TextEdit::singleline(&mut a.transcribe_model).desired_width(300.0)).tip("Used to turn recordings into text, e.g. whisper-1 (OpenAI) or whisper-large-v3 (Groq)"); ui.end_row();
+                                }
                             });
                             ui.label(RichText::new(tf!("Your key is kept in {place}.", place = crate::keys::place())).size(11.5).weak());
                             row(ui, "Use this AI for handwriting", "Off: the built-in recognizer reads handwriting offline. On: sent to your AI (better for cursive; needs a model that reads images).", |ui| { toggle(ui, &mut p.ink_ai); });

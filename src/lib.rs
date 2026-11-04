@@ -9,9 +9,11 @@ pub(crate) mod canvas;
 mod chrome;
 pub mod sync;
 pub mod storage;
+pub mod index;
 pub mod vault;
 mod locks;
 mod welcome;
+mod transcribe;
 mod safety;
 pub mod headless;
 pub mod i18n;
@@ -253,6 +255,11 @@ struct St {
     status_age: f32,
     /// Writes changed pages only (see storage.rs).
     saver: storage::Saver,
+    /// Text read from handwriting and PDFs, for search.
+    index: index::Index,
+    /// A transcript being made: (page, when the recording started, where the text arrives).
+    transcribe: Option<(u64, f64, Receiver<Result<Vec<(f32, String)>, String>>)>,
+    transcribe_req: Option<u64>,
     /// Page history window: (page, its older versions, the one selected).
     history: Option<(u64, Vec<(u64, Page)>, usize)>,
     /// Comparing a page with the other device's version: (this device's, the copy).
@@ -473,7 +480,7 @@ impl NotesApp {
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
-            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
+            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
             sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
@@ -1238,6 +1245,7 @@ impl eframe::App for NotesApp {
                 s.spacing.item_spacing = if touch { Vec2::new(10.0, 8.0) } else { Vec2::new(8.0, 6.0) };
             });
         }
+        self.st.index.tick(&self.store, data_dir().join("files"), self.st.persist, now_f());
         self.title_bar(ui);
         self.ribbon(ui);
         self.status_bar(ui);
@@ -1265,6 +1273,7 @@ impl eframe::App for NotesApp {
             page_action = canvas::page_view(ui, page, &mut self.st, &crumb, &backlinks, fav, &self.store.study);
         });
         if let Some(t) = self.st.open_link.take() { self.open_title(&t); }
+        if let Some(id) = self.st.transcribe_req.take() { self.start_transcribe(id); }
         if self.st.capture.as_ref().is_some_and(|c| c.page != self.store.notebooks[nb].sections[sec].pages[pg].id) { self.cancel_capture("PDF export cancelled because the page changed."); }
         if std::mem::take(&mut self.st.rec_toggle) { self.toggle_record(); }
         if let Some(since) = self.st.mic_wait {
@@ -1334,6 +1343,8 @@ impl eframe::App for NotesApp {
             ctx.request_repaint_after(std::time::Duration::from_secs(if self.st.sync_rx.is_some() { 1 } else { 20 }));
         }
         self.poll_sync();
+        self.poll_transcribe();
+        if self.st.transcribe.is_some() { ctx.request_repaint_after(std::time::Duration::from_millis(500)); }
         if let Some((_, rx)) = &self.st.google_rx {
             match rx.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(500)),
@@ -1369,7 +1380,7 @@ impl eframe::App for NotesApp {
             // stall until the next touch. A small thread wakes it while something is pending.
             let busy = self.st.dirty || self.st.recorder.is_some() || self.st.player.is_some() || self.st.capture.is_some()
                 || !self.st.ai_rx.is_empty() || self.st.sync_rx.is_some() || self.st.google_rx.is_some() || self.st.focus.is_some()
-                || self.st.mic_wait.is_some() || self.st.bars == [0.0; 4] || (!wants && self.keyboard_shown);
+                || self.st.mic_wait.is_some() || self.st.bars == [0.0; 4] || (!wants && self.keyboard_shown) || self.st.index.busy() || self.st.transcribe.is_some();
             WAKE_FAST.store(busy, std::sync::atomic::Ordering::Relaxed);
             static TICKER: std::sync::Once = std::sync::Once::new();
             TICKER.call_once(|| {

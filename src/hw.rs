@@ -288,6 +288,67 @@ fn best(p: &[f32], allowed: impl Fn(&str) -> bool) -> (String, f32) {
         .map(|(i, v)| (m.labels[i].clone(), *v)).unwrap_or_default()
 }
 
+/// Accents written as separate small marks: (the letter's strokes, marks above, marks below).
+/// A single dot stays with the letter (i, j), so only real accents are taken apart.
+fn split_marks<'a>(g: &[&'a Stroke], hu: f32) -> (Vec<&'a Stroke>, Vec<&'a Stroke>, Vec<&'a Stroke>) {
+    if g.len() < 2 { return (g.to_vec(), vec![], vec![]); }
+    let main = g.iter().map(|s| BBox::of(&[s])).max_by(|a, b| (a.w() * a.h()).total_cmp(&(b.w() * b.h()))).unwrap();
+    let (mut body, mut above, mut below) = (vec![], vec![], vec![]);
+    for s in g {
+        let b = BBox::of(&[s]);
+        let small = b.w().max(b.h()) < hu * 0.55;
+        if small && b.y1 < main.y0 + hu * 0.05 { above.push(*s); }
+        else if small && b.y0 > main.y1 - hu * 0.15 && b.y1 > main.y1 + hu * 0.1 && b.cx() > main.x0 && b.cx() < main.x1 { below.push(*s); }
+        else { body.push(*s); }
+    }
+    let tiny = |s: &&Stroke| { let b = BBox::of(&[s]); b.w().max(b.h()) < hu * 0.18 };
+    if body.is_empty() || (above.len() == 1 && tiny(&above[0]) && below.is_empty()) { return (g.to_vec(), vec![], vec![]); }
+    (body, above, below)
+}
+
+/// Which accent the marks make: ´ ` ^ ¨ or ¸ (cedilla).
+fn accent_of(above: &[&Stroke], below: &[&Stroke], hu: f32) -> Option<char> {
+    if !below.is_empty() { return Some('¸'); }
+    let tiny = |s: &Stroke| { let b = BBox::of(&[s]); b.w().max(b.h()) < hu * 0.2 };
+    match above {
+        [a, b] if tiny(a) && tiny(b) => Some('¨'),
+        [a, b] => {
+            // two strokes meeting at the top: a circumflex
+            let (ba, bb) = (BBox::of(&[a]), BBox::of(&[b]));
+            (ba.y0.min(bb.y0) < ba.y1.max(bb.y1) - hu * 0.05 && (ba.cx() - bb.cx()).abs() < hu * 0.5).then_some('^')
+        }
+        [s] => {
+            let b = BBox::of(&[s]);
+            let pts = &s.points;
+            let (first, last) = (pts[0], pts[pts.len() - 1]);
+            // a peak in the middle with both ends lower: ^
+            let top = pts.iter().enumerate().min_by(|x, y| x.1[1].total_cmp(&y.1[1])).map(|(i, _)| i).unwrap_or(0);
+            let middle = top > pts.len() / 5 && top < pts.len() * 4 / 5;
+            if middle && first[1] - b.y0 > b.h() * 0.5 && last[1] - b.y0 > b.h() * 0.5 && b.w() > b.h() * 0.6 { return Some('^'); }
+            let (dx, dy) = (last[0] - first[0], last[1] - first[1]);
+            if dy.abs() < dx.abs() * 0.25 { return None; } // flat: not an accent we know
+            // screen y grows downwards: up to the right is acute, down to the right is grave
+            Some(if dx * dy < 0.0 { '´' } else { '`' })
+        }
+        _ => None,
+    }
+}
+
+/// The letter with that accent, if the pair exists in German or French (else the plain letter).
+fn compose(letter: &str, accent: char) -> String {
+    let l = match letter { "l" | "I" | "1" | "|" => "i", x => x };
+    let table: &[(&str, char, &str)] = &[
+        // German and French only: an i whose dot is a little dash must not turn into í
+        ("e", '´', "é"), ("E", '´', "É"),
+        ("a", '`', "à"), ("e", '`', "è"), ("u", '`', "ù"), ("A", '`', "À"), ("E", '`', "È"),
+        ("a", '^', "â"), ("e", '^', "ê"), ("i", '^', "î"), ("o", '^', "ô"), ("u", '^', "û"), ("E", '^', "Ê"),
+        ("a", '¨', "ä"), ("o", '¨', "ö"), ("u", '¨', "ü"), ("e", '¨', "ë"), ("i", '¨', "ï"), ("y", '¨', "ÿ"),
+        ("A", '¨', "Ä"), ("O", '¨', "Ö"), ("U", '¨', "Ü"),
+        ("c", '¸', "ç"), ("C", '¸', "Ç"),
+    ];
+    table.iter().find(|(b, a, _)| (*b == l || b.to_lowercase() == l && letter.chars().all(char::is_lowercase)) && *a == accent).map_or(letter.to_string(), |t| t.2.to_string())
+}
+
 /// Recognise handwriting as plain text (lines, words, characters).
 pub fn recognize_text(strokes: &[Stroke]) -> String {
     let strokes: Vec<&Stroke> = strokes.iter().filter(|s| !s.highlighter && !s.points.is_empty()).collect();
@@ -295,7 +356,18 @@ pub fn recognize_text(strokes: &[Stroke]) -> String {
     let u = unit(&strokes);
     let text_class = |l: &str| l.chars().all(|c| c.is_ascii_alphanumeric() || "()/-+=".contains(c));
     let mut out_lines = vec![];
+    // a "line" of nothing but small marks is accents written above the next line's letters
+    let mut joined: Vec<Vec<&Stroke>> = vec![];
+    let mut marks: Vec<&Stroke> = vec![];
     for line in lines(&strokes, u * 0.15, u) {
+        let small = line.iter().all(|s| { let b = BBox::of(&[s]); b.w().max(b.h()) < u * 0.5 });
+        if small && BBox::of(&line).h() < u * 0.4 { marks.extend(line); continue; }
+        let mut l = line;
+        l.append(&mut marks);
+        joined.push(l);
+    }
+    if !marks.is_empty() { joined.push(marks); }
+    for line in joined {
         let cs = chars(&line);
         let hu = median(cs.iter().map(|c| c.0.h()).collect()).max(4.0);
         let cs = refine(cs, hu);
@@ -315,8 +387,12 @@ pub fn recognize_text(strokes: &[Stroke]) -> String {
         let mut out_words = vec![];
         for word in words {
             let mut ps = vec![];
+            let mut accents = vec![];
             for (b, g) in &word {
                 let small = b.w().max(b.h()) < hu * 0.25;
+                // an accent is kept apart (the letter is read again without it, if it's needed later)
+                let (body, above, below) = split_marks(g, hu);
+                accents.push(accent_of(&above, &below, hu).map(|a| (a, body)));
                 ps.push(if small { None } else { Some(probs(&render(g))) });
             }
             // decide digits vs letters for the whole word, then read each character in that mode
@@ -324,7 +400,8 @@ pub fn recognize_text(strokes: &[Stroke]) -> String {
             for p in ps.iter().flatten() { dsum += best(p, is_digit).1; lsum += best(p, is_letter).1; }
             let numeric = dsum > lsum;
             let mut w = String::new();
-            for ((b, g), p) in word.iter().zip(&ps) {
+            for (((b, g), p), acc) in word.iter().zip(&ps).zip(&accents) {
+                let at = w.len();
                 let Some(p) = p else {
                     w.push(if b.y1 > baseline + hu * 0.15 { ',' } else if b.y1 < baseline - hu * 0.5 { '\'' } else { '.' });
                     continue;
@@ -338,6 +415,17 @@ pub fn recognize_text(strokes: &[Stroke]) -> String {
                     w.push_str(&if lower { label.to_lowercase() } else { label });
                 } else {
                     w.push_str(&label);
+                }
+                // an accent over a letter (not in numbers): read the letter without the mark, and use the
+                // accented letter only if that pair exists, so plain handwriting reads exactly as before
+                if let (Some((a, body)), false) = (acc, numeric) {
+                    let bp = probs(&render(body));
+                    let plain = best(&bp, is_letter).0;
+                    let plain = if MERGED.contains(&plain) && b.h() < tall * 0.7 { plain.to_lowercase() } else { plain };
+                    let accented = compose(&plain, *a);
+                    // a real accent doesn't change which letter it sits on: both readings must agree
+                    let same = w[at..].eq_ignore_ascii_case(&plain) || (w[at..] == *"i" || w[at..] == *"l") && plain.eq_ignore_ascii_case("i");
+                    if accented != plain && same { w.truncate(at); w.push_str(&accented); }
                 }
             }
             out_words.push(w);
@@ -528,5 +616,54 @@ mod tests {
         // separate lines stay separate
         let ml = recognize_text(&[stroke(&ring), stroke(&ring.iter().map(|p| (p.0, p.1 + 120.0)).collect::<Vec<_>>())]);
         assert_eq!(ml.lines().count(), 2, "{ml:?}");
+    }
+}
+
+#[cfg(test)]
+mod accent_tests {
+    use super::*;
+    fn stroke(p: &[(f32, f32)]) -> Stroke { Stroke { id: 0, points: p.iter().map(|q| [q.0, q.1, 1.0]).collect(), color: [0; 4], width: 2.0, highlighter: false, pen: crate::model::PenKind::Ballpoint, t: 0.0 } }
+
+    #[test]
+    fn accent_shapes() {
+        let hu = 40.0;
+        let up = stroke(&[(10.0, 10.0), (14.0, 6.0), (18.0, 2.0)]);
+        let down = stroke(&[(10.0, 2.0), (14.0, 6.0), (18.0, 10.0)]);
+        let hat = stroke(&[(8.0, 10.0), (12.0, 6.0), (14.0, 3.0), (16.0, 6.0), (20.0, 10.0)]);
+        let (d1, d2) = (stroke(&[(8.0, 5.0), (9.0, 6.0)]), stroke(&[(18.0, 5.0), (19.0, 6.0)]));
+        assert_eq!(accent_of(&[&up], &[], hu), Some('´'));
+        assert_eq!(accent_of(&[&down], &[], hu), Some('`'));
+        assert_eq!(accent_of(&[&hat], &[], hu), Some('^'));
+        assert_eq!(accent_of(&[&d1, &d2], &[], hu), Some('¨'));
+        assert_eq!((compose("e", '´'), compose("a", '¨'), compose("c", '¸'), compose("l", '^')), ("é".into(), "ä".into(), "ç".into(), "î".into()));
+        assert_eq!(compose("i", '´'), "i", "no í: an i's dot drawn as a dash stays an i");
+    }
+
+    /// Real handwritten letters with an accent drawn above (needs the evaluation samples).
+    #[test]
+    #[ignore]
+    fn reads_accented_letters() {
+        let Ok(b) = std::fs::read("/tmp/ln-accent-samples.json") else { return };
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        let (mut n, mut ok) = (0, 0);
+        for (letter, accent, want) in [("e", "acute", "é"), ("e", "grave", "è"), ("a", "dots", "ä"), ("o", "dots", "ö"), ("u", "dots", "ü"), ("e", "hat", "ê")] {
+            for sample in v[letter].as_array().into_iter().flatten() {
+                let mut segs: Vec<Stroke> = sample.as_array().unwrap().iter().map(|s| stroke(&s.as_array().unwrap().iter().map(|q| (q[0].as_f64().unwrap() as f32, q[1].as_f64().unwrap() as f32)).collect::<Vec<_>>())).collect();
+                let b = BBox::of(&segs.iter().collect::<Vec<_>>());
+                let (cx, top, h) = (b.cx(), b.y0, b.h());
+                let g = h * 0.18;
+                match accent {
+                    "acute" => segs.push(stroke(&[(cx - g, top - g), (cx + g * 0.5, top - g * 2.6)])),
+                    "grave" => segs.push(stroke(&[(cx - g * 0.5, top - g * 2.6), (cx + g, top - g)])),
+                    "hat" => segs.push(stroke(&[(cx - g * 1.2, top - g), (cx, top - g * 2.4), (cx + g * 1.2, top - g)])),
+                    _ => { segs.push(stroke(&[(cx - g, top - g * 1.6), (cx - g * 0.8, top - g * 1.4)])); segs.push(stroke(&[(cx + g, top - g * 1.6), (cx + g * 1.2, top - g * 1.4)])); }
+                }
+                let got = recognize_text(&segs);
+                n += 1;
+                if got == want { ok += 1; } else { eprintln!("{want}: got {got:?}"); }
+            }
+        }
+        eprintln!("accented letters right: {ok}/{n}");
+        assert!(ok * 2 > n, "most accented letters are read");
     }
 }

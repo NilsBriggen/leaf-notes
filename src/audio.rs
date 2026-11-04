@@ -80,6 +80,13 @@ pub struct Recorder {
     pub path: PathBuf,
 }
 
+/// A whole 16-bit mono WAV file in memory.
+pub fn wav_bytes(samples: &[i16]) -> Vec<u8> {
+    let mut b = wav_header(samples.len() as u64);
+    for s in samples { b.extend_from_slice(&s.to_le_bytes()); }
+    b
+}
+
 /// 44-byte WAV header for 16-bit mono at RATE.
 fn wav_header(samples: u64) -> Vec<u8> {
     let data = (samples * 2) as u32;

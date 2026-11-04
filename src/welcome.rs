@@ -130,7 +130,7 @@ impl NotesApp {
         let topics: [(&str, &str); 10] = [
             ("Organising", "Notebooks hold sections, sections hold pages. Right-click a notebook, section or page to rename, move, colour or delete it; deleted things wait in Recently deleted. Right-click a page ▸ Make subpage to tuck it under the one above. Ctrl+K jumps to any page."),
             ("Typing", "Click empty paper to type. Type / for headings, lists, checklists, tables, code, equations and more, and [[ to link to another page. **bold**, *italic*, ==highlight== and $maths$ work as you type."),
-            ("Pen and handwriting", "Pick a pen in the Draw tab. A stylus always draws; the mouse and fingers only if you allow it in Settings ▸ Pen & input. Select ink with the lasso to move it, or convert it to text or maths."),
+            ("Pen and handwriting", "Pick a pen in the Draw tab. A stylus always draws; the mouse and fingers only if you allow it in Settings ▸ Pen & input. Select ink with the lasso to move it, or convert it to text or maths. The built-in reader knows printed letters, also ä, é, ç and the like; for joined-up handwriting switch on Settings ▸ AI ▸ Use this AI for handwriting. Search also finds words in your handwriting and in PDF printouts."),
             ("Maths", "Write LaTeX between $ signs inside text, or insert an Equation note for bigger formulas."),
             ("Flashcards", "Make a deck from the Study tab, by hand, from your notes or with AI. Study shows the cards that are due."),
             ("Recordings", "Press Record while you take notes. Later, tap a note or ink to hear what was said at that moment, or turn the recording into text with an AI key."),
