@@ -124,7 +124,7 @@ impl PenKind {
     }
 }
 
-/// A pen in the person's pen case.
+/// One of the person's pens.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Debug)]
 pub struct Pen { pub kind: PenKind, pub color: [u8; 4], pub width: f32 }
 

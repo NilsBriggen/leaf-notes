@@ -28,8 +28,14 @@ impl NotesApp {
                     ui.set_width(170.0);
                     for (i, (icon, name)) in [("🎨", "Appearance"), ("✏", "Pen & input"), ("¶", "Notes & pages"), ("✦", "AI"), ("💾", "Your data"), ("🔄", "Sync")].iter().enumerate() {
                         let sel = self.st.settings_tab == i as u8;
-                        let r = ui.add(egui::Button::new(RichText::new(tf!("{icon}   {name}", icon = icon, name = tr(name))).size(14.0).color(if sel { accent(ui) } else { ui.visuals().text_color() }))
-                            .selected(sel).frame_when_inactive(false).min_size(Vec2::new(166.0, 34.0)));
+                        // icons in their own fixed column, so the names line up whatever the icon's width
+                        let (rect, r) = ui.allocate_exact_size(Vec2::new(166.0, 34.0), Sense::click());
+                        if sel || r.hovered() { ui.painter().rect_filled(rect, 8.0, if sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
+                        let col = if sel { accent(ui) } else { ui.visuals().text_color() };
+                        ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), egui::Align2::CENTER_CENTER, *icon, egui::FontId::proportional(14.0), col);
+                        ui.painter().text(rect.left_center() + Vec2::new(38.0, 0.0), egui::Align2::LEFT_CENTER, tr(name), egui::FontId::proportional(14.0), col);
+                        crate::chrome::focus_ring(ui, &r, rect, 8.0);
+                        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, sel, tr(name)));
                         if r.clicked() { self.st.settings_tab = i as u8; }
                     }
                 });
@@ -73,6 +79,7 @@ impl NotesApp {
                         1 => {
                             heading(ui, "Pen & input");
                             ui.label(RichText::new(tr("A stylus always draws. Choose what else may draw when a pen, highlighter or shape is picked. Otherwise the mouse keeps working as usual (click notes, drag to move the page) and a finger scrolls.")).weak());
+                            #[cfg(not(target_os = "android"))]
                             row(ui, "Draw with the mouse or trackpad", "On Linux, drawing tablets act like a mouse — switch this on to draw with them.", |ui| { toggle(ui, &mut p.draw_mouse); });
                             row(ui, "Draw with a finger", "Some phones report finger pressure like a pen; on those, fingers may still draw.", |ui| { toggle(ui, &mut p.draw_finger); });
                             row(ui, "Pressure-sensitive lines", "Press harder for thicker ink (fountain pen, pencil). Off: even lines.", |ui| { toggle(ui, &mut p.pressure); });
@@ -173,7 +180,7 @@ impl NotesApp {
                                                     if ui.button(tr("Cancel")).clicked() { g_cancel = true; }
                                                 }
                                                 None => {
-                                                    if ui.add(egui::Button::new(RichText::new(tr("Sign in with Google")).color(Color32::WHITE)).fill(accent(ui)).corner_radius(8)).clicked() { g_start = true; }
+                                                    if ui.add(egui::Button::new(RichText::new(tr("Sign in with Google")).color(Color32::WHITE)).fill(accent_base()).corner_radius(8)).clicked() { g_start = true; }
                                                     ui.hyperlink_to(RichText::new(tr("Privacy policy")).size(12.0), "https://leafnotes.briggen.dev/privacy");
                                                 }
                                             }
@@ -252,7 +259,7 @@ impl NotesApp {
                                 #[cfg(target_os = "android")]
                                 if ui.button(tr("Files…")).clicked() { let _ = crate::droid::pick(5, "text/*", true); }
                             });
-                            row(ui, "Recently deleted", &tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()), |ui| { if ui.button(tr("Open")).clicked() { self.st.show_trash = true; } });
+                            row(ui, "Recently deleted", &if self.store.trash.is_empty() { tr("Nothing in here right now.").to_string() } else { tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()) }, |ui| { if ui.button(tr("Open")).clicked() { self.st.show_trash = true; } });
                             row(ui, "Check for updates", "Once per start, asks GitHub whether a newer version is out (only the app's version is sent).", |ui| { toggle(ui, &mut p.check_updates); });
                             row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| { if ui.button(tr("Show")).clicked() { self.st.show_shortcuts = true; } });
                             row(ui, "Privacy and terms", &tf!("Notes stay on your devices; secrets are kept in {place}. Leaf Notes is free software under the GPL-3.0.", place = crate::keys::place()), |ui| {
@@ -291,7 +298,7 @@ impl NotesApp {
             ui.add_space(6.0);
             ui.label(tf!("The sync location already has notes ({pages} pages), and this device has its own. How should this device join?", pages = pages));
             ui.add_space(12.0);
-            if ui.add(egui::Button::new(RichText::new(tr("Combine both")).size(14.0).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("Every notebook from both sides, on every device").clicked() { choice = Some(Some(sync::First::Merge)); }
+            if ui.add(egui::Button::new(RichText::new(tr("Combine both")).size(14.0).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("Every notebook from both sides, on every device").clicked() { choice = Some(Some(sync::First::Merge)); }
             if ui.add(egui::Button::new(RichText::new(tr("Use only the synced notes")).size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("This device's current notes are saved to a backup file first").clicked() { choice = Some(Some(sync::First::UseShared)); }
             if ui.add(egui::Button::new(tr("Not now — turn sync off")).frame_when_inactive(false)).clicked() { choice = Some(None); }
         });

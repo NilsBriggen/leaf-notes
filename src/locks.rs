@@ -129,7 +129,7 @@ impl NotesApp {
             if !lp.error.is_empty() { ui.label(RichText::new(&lp.error).color(Color32::from_rgb(200, 60, 50))); }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("🔒  Lock")).color(Color32::WHITE)).fill(accent(ui))).clicked() { go = true; }
+                if ui.add(egui::Button::new(RichText::new(tr("🔒  Lock")).color(Color32::WHITE)).fill(accent_base())).clicked() { go = true; }
                 if ui.button(tr("Cancel")).clicked() { cancel = true; }
             });
         });

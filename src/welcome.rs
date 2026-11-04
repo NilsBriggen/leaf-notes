@@ -35,10 +35,10 @@ impl NotesApp {
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(26)).corner_radius(20);
         egui::Modal::new(egui::Id::unique("tour")).frame(frame).show(ctx, |ui| {
             ui.set_width(520.0);
-            ui.set_min_height(330.0);
             let big = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).font(rich::serif(26.0)).color(ui.visuals().strong_text_color())); ui.add_space(6.0); };
             let text = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).size(15.0)); ui.add_space(4.0); };
-            match step {
+            // the steps differ in length: keep the buttons below them in one place
+            ui.vertical(|ui| { ui.set_min_height(250.0); match step {
                 0 => {
                     big(ui, "Welcome to Leaf Notes");
                     text(ui, "Your notes live in notebooks. A notebook has sections (like the tabs of a binder), and each section has pages.");
@@ -85,12 +85,12 @@ impl NotesApp {
                     text(ui, "There's a sample notebook to look around in. Keep it, or start with an empty one.");
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent(ui)).corner_radius(10)).clicked() { close = true; }
+                        if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
                         if ui.button(tr("Start with an empty notebook")).clicked() { empty_start = true; close = true; }
                     });
                     text(ui, "You can see this tour again from Help (?, top right).");
                 }
-            }
+            }});
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 // progress dots
@@ -99,7 +99,7 @@ impl NotesApp {
                     ui.painter().circle_filled(r.center(), 4.0, if i == step { accent(ui) } else { ui.visuals().widgets.inactive.bg_fill });
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if step + 1 < STEPS && ui.add(egui::Button::new(RichText::new(tr("Next")).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(90.0, 30.0))).clicked() { step += 1; }
+                    if step + 1 < STEPS && ui.add(egui::Button::new(RichText::new(tr("Next")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { step += 1; }
                     if step > 0 && ui.button(tr("Back")).clicked() { step -= 1; }
                     if step + 1 < STEPS && ui.add(egui::Button::new(tr("Skip")).frame_when_inactive(false)).clicked() { close = true; }
                 });
@@ -115,7 +115,7 @@ impl NotesApp {
 
     pub(crate) fn news_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        egui::Window::new(tf!("What's new in Leaf Notes {v}", v = VERSION)).open(&mut open).collapsible(false).resizable(false).default_width(460.0).show(ctx, |ui| {
+        egui::Window::new(tf!("What's new in Leaf Notes {v}", v = VERSION)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).default_width(460.0).show(ctx, |ui| {
             if let Some((_, items)) = CHANGES.iter().find(|(v, _)| *v == VERSION) {
                 for item in *items { ui.label(RichText::new(format!("•  {}", tr(item))).size(14.0)); }
             }
@@ -139,7 +139,7 @@ impl NotesApp {
             ("Locked sections", "Right-click a section ▸ Lock with a password. Its pages are encrypted; without the password they can't be opened, by anyone."),
             ("Keyboard", "Settings ▸ Your data ▸ Keyboard shortcuts lists them all."),
         ];
-        egui::Window::new(tr("Help")).open(&mut open).collapsible(false).default_size([560.0, 520.0]).show(ctx, |ui| {
+        egui::Window::new(tr("Help")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([560.0, 520.0]).show(ctx, |ui| {
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                 for (title, body) in topics {
                     ui.label(RichText::new(tr(title)).size(16.0).strong());
@@ -204,7 +204,7 @@ impl NotesApp {
             egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| { ui.label(RichText::new(text.lines().take(14).collect::<Vec<_>>().join("\n")).monospace().size(11.0).weak()); });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent(ui))).clicked() { send = true; }
+                if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent_base())).clicked() { send = true; }
                 if ui.button(tr("Delete it")).clicked() { delete = true; }
             });
         });

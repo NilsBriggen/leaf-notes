@@ -111,7 +111,7 @@ pub(crate) struct Prefs {
     show_nav: bool,
     show_ai: bool,
     ribbon_open: bool,
-    /// The person's pen case and which pen is in hand.
+    /// The person's pens and which one is chosen.
     pens: Vec<Pen>,
     pen: usize,
     /// 0 = raw ink, 1 = strongly smoothed lines.
@@ -177,6 +177,8 @@ struct St {
     editing: Option<u64>,
     /// Size of the page area last frame (to notice the on-screen keyboard taking room).
     canvas_avail: Vec2,
+    /// Typing a note with the on-screen keyboard up: the toolbar and page header step aside.
+    typing_kb: bool,
     /// Each page's zoom.
     scales: HashMap<u64, f32>,
     /// The tool to go back to after erasing with the stylus's eraser end or side button.
@@ -318,7 +320,7 @@ impl St {
         self.dirty = true;
     }
     fn say(&mut self, msg: impl Into<String>) { let m = msg.into(); self.status = tr(&m).to_string(); self.status_age = 0.0; }
-    /// The pen in hand (the pen case is never left empty).
+    /// The chosen pen (there is always at least one).
     fn pen(&mut self) -> &mut Pen {
         if self.p.pens.is_empty() { self.p.pens = default_pens(); }
         self.p.pen = self.p.pen.min(self.p.pens.len() - 1);
@@ -436,6 +438,8 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
         w.corner_radius = CornerRadius::same(8);
     }
     v.widgets.inactive.bg_stroke = EStroke::NONE;
+    // text boxes get their own faint fill, so they read as fields on white cards
+    v.text_edit_bg_color = Some(if dark { Color32::from_rgb(38, 45, 46) } else { Color32::from_rgb(240, 244, 242) });
     v.window_corner_radius = CornerRadius::same(16);
     v.menu_corner_radius = CornerRadius::same(10);
     v.window_shadow = egui::Shadow { offset: [0, 10], blur: 32, spread: 0, color: Color32::from_black_alpha(if dark { 130 } else { 34 }) };
@@ -490,7 +494,7 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
@@ -1242,7 +1246,8 @@ impl eframe::App for NotesApp {
         #[cfg(target_os = "android")]
         {
             let t = ctx.input(|i| i.time);
-            if t - self.st.bars_at > 1.0 {
+            // (more often while typing: the bottom inset is how we learn the keyboard opened or closed)
+            if t - self.st.bars_at > if self.st.editing.is_some() { 0.3 } else { 1.0 } {
                 self.st.bars_at = t;
                 // two sources, the larger wins: Java's window insets, and the content area Android gives native apps
                 let mut px = system_bars().unwrap_or([0; 4]);
@@ -1269,7 +1274,7 @@ impl eframe::App for NotesApp {
         if right > 0.0 { egui::Panel::right("bar-right").exact_size(right).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
         // phones and narrow windows: the side panels fold away (☰ brings them back) and close again
         // after picking a page; touch gets larger targets
-        let narrow = ctx.content_rect().width() < 760.0;
+        let narrow = ctx.content_rect().width() < 1000.0;
         if narrow != self.st.narrow {
             self.st.narrow = narrow;
             self.st.p.show_nav = !narrow;
@@ -1287,6 +1292,9 @@ impl eframe::App for NotesApp {
         self.st.index.tick(&self.store, data_dir().join("files"), self.st.persist, now_f());
         #[cfg(target_os = "android")]
         self.take_incoming();
+        #[cfg(target_os = "android")]
+        // the bottom inset includes the on-screen keyboard: only a keyboard is this tall (the Back key can close it without us knowing otherwise)
+        { self.st.typing_kb = self.st.editing.is_some() && self.st.bars[1] > 150.0; }
         self.title_bar(ui);
         self.ribbon(ui);
         self.status_bar(ui);

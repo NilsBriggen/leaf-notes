@@ -38,12 +38,14 @@ fn sbtn(ui: &mut egui::Ui, text: RichText, tip: &str, selected: bool) -> egui::R
 /// A captioned ribbon group followed by a divider.
 fn group(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui)) {
     let caption = tr(caption);
+    // room for two rows of controls in every group: captions line up and the ribbon keeps its height across tabs
+    let h = (ui.spacing().interact_size.y * 2.0 + 6.0).max(52.0);
     ui.vertical(|ui| {
-        let r = ui.horizontal(|ui| { ui.set_min_height(50.0); add(ui); }).response.rect;
+        let r = ui.horizontal(|ui| { ui.set_min_height(h); add(ui); }).response.rect;
         let (cr, _) = ui.allocate_exact_size(Vec2::new(r.width(), 13.0), Sense::hover());
         ui.painter().text(cr.center(), Align2::CENTER_CENTER, caption, FontId::proportional(10.5), ui.visuals().weak_text_color());
     });
-    let (r, _) = ui.allocate_exact_size(Vec2::new(9.0, 62.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(Vec2::new(9.0, h + 12.0), Sense::hover());
     ui.painter().vline(r.center().x, r.y_range().shrink(6.0), EStroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
 }
 
@@ -242,7 +244,7 @@ impl NotesApp {
                     ui.painter().rect_filled(pill, 17.0, v.extreme_bg_color);
                     ui.painter().rect_stroke(pill, 17.0, if focused { EStroke::new(1.5, acc) } else { v.widgets.noninteractive.bg_stroke }, egui::StrokeKind::Inside);
                     ui.painter().text(Pos2::new(pill.left() + 16.0, pill.center().y - 1.0), Align2::CENTER_CENTER, "🔍", FontId::proportional(13.0), v.weak_text_color());
-                    let key_w = if self.st.search.is_empty() && !focused && w > 170.0 {
+                    let key_w = if self.st.search.is_empty() && !focused && w > 170.0 && !self.st.touch_ui {
                         let g = ui.painter().layout_no_wrap(tr("Ctrl F").into(), FontId::proportional(11.0), v.weak_text_color());
                         let key = Rect::from_center_size(Pos2::new(pill.right() - 14.0 - g.size().x / 2.0 - 5.0, pill.center().y), g.size() + Vec2::new(10.0, 4.0));
                         ui.painter().rect_filled(key, 5.0, v.widgets.inactive.weak_bg_fill);
@@ -326,12 +328,17 @@ impl NotesApp {
     }
 
     pub(crate) fn ribbon(&mut self, ui: &mut egui::Ui) {
-        if !self.st.p.ribbon_open { return; }
+        if !self.st.p.ribbon_open || self.st.typing_kb { return; }
         let desk = ui.visuals().panel_fill;
         egui::Panel::top("ribbon").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 12 })).show(ui, |ui| {
             card(ui).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 4 }).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                egui::ScrollArea::horizontal().id_salt("ribbon-scroll").show(ui, |ui| {
+                // each tab keeps its own sideways scroll; a solid bar shows when there's more to the right
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                ui.spacing_mut().scroll.bar_width = 4.0;
+                egui::ScrollArea::horizontal().id_salt(("ribbon-scroll", self.st.tab as u8)).show(ui, |ui| {
+                    // the ribbon scrolls sideways: text inside it must never wrap into a tall column
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
                         match self.st.tab {
@@ -513,7 +520,8 @@ impl NotesApp {
             crate::canvas::smooth_passes(&mut pts, stab);
             let sample = Stroke { id: 0, points: pts, color: pen.color, width: pen.width.min(6.0), highlighter: false, pen: pen.kind, t: 0.0 };
             let (r, _) = ui.allocate_exact_size(Vec2::new(96.0, 40.0), Sense::hover());
-            ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
+            // the sample sits on paper-white even in dark mode, so dark inks stay visible
+            ui.painter().rect_filled(r, 8.0, if ui.visuals().dark_mode { Color32::from_rgb(200, 207, 204) } else { ui.visuals().faint_bg_color });
             crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
             if *self.st.pen() != before { self.st.tool = Tool::Pen; self.st.dirty = true; }
         });
@@ -595,7 +603,7 @@ impl NotesApp {
         let (is_deck, n_cards) = (page.kind == PageKind::Deck, page.deck().len());
         let due_all = self.st.due_now;
         group(ui, "Today", |ui| {
-            if rbtn(ui, "⏰", &tf!("Review due ({due_all})", due_all = due_all), due_all > 0).tip("Cards from all your decks that are due for review").clicked() { self.start_review(); }
+            if ui.add_enabled_ui(due_all > 0, |ui| rbtn(ui, "⏰", &tf!("Review due ({due_all})", due_all = due_all), due_all > 0)).inner.tip("Cards from all your decks that are due for review").clicked() { self.start_review(); }
         });
         group(ui, "Decks", |ui| {
             if rbtn(ui, "+", "New deck", false).tip("A new page of flashcards in this section").clicked() { self.new_deck("New deck", vec![]); }
@@ -661,7 +669,7 @@ impl NotesApp {
             ui.label(RichText::new(tr("Android will ask you to confirm next.")).weak());
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("Allow and record")).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(150.0, 34.0))).clicked() { allow = true; }
+                if ui.add(egui::Button::new(RichText::new(tr("Allow and record")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(150.0, 34.0))).clicked() { allow = true; }
                 if ui.add(egui::Button::new(tr("Not now")).min_size(Vec2::new(100.0, 34.0))).clicked() { no = true; }
             });
         });
@@ -700,7 +708,7 @@ impl NotesApp {
                         ui.add_space(14.0);
                         ui.horizontal(|ui| {
                             ui.add_space((ui.available_width() - 220.0).max(0.0) / 2.0);
-                            if ui.add(egui::Button::new(RichText::new(tr("Study again")).color(Color32::WHITE)).fill(acc).min_size(Vec2::new(110.0, 32.0))).clicked() {
+                            if ui.add(egui::Button::new(RichText::new(tr("Study again")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(110.0, 32.0))).clicked() {
                                 sd.queue = (0..sd.cards.len()).collect(); sd.total = sd.queue.len(); sd.tally = [0; 3]; sd.shown = false;
                             }
                             if ui.add(egui::Button::new(tr("Close")).min_size(Vec2::new(100.0, 32.0))).clicked() { close = true; }
@@ -725,7 +733,7 @@ impl NotesApp {
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         if !sd.shown {
-                            if ui.add(egui::Button::new(RichText::new(tr("Show answer   Space")).color(Color32::WHITE)).fill(acc).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() { sd.shown = true; }
+                            if ui.add(egui::Button::new(RichText::new(tr("Show answer   Space")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() { sd.shown = true; }
                         } else {
                             let w = (ui.available_width() - 16.0) / 3.0;
                             for (k, (label, col)) in [(tr("Again   1"), Color32::from_rgb(214, 82, 62)), (tr("Good   2"), acc), (tr("Easy   3"), Color32::from_rgb(21, 128, 61))].into_iter().enumerate() {
@@ -883,7 +891,8 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 let page = &self.store.notebooks[self.nb].sections[self.sec].pages[self.pg];
                 let words: usize = page.blocks.iter().map(|b| b.kind.summary().split_whitespace().count().max(match &b.kind { Kind::Text { text, .. } => text.split_whitespace().count(), _ => 0 })).sum();
-                let info = if page.kind == PageKind::Deck { tf!("{n} cards · {ready} ready to study", n = page.cards.len(), ready = page.deck().len()) } else { tf!("{words} words · {notes} notes · {strokes} ink strokes", words = words, notes = page.blocks.len(), strokes = page.strokes.len()) };
+                let info = if page.kind == PageKind::Deck { tf!("{n} cards · {ready} ready to study", n = page.cards.len(), ready = page.deck().len()) } else { [(words, tr("{n} word"), tr("{n} words")), (page.blocks.len(), tr("{n} note"), tr("{n} notes")), (page.strokes.len(), tr("{n} ink stroke"), tr("{n} ink strokes"))]
+                    .iter().map(|(n, one, many)| crate::i18n::fill(if *n == 1 { one } else { many }, &[("n", n)])).collect::<Vec<_>>().join(" · ") };
                 ui.label(RichText::new(info).size(11.5).weak());
                 if !self.st.status.is_empty() && self.st.status_age < 10.0 {
                     ui.add_space(12.0);
@@ -1309,7 +1318,7 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Shift+Enter for a new line")).size(10.5).weak());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let send = ui.add(egui::Button::new(RichText::new(tr("Send ➤")).color(Color32::WHITE)).fill(acc)).clicked();
+                    let send = ui.add(egui::Button::new(RichText::new(tr("Send ➤")).color(Color32::WHITE)).fill(accent_base())).clicked();
                     if (send || enter) && !self.st.ai_prompt.trim().is_empty() {
                         let p = std::mem::take(&mut self.st.ai_prompt);
                         self.chat(p.trim().to_string());
@@ -1330,7 +1339,7 @@ impl NotesApp {
             let path = format!("{} › {}", n.name, s.name);
             let score = if ql.is_empty() {
                 let r = self.st.p.recent.iter().position(|id| *id == p.id);
-                match r { Some(i) => 100.0 - i as f32, None if self.st.p.favorites.contains(&p.id) => 50.0, None => continue }
+                match r { Some(i) => 100.0 - i as f32, None if self.st.p.favorites.contains(&p.id) => 50.0, None => 0.0 }
             } else {
                 let t = title.to_lowercase();
                 if t.starts_with(&ql) { 3.0 } else if ql.split_whitespace().all(|w| t.contains(w)) { 2.0 }
@@ -1353,7 +1362,7 @@ impl NotesApp {
             if !r.has_focus() { r.request_focus(); }
             if r.changed() { sel = 0; }
             ui.separator();
-            ui.label(RichText::new(tr(if ql.is_empty() { "RECENT AND FAVOURITE PAGES" } else { "PAGES" })).size(10.5).weak());
+            ui.label(RichText::new(tr("PAGES")).size(10.5).weak());
             for (i, (_, title, path, at)) in hits.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
                 if i == sel || resp.hovered() { ui.painter().rect_filled(rect, 8.0, if i == sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
@@ -1389,7 +1398,7 @@ impl NotesApp {
             let mut open = true;
             let mut restore = None;
             let mut purge = None;
-            egui::Window::new(tr("Recently deleted")).open(&mut open).collapsible(false).default_width(420.0).show(ctx, |ui| {
+            egui::Window::new(tr("Recently deleted")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_width(420.0).show(ctx, |ui| {
                 if self.store.trash.is_empty() { ui.label(RichText::new(tr("Nothing here. Deleted pages, sections and notebooks wait here until you empty the bin.")).weak()); }
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (i, t) in self.store.trash.iter().enumerate().rev() {
@@ -1411,7 +1420,7 @@ impl NotesApp {
         }
         if self.st.show_shortcuts {
             let mut open = true;
-            egui::Window::new(tr("Keyboard shortcuts")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Window::new(tr("Keyboard shortcuts")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).show(ctx, |ui| {
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).striped(true).show(ui, |ui| {
                     for (k, what) in [("Ctrl+N", "New page"), ("Ctrl+F", "Search all notes"), ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                         ("Ctrl+B / Ctrl+I", "Bold / italic"), ("Ctrl+Shift+H", "Highlight"), ("Ctrl+M", "Inline math"), ("Ctrl+`", "Inline code"),
@@ -1427,7 +1436,7 @@ impl NotesApp {
         if let Some((how, mut path)) = self.st.path_prompt.clone() {
             let mut go = false;
             let mut cancel = false;
-            egui::Window::new(tr(match how { Ins::Picture => "Insert picture", Ins::Printout => "Insert printout", Ins::Attach => "Attach file" })).collapsible(false).show(ctx, |ui| {
+            egui::Window::new(tr(match how { Ins::Picture => "Insert picture", Ins::Printout => "Insert printout", Ins::Attach => "Attach file" })).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).show(ctx, |ui| {
                 ui.label(tr("File path on this device:"));
                 ui.text_edit_singleline(&mut path);
                 ui.horizontal(|ui| { go = ui.button(tr("Insert")).clicked(); cancel = ui.button(tr("Cancel")).clicked(); });
@@ -1443,7 +1452,7 @@ impl NotesApp {
 fn pen_icon(ui: &mut egui::Ui, col: Color32, selected: bool, kind: Option<PenKind>) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(Vec2::new(30.0, 54.0), Sense::click());
     if selected || r.hovered() { ui.painter().rect_filled(rect, 8.0, if selected { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
-    draw_pen(ui.painter(), rect.center_top() + Vec2::new(0.0, if selected { 3.0 } else { 8.0 }), 1.0, kind, col, false);
+    draw_pen(ui.painter(), rect.center_top() + Vec2::new(0.0, if selected { 3.0 } else { 8.0 }), 1.0, kind, col);
     focus_ring(ui, &r, rect, 8.0);
     let name = kind.map_or(tr("Highlighter"), |k| tr(k.name())).to_string();
     r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
@@ -1451,61 +1460,58 @@ fn pen_icon(ui: &mut egui::Ui, col: Color32, selected: bool, kind: Option<PenKin
 }
 
 /// Draw a writing instrument standing upright with its tip at `tip`; 1.0 scale is about 44 px tall.
-/// `mono` draws a single-colour silhouette (for small type buttons).
-fn draw_pen(p: &egui::Painter, tip: Pos2, scale: f32, kind: Option<PenKind>, col: Color32, mono: bool) {
+fn draw_pen(p: &egui::Painter, tip: Pos2, scale: f32, kind: Option<PenKind>, col: Color32) {
     let at = |x: f32, y: f32| tip + Vec2::new(x, y) * scale;
     let poly = |pts: &[(f32, f32)], fill: Color32| { p.add(egui::Shape::convex_polygon(pts.iter().map(|q| at(q.0, q.1)).collect(), fill, EStroke::NONE)); };
     let rect = |x0: f32, y0: f32, x1: f32, y1: f32, r: f32, fill: Color32| { p.rect_filled(Rect::from_min_max(at(x0, y0), at(x1, y1)), r * scale, fill); };
-    let metal = if mono { col } else { Color32::from_rgb(196, 201, 207) };
-    let gold = if mono { col } else { Color32::from_rgb(214, 178, 92) };
-    let dark = if mono { col.gamma_multiply(0.6) } else { Color32::from_rgb(55, 60, 66) };
-    let shine = Color32::from_white_alpha(if mono { 0 } else { 80 });
+    let metal = Color32::from_rgb(196, 201, 207);
+    let gold = Color32::from_rgb(214, 178, 92);
+    let dark = Color32::from_rgb(55, 60, 66);
+    let shine = Color32::from_white_alpha(80);
     let body = |w: f32, top: f32, fill: Color32| {
         rect(-w / 2.0, top, w / 2.0, 44.0, 2.5, fill);
-        if !mono { rect(-w / 2.0 + 1.2, top + 1.0, -w / 2.0 + 2.6, 43.0, 1.0, shine); }
+        rect(-w / 2.0 + 1.2, top + 1.0, -w / 2.0 + 2.6, 43.0, 1.0, shine);
     };
     match kind {
         Some(PenKind::Fountain) => {
             body(9.0, 17.0, col);
             rect(-4.5, 13.0, 4.5, 17.5, 1.0, dark); // grip
             poly(&[(-4.0, 13.5), (4.0, 13.5), (1.1, 2.0), (0.0, 0.0), (-1.1, 2.0)], gold); // nib
-            if !mono {
-                p.line_segment([at(0.0, 2.5), at(0.0, 9.0)], EStroke::new(0.9 * scale, dark));
-                p.circle_filled(at(0.0, 9.6), 1.1 * scale, dark);
-                rect(-4.5, 24.0, 4.5, 25.5, 0.0, gold); // cap band
-            }
+            p.line_segment([at(0.0, 2.5), at(0.0, 9.0)], EStroke::new(0.9 * scale, dark));
+            p.circle_filled(at(0.0, 9.6), 1.1 * scale, dark);
+            rect(-4.5, 24.0, 4.5, 25.5, 0.0, gold); // cap band
         }
         Some(PenKind::Ballpoint) => {
             body(7.5, 15.0, col);
             poly(&[(-3.75, 15.5), (3.75, 15.5), (1.0, 4.0), (-1.0, 4.0)], metal); // cone
             p.circle_filled(at(0.0, 3.2), 1.3 * scale, col); // ball
-            if !mono { rect(3.0, 22.0, 4.8, 36.0, 0.8, metal); } // clip
+            rect(3.0, 22.0, 4.8, 36.0, 0.8, metal); // clip
         }
         Some(PenKind::Pencil) => {
-            let wood = if mono { col } else { Color32::from_rgb(232, 196, 140) };
+            let wood = Color32::from_rgb(232, 196, 140);
             body(9.0, 16.0, col);
-            if !mono { p.line_segment([at(-1.5, 16.0), at(-1.5, 38.0)], EStroke::new(0.8 * scale, Color32::from_black_alpha(40))); p.line_segment([at(1.5, 16.0), at(1.5, 38.0)], EStroke::new(0.8 * scale, Color32::from_black_alpha(40))); }
+            p.line_segment([at(-1.5, 16.0), at(-1.5, 38.0)], EStroke::new(0.8 * scale, Color32::from_black_alpha(40))); p.line_segment([at(1.5, 16.0), at(1.5, 38.0)], EStroke::new(0.8 * scale, Color32::from_black_alpha(40)));
             poly(&[(-4.5, 16.5), (4.5, 16.5), (0.0, 1.0)], wood); // sharpened wood
-            poly(&[(-1.9, 7.0), (1.9, 7.0), (0.0, 1.0)], if mono { col } else { dark }); // graphite
-            if !mono { rect(-4.5, 38.0, 4.5, 40.5, 0.0, metal); rect(-4.5, 40.5, 4.5, 44.0, 2.0, Color32::from_rgb(240, 150, 160)); } // ferrule + eraser
+            poly(&[(-1.9, 7.0), (1.9, 7.0), (0.0, 1.0)], dark); // graphite
+            rect(-4.5, 38.0, 4.5, 40.5, 0.0, metal); rect(-4.5, 40.5, 4.5, 44.0, 2.0, Color32::from_rgb(240, 150, 160)); // ferrule + eraser
         }
         Some(PenKind::Calligraphy) => {
             body(6.5, 18.0, col);
             rect(-4.0, 13.0, 4.0, 18.5, 1.5, dark); // holder ferrule
             poly(&[(-4.0, 13.5), (4.0, 13.5), (4.0, 4.5), (-4.0, 1.0)], metal); // broad, angled nib
-            if !mono { p.line_segment([at(-4.0, 1.2), at(4.0, 4.6)], EStroke::new(1.6 * scale, col)); p.line_segment([at(0.0, 3.5), at(0.0, 10.0)], EStroke::new(0.8 * scale, dark)); }
+            p.line_segment([at(-4.0, 1.2), at(4.0, 4.6)], EStroke::new(1.6 * scale, col)); p.line_segment([at(0.0, 3.5), at(0.0, 10.0)], EStroke::new(0.8 * scale, dark));
         }
         Some(PenKind::Marker) => {
             body(12.0, 15.0, col);
             rect(-6.0, 12.0, 6.0, 15.5, 1.0, dark); // collar
-            poly(&[(-3.5, 12.5), (3.5, 12.5), (2.6, 3.5), (-2.6, 3.5)], if mono { col } else { Color32::from_rgb(235, 235, 235) });
+            poly(&[(-3.5, 12.5), (3.5, 12.5), (2.6, 3.5), (-2.6, 3.5)], Color32::from_rgb(235, 235, 235));
             rect(-2.6, 1.5, 2.6, 5.0, 2.5, col); // felt tip
         }
         None => {
-            body(13.0, 15.0, if mono { col } else { col.gamma_multiply(0.85) });
-            rect(-6.5, 12.0, 6.5, 15.5, 1.0, if mono { col } else { Color32::from_rgb(70, 75, 80) });
+            body(13.0, 15.0, col.gamma_multiply(0.85));
+            rect(-6.5, 12.0, 6.5, 15.5, 1.0, Color32::from_rgb(70, 75, 80));
             poly(&[(-4.0, 12.5), (4.0, 12.5), (4.0, 5.0), (-4.0, 1.0)], col); // chisel tip
-            if !mono { rect(-6.5, 30.0, 6.5, 33.0, 0.0, Color32::from_white_alpha(110)); } // label band
+            rect(-6.5, 30.0, 6.5, 33.0, 0.0, Color32::from_white_alpha(110)); // label band
         }
     }
 }

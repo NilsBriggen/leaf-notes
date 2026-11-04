@@ -69,7 +69,8 @@ icon = "@mipmap/ic_launcher"
 theme = "@android:style/Theme.DeviceDefault.NoActionBar"
 
 [package.metadata.android.application.activity]
-config_changes = "orientation|screenSize|keyboardHidden"
+# Android must never restart the screen (the native side hangs on that): rotation, dark mode, language and size changes are handled in place
+config_changes = "orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
 orientation = "unspecified"
 # a small Java subclass (android/java, added by tools/android-java.sh) for the file picker,
 # sharing into the app, opening attachments and the key store

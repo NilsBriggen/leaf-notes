@@ -36,8 +36,10 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
     crate::card(ui).inner_margin(egui::Margin { left: 40, right: 12, top: 10, bottom: 0 })
         .outer_margin(egui::Margin { left: edge(st.p.show_nav), right: edge(st.p.show_ai), top: 0, bottom: 6 }).show(ui, |ui| {
         let head_top = ui.cursor().top();
+        // typing with the on-screen keyboard up: the page header steps aside so the note stays in view
+        let head = !(st.typing_kb && page.kind == PageKind::Notes);
         // one small line: where the page lives, when it was made, and pages linking here
-        ui.horizontal_wrapped(|ui| {
+        if head { ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2));
             if page.kind == PageKind::Locked { return; }
             ui.label(RichText::new(format!("·  {}", format_date(page.created, true))).size(11.0).weak());
@@ -49,16 +51,16 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                     if ui.add(egui::Button::new(RichText::new(t).size(11.0).color(accent(ui))).corner_radius(9).min_size(Vec2::new(0.0, 18.0))).clicked() { action = Some(PageAction::Go(at.0, at.1, at.2)); }
                 }
             }
-        });
+        }); }
         if page.kind == PageKind::Locked {
             if let Some(pw) = locked_view(ui, st) { action = Some(PageAction::Unlock(pw)); }
-            ui.set_min_height(ui.available_height());
+            ui.set_min_size(ui.available_size());
             return;
         }
-        ui.horizontal(|ui| {
+        if head { ui.horizontal(|ui| {
             let w = (ui.available_width() - 110.0).clamp(160.0, 680.0); // room for the star and ⋯ at any size
             let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(24.0))
-                .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(tr("Untitled page")).desired_width(w).margin(egui::Margin::ZERO));
+                .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(RichText::new(tr("Untitled page")).font(rich::serif(24.0))).desired_width(w).margin(egui::Margin::ZERO));
             if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
             if r.changed() { st.dirty = true; }
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && page.blocks.is_empty() {
@@ -108,7 +110,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                     if ui.button(RichText::new(tr("🗑  Delete page")).color(Color32::from_rgb(200, 60, 50))).clicked() { action = Some(PageAction::Delete); ui.close(); }
                 });
             });
-        });
+        }); }
         if page.kind == PageKind::Deck {
             ui.add_space(14.0);
             if deck_view(ui, page, st, study) { action = Some(PageAction::Study); }
@@ -122,7 +124,8 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         ui.add_space(1.0);
         // pen down above that edge: say where ink goes instead of silently doing nothing
         let head = Rect::from_x_y_ranges((full.left() - 40.0)..=(full.right() + 12.0), head_top..=y);
-        if st.input != Input::Mouse && matches!(st.tool, Tool::Pen | Tool::Highlighter | Tool::Shape(_)) && ui.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| head.contains(p))) {
+        // (not when the press landed on a button, the title or a menu: those are using the pointer)
+        if st.input != Input::Mouse && matches!(st.tool, Tool::Pen | Tool::Highlighter | Tool::Shape(_)) && !ui.ctx().egui_is_using_pointer() && ui.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| head.contains(p))) {
             st.say("The page title is up here. Ink goes on the paper below the line.");
         }
         // A zoomable, pannable canvas: pinch or Ctrl+scroll zooms, scrolling or dragging empty paper pans.
@@ -254,7 +257,7 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     }
     // Clicking empty paper starts a new note there, like writing anywhere on a page.
     // With a pen tool selected, only inputs allowed to draw make ink; the mouse (or a finger) keeps working as usual.
-    // With finger drawing off, a stylus touching the page while typing picks up the pen in hand.
+    // With finger drawing off, a stylus touching the page while typing picks up the chosen pen.
     // (only on devices whose fingers report no pressure, otherwise every tap would start drawing)
     let auto_pen = st.tool == Tool::Type && !st.p.draw_finger && st.p.pen_detect;
     // the press is in screen coordinates; the page is zoomed and scrolled, so compare in page coordinates
@@ -275,13 +278,11 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     let clicked = bg.clicked() || paper_click.is_some();
     let click_pos = paper_click.or_else(|| bg.interact_pointer_pos());
     let typing = st.tool == Tool::Type || st.ink_pass;
-    if clicked && typing && st.listen && !page.recordings.is_empty() {
-        // tap ink to hear what was said while it was written
-        if let Some(p) = click_pos {
-            let q = p - o.to_vec2();
-            let hit = page.strokes.iter().filter(|s| s.points.iter().any(|v| (v[0] - q.x).hypot(v[1] - q.y) < 12.0)).map(|s| s.t).next();
-            if let Some(t) = hit { jump_to(page, st, t); }
-        }
+    // tap ink to hear what was said while it was written; a tap on empty paper still starts a note
+    let heard = (clicked && typing && st.listen && !page.recordings.is_empty()).then(|| click_pos).flatten()
+        .and_then(|p| { let q = p - o.to_vec2(); page.strokes.iter().find(|s| s.points.iter().any(|v| (v[0] - q.x).hypot(v[1] - q.y) < 12.0)).map(|s| s.t) });
+    if let Some(t) = heard {
+        jump_to(page, st, t);
     } else if clicked && typing && st.p.click_to_type {
         if let Some(p) = click_pos {
             let b = block((p.x - o.x - 4.0).max(0.0), (p.y - o.y - 16.0).max(0.0), st.p.note_width, Kind::Text { text: String::new(), heading: 0 });
@@ -965,7 +966,8 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(12).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let narrow = ui.available_width() < 560.0;
-            let playing = st.player.as_ref().is_some_and(|p| p.id == page.recordings[i].id && p.playing());
+            // (at the very end it shows ▶ again, even if the speaker hasn't reported the stop yet)
+            let playing = st.player.as_ref().is_some_and(|p| p.id == page.recordings[i].id && p.playing() && p.time() < page.recordings[i].secs - 0.1);
             if ui.add(egui::Button::new(RichText::new(if playing { "⏸" } else { "▶" }).size(16.0)).min_size(Vec2::new(34.0, 26.0)).frame_when_inactive(false)).tip(if playing { "Pause" } else { "Play" }).clicked()
                 && ensure_player(page, st, i) { st.player.as_ref().unwrap().set_playing(!playing); }
             let label = |k: usize, r: &Recording| tf!("Recording {n} · {len}", n = k + 1, len = mmss(r.secs));
@@ -1021,7 +1023,7 @@ fn locked_view(ui: &mut egui::Ui, st: &mut St) -> Option<String> {
         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { go = true; }
         if !st.unlock_err.is_empty() { ui.label(RichText::new(&st.unlock_err).color(Color32::from_rgb(200, 60, 50))); }
         ui.add_space(6.0);
-        if ui.add(egui::Button::new(RichText::new(tr("Unlock")).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(140.0, 34.0))).clicked() { go = true; }
+        if ui.add(egui::Button::new(RichText::new(tr("Unlock")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(140.0, 34.0))).clicked() { go = true; }
     });
     go.then(|| std::mem::take(&mut st.unlock_pw))
 }
@@ -1047,7 +1049,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
         if new > 0 { chip(ui, tf!("{new} new", new = new), acc); }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(12.0);
-            let b = ui.add_enabled(ready > 0, egui::Button::new(RichText::new(tf!("▶  Study{x}", x = if due + new > 0 { format!(" ({})", due + new) } else { String::new() })).size(15.0).color(Color32::WHITE)).fill(acc).corner_radius(18).min_size(Vec2::new(150.0, 36.0)));
+            let b = ui.add_enabled(ready > 0, egui::Button::new(RichText::new(tf!("▶  Study{x}", x = if due + new > 0 { format!(" ({})", due + new) } else { String::new() })).size(15.0).color(Color32::WHITE)).fill(accent_base()).corner_radius(18).min_size(Vec2::new(150.0, 36.0)));
             if b.tip("Go through the cards; due and new ones come first").clicked() { study_now = true; }
         });
     });
@@ -1231,7 +1233,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                         }
                     });
                     ui.add_space(4.0);
-                    if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(acc)).clicked() { st.editing = None; }
+                    if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base())).clicked() { st.editing = None; }
                 });
             } else if src.trim().is_empty() {
                 if ui.add(egui::Label::new(RichText::new(tr("∑  Empty equation — click to write one")).weak()).sense(Sense::click())).clicked() { st.editing = Some(b.id); st.focus_id = Some(id); }
@@ -1362,7 +1364,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     changed |= ui.add(egui::TextEdit::singleline(title).hint_text(tr("optional")).desired_width(w - 80.0)).changed();
                     ui.end_row();
                 });
-                if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(acc)).clicked() { st.editing = None; }
+                if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base())).clicked() { st.editing = None; }
             } else {
                 egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(8).inner_margin(8).show(ui, |ui| {
                     ui.set_width(w - 16.0);
