@@ -12,8 +12,10 @@ static KNOWN: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 static BROKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(target_os = "android"));
 
 fn known(name: &str) -> Option<String> { KNOWN.lock().ok()?.as_ref()?.get(name).cloned() }
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn remember(name: &str, v: &str) { if let Ok(mut k) = KNOWN.lock() { k.get_or_insert_with(HashMap::new).insert(name.into(), v.into()); } }
 fn broken() -> bool { BROKEN.load(std::sync::atomic::Ordering::Relaxed) }
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn fail() { BROKEN.store(true, std::sync::atomic::Ordering::Relaxed); }
 
 /// Where secrets are kept right now, for the settings window.

@@ -1471,10 +1471,12 @@ impl NotesApp {
                             heading(ui, "Your data");
                             let dir = data_dir();
                             row(ui, "Where your notes live", &dir.display().to_string(), |ui| {
+                                let _ = &ui; // the button below is desktop-only
                                 #[cfg(not(target_os = "android"))]
                                 if ui.button("Open folder").clicked() { let _ = std::fs::create_dir_all(&dir); crate::canvas::open_path(&dir); }
                             });
                             row(ui, "Backup", "Save a copy of every notebook as one file (pictures and attachments stay in the folder above).", |ui| {
+                                let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
                                 if ui.button("Save a backup…").clicked() {
                                     if let Some(path) = rfd::FileDialog::new().set_file_name("leaf-notes-backup.json").save_file() {

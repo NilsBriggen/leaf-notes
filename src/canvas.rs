@@ -220,9 +220,18 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     }
     // Clicking empty paper starts a new note there, like writing anywhere on a page.
     // With a pen tool selected, only inputs allowed to draw make ink; the mouse (or a finger) keeps working as usual.
+    // With finger drawing off, a stylus touching the page while typing picks up the pen in hand.
+    // (only on devices whose fingers report no pressure, otherwise every tap would start drawing)
+    let auto_pen = st.tool == Tool::Type && !st.p.draw_finger && st.p.pen_detect;
+    if auto_pen && st.input == Input::Pen && ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(rect) {
+        st.tool = Tool::Pen;
+        st.editing = None;
+        st.say("✏ Picked up your pen. Choose Type in the toolbar to type again.");
+    }
     let makes_ink = matches!(st.tool, Tool::Pen | Tool::Highlighter | Tool::Shape(_));
     let allowed = match st.input { Input::Pen => true, Input::Finger => st.p.draw_finger, Input::Mouse => st.p.draw_mouse };
-    st.ink_pass = makes_ink && !allowed;
+    // the ink layer also waits under the notes while typing, so that first stylus stroke draws straight away
+    st.ink_pass = (makes_ink && !allowed) || st.tool == Tool::Type && auto_pen;
     // (the ink layer stays under the notes so a stylus touching empty paper still draws straight away)
     let paper_click = if st.ink_pass { ink_input(ui, rect, page, st) } else { None };
     let clicked = bg.clicked() || paper_click.is_some();
@@ -469,7 +478,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
     if st.ink_pass {
         // the mouse (or a finger) keeps working as usual: dragging moves the page, clicking works like typing mode
         if resp.dragged() { st.pan += resp.drag_delta(); }
-        if resp.drag_started() && st.input == Input::Mouse && !st.mouse_hint {
+        if resp.drag_started() && st.input == Input::Mouse && !st.mouse_hint && st.tool != Tool::Type {
             st.mouse_hint = true;
             st.say("Tip: your stylus draws and the mouse works as usual. To draw with the mouse too, switch it on in Settings ▸ Pen & input.");
         }

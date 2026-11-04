@@ -27,11 +27,14 @@ pub fn mic_request() {
 }
 
 #[cfg(target_os = "android")]
+pub(crate) use android::with_activity;
+
+#[cfg(target_os = "android")]
 mod android {
     use jni::{objects::JObject, strings::JNIString, sys::jobject, Env, JavaVM};
     const MIC: &str = "android.permission.RECORD_AUDIO";
 
-    fn with_activity<R>(f: impl for<'j> FnOnce(&mut Env<'j>, JObject<'j>) -> jni::errors::Result<R>) -> Option<R> {
+    pub(crate) fn with_activity<R>(f: impl for<'j> FnOnce(&mut Env<'j>, JObject<'j>) -> jni::errors::Result<R>) -> Option<R> {
         let ctx = ndk_context::android_context();
         let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
         let raw = ctx.context() as jobject;

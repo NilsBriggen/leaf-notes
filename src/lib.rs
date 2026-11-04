@@ -119,6 +119,8 @@ pub(crate) struct Prefs {
     recent: Vec<u64>,
     /// The person agreed to let the app use the microphone.
     mic_ok: bool,
+    /// This device has shown a touch without pressure, so pressure means a stylus here (some phones report it for fingers too).
+    pen_detect: bool,
 }
 
 impl Default for Prefs {
@@ -126,7 +128,7 @@ impl Default for Prefs {
         Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
             hl_color: [253, 224, 71, 120], erase_partial: true, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
-            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false }
+            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false }
     }
 }
 
@@ -212,6 +214,10 @@ struct St {
     test_result: Option<Result<String, String>>,
     status: String,
     status_age: f32,
+    /// Android's status and navigation bars (top, bottom, left, right) in points, and when they were last asked for.
+    bars: [f32; 4],
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    bars_at: f64,
     sync: sync::SyncSettings,
     /// A running sync: the notes as they were sent, and where its result arrives.
     sync_rx: Option<(Store, Receiver<Result<sync::Outcome, String>>)>,
@@ -391,7 +397,7 @@ impl NotesApp {
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
-            status: String::new(), status_age: 0.0, persist,
+            status: String::new(), status_age: 0.0, persist, bars: [0.0; 4], bars_at: -10.0,
             sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
@@ -1054,7 +1060,10 @@ impl eframe::App for NotesApp {
                     egui::Event::Touch { force, phase, .. } => {
                         if let Some(f) = force { self.st.force = Some(*f); self.st.frame_force = Some(*f); }
                         // a stylus reports pressure; most fingers on touch screens don't
-                        if *phase == egui::TouchPhase::Start { self.st.input = if force.is_some() { Input::Pen } else { Input::Finger }; }
+                        if *phase == egui::TouchPhase::Start {
+                            self.st.input = if force.is_some() { Input::Pen } else { Input::Finger };
+                            if force.is_none() && !self.st.p.pen_detect { self.st.p.pen_detect = true; self.st.dirty = true; }
+                        }
                     }
                     egui::Event::PointerButton { pressed: true, .. } if !touched => self.st.input = Input::Mouse,
                     _ => {}
@@ -1080,6 +1089,21 @@ impl eframe::App for NotesApp {
         self.poll_ai(&ctx);
         self.clamp();
 
+        // Android draws the app edge to edge: keep clear of the status and navigation bars
+        #[cfg(target_os = "android")]
+        {
+            let t = ctx.input(|i| i.time);
+            if t - self.st.bars_at > 1.0 {
+                self.st.bars_at = t;
+                if let Some(b) = system_bars() { self.st.bars = b.map(|px| px as f32 / ctx.pixels_per_point()); }
+            }
+        }
+        let [top, bottom, left, right] = self.st.bars;
+        let blank = egui::Frame::new().fill(ui.visuals().panel_fill);
+        if top > 0.0 { egui::Panel::top("bar-top").exact_size(top).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
+        if bottom > 0.0 { egui::Panel::bottom("bar-bottom").exact_size(bottom).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
+        if left > 0.0 { egui::Panel::left("bar-left").exact_size(left).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
+        if right > 0.0 { egui::Panel::right("bar-right").exact_size(right).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
         self.title_bar(ui);
         self.ribbon(ui);
         self.status_bar(ui);
@@ -1229,4 +1253,26 @@ fn android_main(app: android_activity::AndroidApp) {
     if let Some(p) = app.internal_data_path() { let _ = ANDROID_DATA.set(p); }
     let options = eframe::NativeOptions { android_app: Some(app.clone()), ..Default::default() };
     let _ = eframe::run_native("Leaf Notes", options, Box::new(move |cc| Ok(Box::new(NotesApp::new(cc, None).with_android(app)))));
+}
+
+/// Sizes of the system bars around the app (top, bottom, left, right) in pixels; the soft keyboard counts in the bottom one.
+#[cfg(target_os = "android")]
+fn system_bars() -> Option<[i32; 4]> {
+    use jni::{objects::JObject, strings::JNIString, Env};
+    fn ask(env: &mut Env<'_>, act: &JObject<'_>) -> jni::errors::Result<Option<[i32; 4]>> {
+        let win = env.call_method(act, JNIString::new("getWindow"), jni::jni_sig!("()Landroid/view/Window;"), &[])?.l()?;
+        let decor = env.call_method(&win, JNIString::new("getDecorView"), jni::jni_sig!("()Landroid/view/View;"), &[])?.l()?;
+        let ins = env.call_method(&decor, JNIString::new("getRootWindowInsets"), jni::jni_sig!("()Landroid/view/WindowInsets;"), &[])?.l()?;
+        if ins.is_null() { return Ok(None); } // not attached yet
+        let mut v = [0; 4];
+        for (i, m) in ["getSystemWindowInsetTop", "getSystemWindowInsetBottom", "getSystemWindowInsetLeft", "getSystemWindowInsetRight"].into_iter().enumerate() {
+            v[i] = env.call_method(&ins, JNIString::new(m), jni::jni_sig!("()I"), &[])?.i()?;
+        }
+        Ok(Some(v))
+    }
+    audio::with_activity(|env, act| {
+        let r = ask(env, &act);
+        if r.is_err() { let _ = env.exception_clear(); } // a pending Java exception would break every later call
+        r
+    }).flatten()
 }
