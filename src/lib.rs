@@ -1106,8 +1106,22 @@ impl eframe::App for NotesApp {
             let t = ctx.input(|i| i.time);
             if t - self.st.bars_at > 1.0 {
                 self.st.bars_at = t;
-                if let Some(b) = system_bars() { self.st.bars = b.map(|px| px as f32 / ctx.pixels_per_point()); }
+                // two sources, the larger wins: Java's window insets, and the content area Android gives native apps
+                let mut px = system_bars().unwrap_or([0; 4]);
+                if let Some(app) = &self.android {
+                    let r = app.content_rect();
+                    if let Some(w) = app.native_window() {
+                        let (ww, wh) = (w.width(), w.height());
+                        if r.right > r.left && r.bottom > r.top {
+                            let native = [r.top, wh - r.bottom, r.left, ww - r.right];
+                            for i in 0..4 { px[i] = px[i].max(native[i].max(0)); }
+                        }
+                    }
+                }
+                self.st.bars = px.map(|p| p as f32 / ctx.pixels_per_point());
             }
+            // keep asking until Android has told us (it can take a moment after start)
+            if self.st.bars == [0.0; 4] && t < 15.0 { ctx.request_repaint_after(std::time::Duration::from_millis(500)); }
         }
         let [top, bottom, left, right] = self.st.bars;
         let blank = egui::Frame::new().fill(ui.visuals().panel_fill);
