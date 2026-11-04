@@ -7,6 +7,7 @@ mod export;
 mod audio;
 pub(crate) mod canvas;
 mod chrome;
+mod settings;
 pub mod sync;
 pub mod storage;
 pub mod index;
@@ -14,6 +15,7 @@ pub mod vault;
 mod locks;
 mod welcome;
 mod transcribe;
+mod updates;
 #[cfg(target_os = "android")]
 mod droid;
 mod safety;
@@ -146,6 +148,8 @@ pub(crate) struct Prefs {
     seen_version: String,
     /// Full-strength text and stronger borders.
     high_contrast: bool,
+    /// Look for a newer version once per start (asks GitHub).
+    check_updates: bool,
 }
 
 impl Default for Prefs {
@@ -153,7 +157,7 @@ impl Default for Prefs {
         Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
             hl_color: [253, 224, 71, 120], erase_partial: true, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
-            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new(), high_contrast: false }
+            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new(), high_contrast: false, check_updates: true }
     }
 }
 
@@ -265,6 +269,11 @@ struct St {
     /// A transcript being made: (page, when the recording started, where the text arrives).
     transcribe: Option<(u64, f64, Receiver<Result<Vec<(f32, String)>, String>>)>,
     transcribe_req: Option<u64>,
+    /// A newer release: (version, its page), and the check still running.
+    update: Option<(String, String)>,
+    update_rx: Option<Receiver<Option<(String, String)>>>,
+    /// A report from an earlier crash, waiting for "send or delete".
+    crash: Option<PathBuf>,
     /// Page history window: (page, its older versions, the one selected).
     history: Option<(u64, Vec<(u64, Page)>, usize)>,
     /// Comparing a page with the other device's version: (this device's, the copy).
@@ -485,7 +494,7 @@ impl NotesApp {
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
-            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
+            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
             sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
@@ -493,7 +502,8 @@ impl NotesApp {
         app.clamp();
         app.st.dirty = app.st.persist; // a first save moves secrets from older settings files into the keyring
         if let Some(m) = load_msg { app.st.say(m); app.st.status_age = -50.0; } // stays up for a minute
-        if app.st.persist { app.greet(fresh_install); }
+        if app.st.persist { app.greet(fresh_install); welcome::install_crash_hook(); app.st.crash = welcome::crash_reports().into_iter().next(); }
+        if app.st.persist && app.st.p.check_updates { app.st.update_rx = Some(updates::check(welcome::VERSION)); }
         if !persist {
             // A representative moment for the preview picture: a formatted note targeted, the AI pane mid-conversation.
             app.st.last_text = app.page().blocks.get(1).map(|b| b.id);
@@ -1375,6 +1385,7 @@ impl eframe::App for NotesApp {
         }
         self.poll_sync();
         self.poll_transcribe();
+        if let Some(rx) = &self.st.update_rx { if let Ok(r) = rx.try_recv() { self.st.update = r; self.st.update_rx = None; } }
         if self.st.transcribe.is_some() { ctx.request_repaint_after(std::time::Duration::from_millis(500)); }
         if let Some((_, rx)) = &self.st.google_rx {
             match rx.try_recv() {

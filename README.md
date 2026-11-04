@@ -44,6 +44,7 @@ Android (needs the Android SDK, NDK 27 and `cargo install cargo-apk`):
 rustup target add aarch64-linux-android
 export ANDROID_HOME=~/Android/Sdk ANDROID_NDK_ROOT=~/Android/Sdk/ndk/27.1.12297006
 cargo apk build --release --lib
+sh tools/android-java.sh target/release/apk/LeafNotes.apk   # adds the small Java part (file picker, sharing, key store)
 ```
 
 ## Credentials (not in the repository)
@@ -52,6 +53,7 @@ cargo apk build --release --lib
 |---|---|---|
 | Google Drive sign-in: the client secret of the Desktop OAuth client | `.cargo/config.toml` → `[env] LEAFNOTES_GOOGLE_SECRET = "…"` | `LEAFNOTES_GOOGLE_SECRET` |
 | Android signing key | `android/dev.keystore` (password in `Cargo.toml`) | `ANDROID_KEYSTORE_B64`: the keystore, base64-encoded |
+| Windows code signing (optional) | — | `WINDOWS_CERT_PFX_B64` (the .pfx certificate, base64) and `WINDOWS_CERT_PASSWORD` |
 
 Without the Google secret, the app builds fine but its Google Drive option says it isn't set up. Without the keystore secret, CI signs the APK with a throwaway key, so it can't update a copy signed with your own key.
 
@@ -59,6 +61,8 @@ Without the Google secret, the app builds fine but its Google Drive option says 
 gh secret set LEAFNOTES_GOOGLE_SECRET            # paste the GOCSPX-… value
 base64 -w0 android/dev.keystore | gh secret set ANDROID_KEYSTORE_B64
 ```
+
+The Android key in `android/dev.keystore` is a development key. Before a store release, make your own (`keytool -genkeypair -keystore release.keystore -alias leafnotes -keyalg RSA -keysize 4096 -validity 10000`), keep it safe, and use it for `ANDROID_KEYSTORE_B64` (and the password in `Cargo.toml`). With a Windows code-signing certificate in the two secrets above, CI signs the program and the installer, so Windows no longer warns about an unknown publisher.
 
 For Google Drive, the Google Cloud project also needs the **Google Drive API** turned on. While its consent screen is in "Testing", Google ends sign-ins after 7 days; publish the app (the `drive.file` scope needs no review) to avoid that.
 
@@ -68,9 +72,17 @@ For Google Drive, the Google Cloud project also needs the **Google Drive API** t
 - Windows: `%APPDATA%\LeafNotes`
 - Android: the app's private storage
 
-Notes are `notebooks.json` (written safely: a temporary file, then a rename, with a `.backup` copy from before each session), plus `files/` for pictures, PDFs and recordings. Settings ▸ Your data can save a full backup.
+- Anywhere else: set `LEAFNOTES_DATA=/some/folder` (portable use)
 
-Your AI key, WebDAV password and Google sign-in are kept in the system keyring: Windows Credential Manager, or the Secret Service on Linux (GNOME Keyring, KWallet). The settings files keep an empty field. If no keyring is running, and on Android (which has no keyring this app can use), they stay in the app's own folder; on Android no other app can read that folder.
+- `library.json`: notebooks, sections, page titles and Recently deleted (with a `.backup` from before each session)
+- `pages/`: one file per page, rewritten only when that page changes
+- `history/`: earlier versions of each page (⋯ ▸ Page history)
+- `files/`: pictures, PDFs and recordings
+- `search-index.json`: text read from handwriting and PDFs, for search (rebuilt when missing)
+
+Every file is written safely (a temporary file, then a rename), and a damaged file costs one page, never everything. Older versions stored everything in `notebooks.json`; it is split up on the first start and kept as `notebooks.json.before-split`. Settings ▸ Your data saves and restores backups. Locked sections are stored, synced and backed up only in encrypted form.
+
+Your AI key, WebDAV password and Google sign-in are kept in the system keyring: Windows Credential Manager, or the Secret Service on Linux (GNOME Keyring, KWallet). The settings files keep an empty field. On Android they are encrypted with a key held by Android's key store. If no keyring is running on Linux, they stay in the app's own folder.
 
 [Privacy policy](https://leafnotes.briggen.dev/privacy) · [Terms](https://leafnotes.briggen.dev/terms)
 
@@ -79,15 +91,25 @@ Your AI key, WebDAV password and Google sign-in are kept in the system keyring: 
 ```
 src/main.rs      start-up and --screenshot
 src/lib.rs       the app: state, saving, AI jobs, recording, sync glue
-src/chrome.rs    title bar, toolbar tabs, side panels, settings, dialogs
+src/chrome.rs    title bar, toolbar tabs, side panels, dialogs
+src/settings.rs  the Settings window
 src/canvas.rs    the page: paper, notes, ink, deck editor
 src/model.rs     notebooks, pages, notes, flashcards, saving
 src/rich.rs      text formatting      src/math.rs   LaTeX rendering
 src/hw.rs        offline handwriting recognition (models in assets/)
 src/sync.rs      sync and merging     src/ai.rs     AI providers
 src/audio.rs     recording/playback   src/export.rs PDF export
+src/storage.rs   files on disk, page history     src/vault.rs, locks.rs  locked sections
+src/safety.rs    restore, import, conflict compare   src/index.rs  search in ink and PDFs
+src/welcome.rs   tour, help, What's new, crash reports   src/updates.rs  update notice
+src/transcribe.rs  recording transcripts   src/droid.rs + android/java  Android platform parts
+src/headless.rs  drawing without a window; click-through tests
 tools/handwriting/train.py   trains the handwriting models
 ```
+
+## Publishing
+
+Ready-made files in `packaging/`: `dev.briggen.LeafNotes.metainfo.xml` (software centres, validated with appstreamcli), `flatpak/` (Flathub manifest; generate `cargo-sources.json` first), `winget/make.sh` (Windows Package Manager manifests for a release), `fdroid/` (F-Droid metadata draft) and `website/download.html` (a download page for leafnotes.briggen.dev). Submitting them needs your accounts at each store.
 
 ## License
 

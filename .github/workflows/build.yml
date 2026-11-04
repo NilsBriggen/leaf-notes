@@ -38,13 +38,36 @@ jobs:
   msi:
     # windows-2022 comes with the WiX 3 toolset that cargo-wix uses
     runs-on: windows-2022
+    env:
+      # code signing happens only when a certificate is set up (secrets WINDOWS_CERT_PFX_B64 and WINDOWS_CERT_PASSWORD)
+      HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-wix --locked
+      - run: cargo build --release
+      - name: Sign the program
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          CERT: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:CERT))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target\release\leafnotes.exe
       - run: cargo wix init --force
-      - run: cargo wix --nocapture --output target/wix/LeafNotes-x86_64.msi
+      - run: cargo wix --no-build --nocapture --output target/wix/LeafNotes-x86_64.msi
+      - name: Sign the installer
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 target\wix\LeafNotes-x86_64.msi
+          Remove-Item "$env:RUNNER_TEMP\cert.pfx"
       - uses: actions/upload-artifact@v4
         with:
           name: LeafNotes-windows

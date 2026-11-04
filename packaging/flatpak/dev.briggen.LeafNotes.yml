@@ -1,0 +1,36 @@
+# Flatpak build for Flathub. Before submitting, generate cargo-sources.json next to this file:
+#   python3 flatpak-cargo-generator.py ../../Cargo.lock -o cargo-sources.json
+# (flatpak-cargo-generator.py is in https://github.com/flatpak/flatpak-builder-tools, folder cargo)
+app-id: dev.briggen.LeafNotes
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions: [org.freedesktop.Sdk.Extension.rust-stable]
+command: leafnotes
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio      # recording and playback
+  - --share=network          # AI, sync, update check
+  - --talk-name=org.freedesktop.secrets   # passwords in the system keyring
+  - --talk-name=org.freedesktop.portal.Desktop
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env: { CARGO_HOME: /run/build/leafnotes/cargo }
+modules:
+  - name: leafnotes
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release
+      - install -Dm755 target/release/leafnotes /app/bin/leafnotes
+      - install -Dm644 packaging/dev.briggen.LeafNotes.desktop /app/share/applications/dev.briggen.LeafNotes.desktop
+      - install -Dm644 packaging/leafnotes.png /app/share/icons/hicolor/256x256/apps/dev.briggen.LeafNotes.png
+      - install -Dm644 packaging/dev.briggen.LeafNotes.metainfo.xml /app/share/metainfo/dev.briggen.LeafNotes.metainfo.xml
+    sources:
+      - type: git
+        url: https://github.com/NilsBriggen/leaf-notes.git
+        tag: v0.2.0
+      - cargo-sources.json

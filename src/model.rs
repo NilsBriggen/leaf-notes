@@ -546,6 +546,8 @@ pub fn sample() -> Store {
 }
 
 pub fn data_dir() -> PathBuf {
+    // a different folder on request (portable use, tests)
+    if let Some(d) = std::env::var_os("LEAFNOTES_DATA").filter(|d| !d.is_empty()) { return PathBuf::from(d); }
     #[cfg(target_os = "android")]
     { return crate::ANDROID_DATA.get().cloned().unwrap_or_else(|| PathBuf::from("/data/local/tmp/leafnotes")); }
     #[allow(unreachable_code)]

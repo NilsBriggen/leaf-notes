@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what software centres (GNOME Software, KDE Discover, Flathub) show. -->
+<component type="desktop-application">
+  <id>dev.briggen.LeafNotes</id>
+  <name>Leaf Notes</name>
+  <summary>Notes with pen, maths, recordings and flashcards</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="dev.briggen"><name>Nils Briggen</name></developer>
+  <description>
+    <p>A notetaking app for students: write with a pen or type, mix in maths, pictures, PDF printouts and recordings, and study from flashcards. Everything works offline; AI with your own key and sync are optional.</p>
+    <ul>
+      <li>Notebooks, sections and pages, with links between pages, tags, tasks and search</li>
+      <li>Pen and handwriting, turned into text or maths offline</li>
+      <li>LaTeX maths, tables, checklists and code</li>
+      <li>Recordings linked to what you wrote, and transcripts</li>
+      <li>Flashcard decks with spaced repetition</li>
+      <li>Sync through Google Drive, a synced folder or WebDAV; password-locked sections</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">dev.briggen.LeafNotes.desktop</launchable>
+  <icon type="remote">https://raw.githubusercontent.com/NilsBriggen/leaf-notes/main/packaging/leafnotes.png</icon>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A lecture page with notes, maths and handwriting</caption>
+      <image>https://raw.githubusercontent.com/NilsBriggen/leaf-notes/main/packaging/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://leafnotes.briggen.dev</url>
+  <url type="bugtracker">https://github.com/NilsBriggen/leaf-notes/issues</url>
+  <url type="vcs-browser">https://github.com/NilsBriggen/leaf-notes</url>
+  <categories><category>Office</category><category>Education</category></categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-11-05"><description><p>Welcome tour, page history, locked sections, search in handwriting and PDFs, transcripts and more.</p></description></release>
+  </releases>
+</component>

@@ -106,3 +106,71 @@ fn paint(px: &mut [[f32; 4]], w: usize, h: usize, ppp: f32, p: &epaint::ClippedP
         }
     }
 }
+
+/// Click-through tests: the real app, driven by its accessibility tree (buttons are found by
+/// their names, as a screen reader would), without a window.
+#[cfg(test)]
+mod clickthrough {
+    use eframe::egui::{self, accesskit};
+    use std::collections::HashMap;
+
+    struct Harness { ctx: egui::Context, app: crate::NotesApp, frame: eframe::Frame, t: f64, nodes: HashMap<accesskit::NodeId, (String, egui::Rect)> }
+
+    impl Harness {
+        fn new() -> Harness {
+            crate::i18n::set("en");
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let app = crate::NotesApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(std::env::temp_dir().join("ln-click.png")));
+            let mut h = Harness { ctx, app, frame: eframe::Frame::_new_kittest(), t: 0.0, nodes: HashMap::new() };
+            h.run(vec![]);
+            h.run(vec![]);
+            h
+        }
+        fn run(&mut self, events: Vec<egui::Event>) {
+            use eframe::App;
+            self.t += 1.0 / 60.0;
+            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(self.t), events, focused: true, ..Default::default() };
+            let mut out = self.ctx.run_ui(raw, |ui| self.app.ui(ui, &mut self.frame));
+            out.textures_delta.clear();
+            if let Some(u) = out.platform_output.accesskit_update {
+                for (id, node) in u.nodes {
+                    if let (Some(label), Some(b)) = (node.label(), node.bounds()) {
+                        self.nodes.insert(id, (label.to_string(), egui::Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32))));
+                    } else { self.nodes.remove(&id); }
+                }
+            }
+        }
+        /// Click the control with this name (the topmost-left one if there are several).
+        fn click(&mut self, label: &str) {
+            let rect = self.nodes.values().filter(|(l, _)| l == label).map(|(_, r)| *r).min_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap())
+                .unwrap_or_else(|| panic!("no control named {label:?}; there are: {:?}", self.nodes.values().map(|v| &v.0).collect::<Vec<_>>()));
+            let p = rect.center();
+            let button = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+            self.run(vec![egui::Event::PointerMoved(p)]);
+            self.run(vec![button(true)]);
+            self.run(vec![button(false)]);
+            self.run(vec![]);
+        }
+    }
+
+    #[test]
+    fn main_tasks_by_clicking() {
+        let mut h = Harness::new();
+        // a new page from the pages column
+        let before = h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages.len();
+        h.click("+ Page");
+        assert_eq!(h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages.len(), before + 1);
+        // Insert ▸ Checklist puts a checklist on the page
+        h.click("Insert");
+        h.click("Checklist");
+        let page = &h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg];
+        assert!(page.blocks.iter().any(|b| matches!(b.kind, crate::model::Kind::Checklist { .. })));
+        // another section from the side panel
+        h.click("Ideas");
+        assert_eq!(h.app.store.notebooks[h.app.nb].sections[h.app.sec].name, "Ideas");
+        // the help window
+        h.click("?");
+        assert!(h.app.st.show_help);
+    }
+}

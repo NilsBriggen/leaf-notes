@@ -162,4 +162,79 @@ impl NotesApp {
     }
 }
 
+/// Crash reports: if the app itself panics, a short report is kept; next start asks whether to send it.
+pub(crate) fn install_crash_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    static UI: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+    ONCE.call_once(|| {
+        let _ = UI.set(std::thread::current().id());
+        let dir = data_dir();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // background jobs (reading handwriting, PDFs …) catch their own failures: only the app itself counts
+            if UI.get() == Some(&std::thread::current().id()) {
+                let text = format!("Leaf Notes {VERSION} · {} {}\n\n{info}\n\n{}", std::env::consts::OS, std::env::consts::ARCH, std::backtrace::Backtrace::force_capture());
+                let _ = std::fs::write(dir.join(format!("crash-{}.txt", now_secs())), text);
+            }
+            previous(info);
+        }));
+    });
+}
+
+/// Reports left by earlier crashes, newest first.
+pub(crate) fn crash_reports() -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(data_dir()).into_iter().flatten().flatten().map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("crash-") && n.ends_with(".txt"))).collect();
+    v.sort();
+    v.reverse();
+    v
+}
+
+impl NotesApp {
+    pub(crate) fn crash_window(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.st.crash.clone() else { return };
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let (mut send, mut delete) = (false, false);
+        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
+        egui::Modal::new(egui::Id::unique("crash")).frame(frame).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.label(RichText::new(tr("Leaf Notes closed unexpectedly")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
+            ui.label(tr("Your notes were saved up to a few seconds before. A short report of what went wrong can help fix it; it contains no notes, only where in the program it happened. You'll see it before it's sent."));
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| { ui.label(RichText::new(text.lines().take(14).collect::<Vec<_>>().join("\n")).monospace().size(11.0).weak()); });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent(ui))).clicked() { send = true; }
+                if ui.button(tr("Delete it")).clicked() { delete = true; }
+            });
+        });
+        if send {
+            let body: String = format!("What were you doing when it happened?\n\n\n```\n{}\n```", text.chars().take(5000).collect::<String>());
+            ctx.open_url(egui::OpenUrl::new_tab(format!("{ISSUES}?title={}&body={}", enc("Crash report"), enc(&body))));
+        }
+        if send || delete {
+            for p in crash_reports() { let _ = std::fs::remove_file(p); }
+            self.st.crash = None;
+        }
+    }
+}
+
 fn enc(s: &str) -> String { s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect() }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn keeps_a_report_when_the_app_crashes() {
+        let dir = std::env::temp_dir().join(format!("ln-crash-{}", crate::model::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("LEAFNOTES_DATA", &dir);
+        super::install_crash_hook();
+        let _ = std::panic::catch_unwind(|| panic!("test crash"));
+        let reports = super::crash_reports();
+        std::env::remove_var("LEAFNOTES_DATA");
+        assert_eq!(reports.len(), 1);
+        let text = std::fs::read_to_string(&reports[0]).unwrap();
+        assert!(text.contains("test crash") && text.contains(super::VERSION));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
