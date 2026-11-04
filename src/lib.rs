@@ -140,6 +140,8 @@ pub(crate) struct Prefs {
     lang: String,
     /// The version whose "What's new" was shown (the tour shows on a new install instead).
     seen_version: String,
+    /// Full-strength text and stronger borders.
+    high_contrast: bool,
 }
 
 impl Default for Prefs {
@@ -147,7 +149,7 @@ impl Default for Prefs {
         Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
             hl_color: [253, 224, 71, 120], erase_partial: true, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
-            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new() }
+            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new(), high_contrast: false }
     }
 }
 
@@ -167,6 +169,15 @@ struct St {
     editing: Option<u64>,
     /// Size of the page area last frame (to notice the on-screen keyboard taking room).
     canvas_avail: Vec2,
+    /// Each page's zoom.
+    scales: HashMap<u64, f32>,
+    /// The tool to go back to after erasing with the stylus's eraser end or side button.
+    tool_before_erase: Option<Tool>,
+    restore_tool: bool,
+    /// A narrow window or phone: side panels fold away after picking a page.
+    narrow: bool,
+    /// Last input was touch: bigger buttons and spacing.
+    touch_ui: bool,
     /// Time of the previous frame (for the save timer).
     prev_t: f64,
     /// Since when nothing wants the keyboard (it closes after a short pause, never in a flicker).
@@ -366,6 +377,7 @@ fn apply_prefs(ctx: &egui::Context, p: &Prefs) {
     ACCENT.store(u32::from_be_bytes([0, p.accent[0], p.accent[1], p.accent[2]]), Relaxed);
     rich::LINE_X100.store((p.line.clamp(1.2, 2.0) * 100.0) as u32, Relaxed);
     rich::USE_SERIF.store(p.serif, Relaxed);
+    HIGH_CONTRAST.store(p.high_contrast, Relaxed);
     apply_theme(ctx, p.dark);
 }
 
@@ -409,8 +421,19 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
     v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 28 }) };
     v.window_stroke = EStroke::new(1.0, if dark { Color32::from_rgb(44, 52, 53) } else { Color32::from_rgb(225, 231, 228) });
     v.window_fill = v.extreme_bg_color;
+    if HIGH_CONTRAST.load(std::sync::atomic::Ordering::Relaxed) {
+        let (fg, weak, line) = if dark { (Color32::WHITE, Color32::from_gray(215), Color32::from_gray(160)) } else { (Color32::BLACK, Color32::from_gray(45), Color32::from_gray(85)) };
+        v.override_text_color = Some(fg);
+        v.weak_text_color = Some(weak);
+        v.widgets.noninteractive.bg_stroke = EStroke::new(1.5, line);
+        v.widgets.inactive.bg_stroke = EStroke::new(1.0, line);
+        v.window_stroke = EStroke::new(1.5, line);
+        v.selection.stroke = EStroke::new(2.0, v.selection.stroke.color);
+    }
     ctx.set_visuals(v);
 }
+
+static HIGH_CONTRAST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl NotesApp {
     pub fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
@@ -446,7 +469,7 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
@@ -493,6 +516,7 @@ impl NotesApp {
     }
 
     fn go_to(&mut self, nb: usize, sec: usize, pg: usize) {
+        if self.st.narrow { self.st.p.show_nav = false; } // phones: show the page that was picked
         (self.nb, self.sec, self.pg) = (nb, sec, pg);
         if let Some(id) = self.store.notebooks.get(nb).and_then(|n| n.sections.get(sec)).and_then(|s| s.pages.get(pg)).map(|p| p.id) {
             self.st.p.recent.retain(|r| *r != id);
@@ -1122,12 +1146,22 @@ impl eframe::App for NotesApp {
         let ctx = ui.ctx().clone();
         // Pen pressure arrives as touch force on platforms that report it.
         self.st.frame_force = None;
+        // the eraser end / side button erased one stroke: back to the tool from before (a frame later,
+        // so the stroke finishes as an eraser stroke)
+        if std::mem::take(&mut self.st.restore_tool) { if let Some(t) = self.st.tool_before_erase.take() { self.st.tool = t; } }
         ctx.input(|i| {
             let touched = i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. }));
             for e in &i.events {
                 match e {
                     egui::Event::Touch { force, phase, .. } => {
-                        if let Some(f) = force { self.st.force = Some(*f); self.st.frame_force = Some(*f); }
+                        // a stylus encodes its eraser end as pressure below 0 and a held side button as above 1
+                        let (pressure, erase) = match *force { Some(f) if f < 0.0 => (Some(-f), true), Some(f) if f > 1.0 => (Some(f - 1.0), true), f => (f, false) };
+                        if let Some(f) = pressure { self.st.force = Some(f); self.st.frame_force = Some(f); }
+                        if *phase == egui::TouchPhase::Start && erase && self.st.tool_before_erase.is_none() {
+                            self.st.tool_before_erase = Some(self.st.tool);
+                            self.st.tool = Tool::Eraser;
+                        }
+                        if matches!(phase, egui::TouchPhase::End | egui::TouchPhase::Cancel) && self.st.tool_before_erase.is_some() { self.st.restore_tool = true; }
                         // a stylus reports pressure; most fingers on touch screens don't
                         if *phase == egui::TouchPhase::Start {
                             self.st.input = if force.is_some() { Input::Pen } else { Input::Finger };
@@ -1187,6 +1221,23 @@ impl eframe::App for NotesApp {
         if bottom > 0.0 { egui::Panel::bottom("bar-bottom").exact_size(bottom).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
         if left > 0.0 { egui::Panel::left("bar-left").exact_size(left).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
         if right > 0.0 { egui::Panel::right("bar-right").exact_size(right).resizable(false).show_separator_line(false).frame(blank).show(ui, |_| {}); }
+        // phones and narrow windows: the side panels fold away (☰ brings them back) and close again
+        // after picking a page; touch gets larger targets
+        let narrow = ctx.content_rect().width() < 760.0;
+        if narrow != self.st.narrow {
+            self.st.narrow = narrow;
+            self.st.p.show_nav = !narrow;
+            if narrow { self.st.p.show_ai = false; }
+        }
+        let touch = matches!(self.st.input, Input::Finger | Input::Pen);
+        if touch != self.st.touch_ui {
+            self.st.touch_ui = touch;
+            ctx.all_styles_mut(|s| {
+                s.spacing.interact_size.y = if touch { 36.0 } else { 26.0 };
+                s.spacing.button_padding = if touch { Vec2::new(14.0, 8.0) } else { Vec2::new(10.0, 5.0) };
+                s.spacing.item_spacing = if touch { Vec2::new(10.0, 8.0) } else { Vec2::new(8.0, 6.0) };
+            });
+        }
         self.title_bar(ui);
         self.ribbon(ui);
         self.status_bar(ui);

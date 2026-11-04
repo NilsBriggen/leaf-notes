@@ -416,9 +416,17 @@ impl<T: 'static> EventLoop<T> {
                                 location,
                                 id: pointer.pointer_id() as u64,
                                 // Leaf Notes: only a stylus reports pressure, so apps can tell it from a finger
-                                // (Android reports a pressure value for fingers too; the tool type tells them apart)
-                                force: matches!(pointer.tool_type(), android_activity::input::ToolType::Stylus | android_activity::input::ToolType::Eraser)
-                                    .then(|| Force::Normalized(pointer.pressure() as f64)),
+                                // (Android reports a pressure value for fingers too; the tool type tells them apart).
+                                // The stylus state rides along: below 0 = the eraser end, above 1 = side button held.
+                                force: {
+                                    let p = (pointer.pressure() as f64).clamp(0.001, 1.0);
+                                    match pointer.tool_type() {
+                                        android_activity::input::ToolType::Eraser => Some(Force::Normalized(-p)),
+                                        android_activity::input::ToolType::Stylus if motion_event.button_state().stylus_primary() => Some(Force::Normalized(1.0 + p)),
+                                        android_activity::input::ToolType::Stylus => Some(Force::Normalized(p)),
+                                        _ => None,
+                                    }
+                                },
                             }),
                         };
                         callback(event, self.window_target());

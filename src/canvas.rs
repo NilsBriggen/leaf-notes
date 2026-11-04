@@ -43,7 +43,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         }
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            let w = (ui.available_width() - 60.0).clamp(160.0, 680.0);
+            let w = (ui.available_width() - 110.0).clamp(160.0, 680.0); // room for the star and ⋯ at any size
             let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(31.0))
                 .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(tr("Untitled page")).desired_width(w).margin(egui::Margin::ZERO));
             if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
@@ -119,11 +119,14 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         let avail = ui.available_size();
         let outer = Rect::from_min_size(ui.cursor().min, avail);
         let mut view = st.views.get(&page.id).copied().unwrap_or(Rect::from_min_size(Pos2::ZERO, avail));
+        // the page's zoom is kept as such, so resizing the page area (panels, keyboard, interface size) never changes it
+        let mut scale = st.scales.get(&page.id).copied().unwrap_or(1.0);
         if let Some(c) = st.capture.as_mut().filter(|c| c.page == page.id && !c.done()) {
             // show tile k exactly, then photograph it once it has settled for a few frames
             let s = c.scale(avail);
             let th = avail.y / s;
             view = Rect::from_min_size(Pos2::new(c.content.left(), c.content.top() + c.k as f32 * th), avail / s);
+            scale = s;
             st.pan = Vec2::ZERO;
             st.zoom_req = None;
             let ctx = ui.ctx().clone();
@@ -151,7 +154,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         }
         if st.pan != Vec2::ZERO { view = view.translate(-std::mem::take(&mut st.pan)); }
         if let Some(z) = st.zoom_req.take() {
-            let cur = avail.x / view.width().max(1.0);
+            let cur = scale;
             let target = match z {
                 ZoomReq::By(f) => cur * f,
                 ZoomReq::To(t) => t,
@@ -161,11 +164,11 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                     avail.x / (right + 40.0)
                 }
             }.clamp(0.3, 4.0);
-            view = Rect::from_min_size(view.min, avail / target);
+            scale = target;
         }
         // Keep the zoom when the space changes (the on-screen keyboard opening, a window resize):
         // the scene would otherwise zoom out to fit the old view into the smaller area.
-        view = Rect::from_min_size(view.min, avail / (avail.x / view.width().max(1.0)).clamp(0.3, 4.0));
+        view = Rect::from_min_size(view.min, avail / scale);
         // the space just got shorter (keyboard): keep the note being typed in on screen
         if avail.y < st.canvas_avail.y - 1.0 {
             if let Some(b) = st.editing.and_then(|id| page.blocks.iter().find(|b| b.id == id)) {
@@ -179,7 +182,10 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         // keep the paper from drifting away from the top-left corner
         if view.top() < -80.0 { view = view.translate(Vec2::new(0.0, -80.0 - view.top())); }
         if view.left() < -200.0 { view = view.translate(Vec2::new(-200.0 - view.left(), 0.0)); }
-        st.zoom_now = avail.x / view.width().max(1.0);
+        // pinch / Ctrl+scroll zoom inside the scene changes the view: take the new zoom from it
+        scale = (avail.x / view.width().max(1.0)).clamp(0.3, 4.0);
+        st.scales.insert(page.id, scale);
+        st.zoom_now = scale;
         st.views.insert(page.id, view);
     });
     action
@@ -490,6 +496,8 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
     // Two fingers scroll the page even while a pen tool is active.
     let from_global = ui.ctx().layer_transform_from_global(ui.layer_id()).unwrap_or_default();
     if let Some(mt) = ui.input(|i| i.multi_touch()) {
+        // palm rejection: a hand resting on the screen while the stylus writes neither scrolls nor cancels the stroke
+        if st.input == Input::Pen && st.current.is_some() { return None; }
         st.current = None;
         st.lasso.clear();
         st.pan += mt.translation_delta * from_global.scaling;

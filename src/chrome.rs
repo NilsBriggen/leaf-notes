@@ -19,7 +19,14 @@ pub(crate) fn rbtn(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -
     let col = if !ui.is_enabled() { v.weak_text_color() } else if selected { acc } else { v.text_color() };
     ui.painter().text(rect.center_top() + Vec2::new(0.0, 17.0), Align2::CENTER_CENTER, icon, FontId::proportional(18.0), col);
     ui.painter().text(rect.center_bottom() - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if ui.is_enabled() { v.text_color() } else { v.weak_text_color() });
+    focus_ring(ui, &r, rect, 6.0);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, label));
     r
+}
+
+/// A visible ring around the widget that keyboard focus is on (Tab moves it).
+pub(crate) fn focus_ring(ui: &egui::Ui, r: &egui::Response, rect: Rect, radius: f32) {
+    if r.has_focus() { ui.painter().rect_stroke(rect.expand(2.0), radius + 2.0, EStroke::new(2.0, accent(ui)), egui::StrokeKind::Outside); }
 }
 
 /// Small square ribbon button used for text formatting.
@@ -134,6 +141,9 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let x = egui::lerp(rect.left() + 12.0..=rect.right() - 12.0, t);
     ui.painter().circle_filled(Pos2::new(x, rect.center().y + 0.5), 9.5, Color32::from_black_alpha(30));
     ui.painter().circle_filled(Pos2::new(x, rect.center().y), 9.0, Color32::WHITE);
+    focus_ring(ui, &r, rect, 12.0);
+    let on = *on;
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, ""));
     r
 }
 
@@ -172,6 +182,8 @@ fn nav_item(ui: &mut egui::Ui, st: &mut St, id: u64, name: &str, color: Option<C
     painter.text(Pos2::new(x, top), Align2::LEFT_CENTER, name, font, if selected { v.strong_text_color() } else { v.text_color() });
     if let Some(s) = sub { painter.text(Pos2::new(x, rect.top() + 36.0), Align2::LEFT_CENTER, s, FontId::proportional(11.5), v.weak_text_color()); }
     if r.double_clicked() { st.rename = Some((id, name.to_string())); }
+    focus_ring(ui, &r, rect, 10.0);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
     r
 }
 
@@ -268,6 +280,9 @@ impl NotesApp {
             let r = Rect::from_min_size(Pos2::new(x, track.top() + 4.0), Vec2::new(w, 26.0));
             x += w;
             let resp = ui.interact(r, ui.scope_id().with(("tab", *name)), Sense::click());
+            focus_ring(ui, &resp, r, 13.0);
+            let (label, chosen) = (name.to_string(), self.st.tab == *t);
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, chosen, &label));
             let sel = self.st.tab == *t;
             let open = self.st.p.ribbon_open;
             if sel && open {
@@ -1347,6 +1362,7 @@ impl NotesApp {
                             row_below(ui, "Language", "Choose the language of menus, buttons and messages.", |ui| {
                                 for (code, name) in crate::i18n::LANGUAGES { ui.selectable_value(&mut p.lang, code.to_string(), if code.is_empty() { tr(name) } else { name }); }
                             });
+                            row(ui, "High contrast", "Full-strength text and stronger borders, easier to read.", |ui| { toggle(ui, &mut p.high_contrast); });
                             row(ui, "Serif headings", "Page titles and headings in a book-style typeface.", |ui| { toggle(ui, &mut p.serif); });
                             row(ui, "Show the assistant pane", "The AI pane on the right of the page.", |ui| { toggle(ui, &mut p.show_ai); });
                             row(ui, "Keep the toolbar open", "Off: the toolbar folds away until you click a tab.", |ui| { toggle(ui, &mut p.ribbon_open); });
@@ -1709,6 +1725,9 @@ fn pen_icon(ui: &mut egui::Ui, col: Color32, selected: bool, kind: Option<PenKin
     let (rect, r) = ui.allocate_exact_size(Vec2::new(30.0, 54.0), Sense::click());
     if selected || r.hovered() { ui.painter().rect_filled(rect, 8.0, if selected { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
     draw_pen(ui.painter(), rect.center_top() + Vec2::new(0.0, if selected { 3.0 } else { 8.0 }), 1.0, kind, col, false);
+    focus_ring(ui, &r, rect, 8.0);
+    let name = kind.map_or(tr("Highlighter"), |k| tr(k.name())).to_string();
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
     r
 }
 
