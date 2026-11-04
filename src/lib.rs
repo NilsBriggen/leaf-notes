@@ -31,6 +31,15 @@ fn c4(c: [u8; 4]) -> Color32 { Color32::from_rgba_unmultiplied(c[0], c[1], c[2],
 static ACCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x0F766E);
 fn accent_base() -> Color32 { let v = ACCENT.load(std::sync::atomic::Ordering::Relaxed); Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8) }
 /// Accent that reads well on the current background.
+/// All tooltips go through `tip`: one without text would show as an empty bubble, so it's skipped.
+pub(crate) trait Tip { fn tip(self, text: impl Into<egui::WidgetText>) -> Self; }
+impl Tip for egui::Response {
+    fn tip(self, text: impl Into<egui::WidgetText>) -> Self {
+        let text = text.into();
+        if text.text().trim().is_empty() { self } else { self.on_hover_text(text) }
+    }
+}
+
 fn accent(ui: &egui::Ui) -> Color32 { if ui.visuals().dark_mode { mix(accent_base(), Color32::WHITE, 0.45) } else { accent_base() } }
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 { a.lerp_to_gamma(b, t) }
 

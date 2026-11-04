@@ -51,7 +51,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 page.blocks.push(b);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let m = ui.add(egui::Button::new(RichText::new("⋯").size(18.0)).frame_when_inactive(false)).on_hover_text("Page actions");
+                let m = ui.add(egui::Button::new(RichText::new("⋯").size(18.0)).frame_when_inactive(false)).tip("Page actions");
                 // outline: every heading on the page, click to jump there
                 let mut heads: Vec<(f32, String)> = page.blocks.iter().flat_map(|b| match &b.kind {
                     Kind::Text { text, heading } if *heading > 0 => vec![(b.pos[1], text.lines().next().unwrap_or("").to_string())],
@@ -61,7 +61,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 }).filter(|(_, t)| !t.trim().is_empty()).collect();
                 heads.sort_by(|a, b| a.0.total_cmp(&b.0));
                 if heads.len() >= 2 {
-                    let o = ui.add(egui::Button::new(RichText::new("☰").size(16.0)).frame_when_inactive(false)).on_hover_text("Outline — jump to a heading");
+                    let o = ui.add(egui::Button::new(RichText::new("☰").size(16.0)).frame_when_inactive(false)).tip("Outline — jump to a heading");
                     egui::Popup::menu(&o).show(|ui| {
                         ui.label(RichText::new("ON THIS PAGE").size(10.5).weak());
                         for (y, t) in &heads {
@@ -74,15 +74,15 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                     });
                 }
                 let star = ui.add(egui::Button::new(RichText::new(if fav { "★" } else { "☆" }).size(18.0).color(if fav { Color32::from_rgb(234, 179, 8) } else { ui.visuals().weak_text_color() })).frame_when_inactive(false))
-                    .on_hover_text(if fav { "Remove from favourites" } else { "Add to favourites" });
+                    .tip(if fav { "Remove from favourites" } else { "Add to favourites" });
                 if star.clicked() { action = Some(PageAction::ToggleFav); }
                 egui::Popup::menu(&m).show(|ui| {
                     if ui.button("⧉  Duplicate page").clicked() { action = Some(PageAction::Duplicate); ui.close(); }
                     if ui.button("⎘  Copy as Markdown").clicked() { action = Some(PageAction::Copy); ui.close(); }
                     if crate::export::printout_source(page, &|id| st.heights.get(&id).copied()).is_some() {
-                        if ui.button("⇩  Export printout with notes (PDF)…").on_hover_text("The original PDF pages, with your ink and typed notes on top").clicked() { action = Some(PageAction::Pdf(false)); ui.close(); }
+                        if ui.button("⇩  Export printout with notes (PDF)…").tip("The original PDF pages, with your ink and typed notes on top").clicked() { action = Some(PageAction::Pdf(false)); ui.close(); }
                         if ui.button("⇩  Export whole page as PDF…").clicked() { action = Some(PageAction::Pdf(true)); ui.close(); }
-                    } else if ui.button("⇩  Export as PDF…").on_hover_text("Just the part of the page you wrote on, with the title, on A4 pages").clicked() { action = Some(PageAction::Pdf(true)); ui.close(); }
+                    } else if ui.button("⇩  Export as PDF…").tip("Just the part of the page you wrote on, with the title, on A4 pages").clicked() { action = Some(PageAction::Pdf(true)); ui.close(); }
                     if ui.button("⇪  Export as Markdown…").clicked() { action = Some(PageAction::Export); ui.close(); }
                     if page.kind == PageKind::Deck && ui.button("▶  Study this deck").clicked() { action = Some(PageAction::Study); ui.close(); }
                     ui.separator();
@@ -648,7 +648,7 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
             if resp.hovered() || resp.dragged() { ui.painter().rect_filled(r.shrink(1.0), 6.0, v.widgets.hovered.weak_bg_fill); }
             let col = if matches!(icon, BarIcon::Delete) && resp.hovered() { Color32::from_rgb(214, 70, 60) } else if resp.hovered() || resp.dragged() { acc } else { v.text_color() };
             bar_icon(ui.painter(), r.center(), icon, col);
-            resp.on_hover_text(tip)
+            resp.tip(tip)
         };
         let g = button(ui, 0, BarIcon::Grip, "grip", Sense::drag(), "Drag to move");
         if g.dragged() { let d = g.drag_delta(); b.pos[0] = (b.pos[0] + d.x).max(0.0); b.pos[1] = (b.pos[1] + d.y).max(0.0); act = BlockAction::Changed; }
@@ -679,7 +679,7 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
             match b.tag {
                 Tag::Todo | Tag::Done => {
                     let mut done = b.tag == Tag::Done;
-                    if ui.checkbox(&mut done, "").on_hover_text("To Do").changed() { b.tag = if done { Tag::Done } else { Tag::Todo }; act = BlockAction::Changed; }
+                    if ui.checkbox(&mut done, "").tip("To Do").changed() { b.tag = if done { Tag::Done } else { Tag::Todo }; act = BlockAction::Changed; }
                 }
                 Tag::Important => { ui.label(RichText::new("★").size(16.0).color(Color32::from_rgb(234, 179, 8))); }
                 Tag::Question => { ui.label(RichText::new("?").size(16.0).strong().color(Color32::from_rgb(124, 58, 237))); }
@@ -926,7 +926,7 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             }
             let Some(mut i) = current_recording(page, st) else { return };
             let playing = st.player.as_ref().is_some_and(|p| p.id == page.recordings[i].id && p.playing());
-            if ui.add(egui::Button::new(RichText::new(if playing { "⏸" } else { "▶" }).size(16.0)).min_size(Vec2::new(34.0, 28.0))).on_hover_text(if playing { "Pause" } else { "Play" }).clicked()
+            if ui.add(egui::Button::new(RichText::new(if playing { "⏸" } else { "▶" }).size(16.0)).min_size(Vec2::new(34.0, 28.0))).tip(if playing { "Pause" } else { "Play" }).clicked()
                 && ensure_player(page, st, i) { st.player.as_ref().unwrap().set_playing(!playing); }
             if page.recordings.len() > 1 {
                 let label = |k: usize, r: &Recording| format!("Recording {} · {}", k + 1, mmss(r.secs));
@@ -940,8 +940,8 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             if ui.add(egui::Slider::new(&mut t, 0.0..=rec.secs.max(0.1)).show_value(false)).changed() && ensure_player(page, st, i) { st.player.as_ref().unwrap().seek(t); }
             ui.label(RichText::new(format!("{} / {}", mmss(t), mmss(rec.secs))).size(12.0).monospace().weak());
             let tip = "On: clicking a note or ink plays what was said while you wrote it";
-            if ui.add(egui::Button::new(RichText::new("👆 Tap notes to jump").size(12.0)).selected(st.listen).corner_radius(10)).on_hover_text(tip).clicked() { st.listen ^= true; }
-            if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).on_hover_text("Remove this recording from the page (Undo brings it back)").clicked() {
+            if ui.add(egui::Button::new(RichText::new("👆 Tap notes to jump").size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
+            if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Remove this recording from the page (Undo brings it back)").clicked() {
                 st.snap(page);
                 let id = page.recordings[i].id;
                 page.recordings.retain(|r| r.id != id);
@@ -973,7 +973,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(12.0);
             let b = ui.add_enabled(ready > 0, egui::Button::new(RichText::new(format!("▶  Study{}", if due + new > 0 { format!(" ({})", due + new) } else { String::new() })).size(15.0).color(Color32::WHITE)).fill(acc).corner_radius(18).min_size(Vec2::new(150.0, 36.0)));
-            if b.on_hover_text("Go through the cards; due and new ones come first").clicked() { study_now = true; }
+            if b.tip("Go through the cards; due and new ones come first").clicked() { study_now = true; }
         });
     });
     ui.add_space(10.0);
@@ -992,9 +992,9 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
                     ui.label(RichText::new(format!("{}", i + 1)).size(13.0).weak());
                     ui.label(RichText::new(label).size(11.0).color(col));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).on_hover_text("Delete this card").clicked() { remove = Some(i); }
-                        if i + 1 < n && ui.add(egui::Button::new("↓").frame_when_inactive(false)).on_hover_text("Move down").clicked() { swap = Some((i, i + 1)); }
-                        if i > 0 && ui.add(egui::Button::new("↑").frame_when_inactive(false)).on_hover_text("Move up").clicked() { swap = Some((i, i - 1)); }
+                        if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Delete this card").clicked() { remove = Some(i); }
+                        if i + 1 < n && ui.add(egui::Button::new("↓").frame_when_inactive(false)).tip("Move down").clicked() { swap = Some((i, i + 1)); }
+                        if i > 0 && ui.add(egui::Button::new("↑").frame_when_inactive(false)).tip("Move up").clicked() { swap = Some((i, i - 1)); }
                     });
                 });
                 ui.columns(2, |cols| {
@@ -1148,7 +1148,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
                         for (label, snip) in MATH_PALETTE {
-                            if ui.add(egui::Button::new(RichText::new(*label).size(13.0)).min_size(Vec2::new(28.0, 24.0))).on_hover_text(*snip).clicked() {
+                            if ui.add(egui::Button::new(RichText::new(*label).size(13.0)).min_size(Vec2::new(28.0, 24.0))).tip(*snip).clicked() {
                                 rich::edit_at_cursor(&ctx, id, src, |t, a, b| insert_snippet(t, a, b, snip));
                                 st.focus_id = Some(id);
                                 changed = true;
@@ -1160,7 +1160,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 });
             } else if src.trim().is_empty() {
                 if ui.add(egui::Label::new(RichText::new("∑  Empty equation — click to write one").weak()).sense(Sense::click())).clicked() { st.editing = Some(b.id); st.focus_id = Some(id); }
-            } else if math::math_label(ui, src, 22.0).on_hover_text("Click to edit").clicked() {
+            } else if math::math_label(ui, src, 22.0).tip("Click to edit").clicked() {
                 st.editing = Some(b.id);
                 st.focus_id = Some(id);
             }

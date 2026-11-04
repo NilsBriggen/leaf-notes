@@ -4,6 +4,7 @@
 
 use eframe::egui::{self, text::LayoutJob, Color32, FontFamily, FontId, Stroke, TextFormat};
 use std::sync::atomic::{AtomicBool, Ordering};
+use crate::Tip;
 
 pub static HAS_BOLD: AtomicBool = AtomicBool::new(false);
 pub static HAS_SERIF: AtomicBool = AtomicBool::new(false);
@@ -222,7 +223,7 @@ pub fn view(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -
                     Piece::Link(l) => {
                         if !job.is_empty() { clicked |= ui.label(std::mem::take(&mut job)).clicked(); }
                         let r = ui.add(egui::Label::new(egui::RichText::new(format!("↗ {l}")).size(size).color(c.accent).underline()).sense(egui::Sense::click()))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Open this page");
+                            .on_hover_cursor(egui::CursorIcon::PointingHand).tip("Open this page");
                         if r.clicked() { link = Some(l); }
                     }
                 }

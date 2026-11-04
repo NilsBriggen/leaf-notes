@@ -24,7 +24,7 @@ pub(crate) fn rbtn(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -
 /// Small square ribbon button used for text formatting.
 fn sbtn(ui: &mut egui::Ui, text: RichText, tip: &str, selected: bool) -> egui::Response {
     let b = egui::Button::new(text).min_size(Vec2::new(28.0, 22.0)).selected(selected).frame_when_inactive(false);
-    ui.add(b).on_hover_text(tip)
+    ui.add(b).tip(tip)
 }
 
 /// A captioned ribbon group followed by a divider.
@@ -169,28 +169,34 @@ impl NotesApp {
     pub(crate) fn title_bar(&mut self, ui: &mut egui::Ui) {
         let desk = ui.visuals().panel_fill;
         egui::Panel::top("title").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 10 })).show(ui, |ui| {
+            // Narrow windows (and phones): the tabs get their own row, then buttons shrink to icons.
+            let full = ui.available_width();
+            let (two_rows, compact) = (full < 1080.0, full < 845.0);
             ui.horizontal(|ui| {
                 ui.set_min_height(34.0);
                 let v = ui.visuals().clone();
                 let acc = accent(ui);
-                if ui.add(egui::Button::new(RichText::new("☰").size(17.0).color(v.weak_text_color())).frame_when_inactive(false)).on_hover_text("Show or hide notebooks").clicked() { self.st.p.show_nav ^= true; self.st.dirty = true; }
+                if ui.add(egui::Button::new(RichText::new("☰").size(17.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Show or hide notebooks").clicked() { self.st.p.show_nav ^= true; self.st.dirty = true; }
                 // brand: a leaf on a teal tile, and the name in the serif
                 let (tile, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
                 ui.painter().rect_filled(tile, 9.0, accent_base());
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tile.shrink(5.0)));
                 leaf(&mut child, 20.0, mix(accent_base(), Color32::WHITE, 0.8), accent_base());
-                ui.label(RichText::new("Leaf Notes").font(rich::serif(19.0)).color(v.strong_text_color()));
-                ui.add_space(18.0);
-                self.tabs(ui);
+                if full >= 560.0 { ui.label(RichText::new("Leaf Notes").font(rich::serif(19.0)).color(v.strong_text_color())); }
+                if !two_rows {
+                    ui.add_space(18.0);
+                    self.tabs(ui);
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    if ui.add(egui::Button::new(RichText::new("⚙").size(16.0).color(v.weak_text_color())).frame_when_inactive(false)).on_hover_text("Settings").clicked() { self.st.show_settings ^= true; self.st.settings_tab = 0; }
+                    if ui.add(egui::Button::new(RichText::new("⚙").size(16.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Settings").clicked() { self.st.show_settings ^= true; self.st.settings_tab = 0; }
                     let ai_on = self.st.p.show_ai;
-                    let b = egui::Button::new(RichText::new("✦  Assistant").color(if ai_on { Color32::WHITE } else { acc }))
+                    let b = egui::Button::new(RichText::new(if compact { "✦" } else { "✦  Assistant" }).color(if ai_on { Color32::WHITE } else { acc }))
                         .fill(if ai_on { accent_base() } else { v.extreme_bg_color }).stroke(EStroke::new(1.0, if ai_on { accent_base() } else { v.widgets.noninteractive.bg_stroke.color }))
                         .corner_radius(17).min_size(Vec2::new(0.0, 34.0));
-                    if ui.add(b).on_hover_text("Show or hide the AI assistant").clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
-                    let w = (ui.available_width() - 90.0).clamp(120.0, 300.0);
+                    if ui.add(b).tip("Show or hide the AI assistant").clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
+                    // room left for undo, redo and Record
+                    let w = (ui.available_width() - if compact { 130.0 } else { 190.0 }).clamp(90.0, 300.0);
                     // The pill, icon and key hint are drawn here; only the typing area is a text box,
                     // vertically centred between them so nothing overlaps.
                     let (pill, pill_resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
@@ -213,8 +219,8 @@ impl NotesApp {
                         .margin(egui::Margin::symmetric(4, 0)).desired_width(field.width()).font(FontId::proportional(14.0)));
                     if pill_resp.clicked() { r.request_focus(); }
                     want_focus(&mut self.st, &r);
-                    if ui.add_enabled(!self.st.redo.is_empty(), egui::Button::new(RichText::new("↷").size(16.0)).frame_when_inactive(false)).on_hover_text("Redo (Ctrl+Y)").clicked() { self.undo(true); }
-                    if ui.add_enabled(!self.st.undo.is_empty(), egui::Button::new(RichText::new("↶").size(16.0)).frame_when_inactive(false)).on_hover_text("Undo (Ctrl+Z)").clicked() { self.undo(false); }
+                    if ui.add_enabled(!self.st.redo.is_empty(), egui::Button::new(RichText::new("↷").size(16.0)).frame_when_inactive(false)).tip("Redo (Ctrl+Y)").clicked() { self.undo(true); }
+                    if ui.add_enabled(!self.st.undo.is_empty(), egui::Button::new(RichText::new("↶").size(16.0)).frame_when_inactive(false)).tip("Undo (Ctrl+Z)").clicked() { self.undo(false); }
                     ui.add_space(6.0);
                     let red = Color32::from_rgb(220, 50, 47);
                     let rec_btn = if let Some((_, _, _, start)) = &self.st.recorder {
@@ -222,11 +228,15 @@ impl NotesApp {
                         let pulse = (ui.input(|i| i.time) * 2.0).sin() > 0.0;
                         egui::Button::new(RichText::new(format!("{}  {:02}:{:02}  ■", if pulse { "●" } else { "○" }, secs / 60, secs % 60)).color(Color32::WHITE)).fill(red).corner_radius(17).min_size(Vec2::new(0.0, 34.0))
                     } else {
-                        egui::Button::new(RichText::new("●  Record").color(red)).frame_when_inactive(false).corner_radius(17).min_size(Vec2::new(0.0, 34.0))
+                        egui::Button::new(RichText::new(if compact { "●" } else { "●  Record" }).color(red)).frame_when_inactive(false).corner_radius(17).min_size(Vec2::new(0.0, 34.0))
                     };
-                    if ui.add(rec_btn).on_hover_text("Record audio while you take notes; later, tap any note to hear what was said then").clicked() { self.st.rec_toggle = true; }
+                    if ui.add(rec_btn).tip("Record audio while you take notes; later, tap any note to hear what was said then").clicked() { self.st.rec_toggle = true; }
                 });
             });
+            if two_rows {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| self.tabs(ui));
+            }
         });
     }
 
@@ -238,7 +248,8 @@ impl NotesApp {
         let study = if due > 0 { format!("Study · {due}") } else { "Study".to_string() };
         let names = [(Tab::Home, "Home"), (Tab::Insert, "Insert"), (Tab::Draw, "Draw"), (Tab::Ai, "AI"), (Tab::Study, study.as_str()), (Tab::View, "View")];
         let font = FontId::proportional(14.0);
-        let widths: Vec<f32> = names.iter().map(|(_, n)| ui.painter().layout_no_wrap(n.to_string(), font.clone(), Color32::WHITE).size().x + 30.0).collect();
+        let pad = if ui.available_width() < 440.0 { 16.0 } else { 30.0 };
+        let widths: Vec<f32> = names.iter().map(|(_, n)| ui.painter().layout_no_wrap(n.to_string(), font.clone(), Color32::WHITE).size().x + pad).collect();
         let (track, _) = ui.allocate_exact_size(Vec2::new(widths.iter().sum::<f32>() + 8.0, 34.0), Sense::hover());
         ui.painter().rect_filled(track, 17.0, if v.dark_mode { Color32::from_rgb(30, 36, 37) } else { Color32::from_rgb(222, 229, 226) });
         let mut x = track.left() + 4.0;
@@ -256,7 +267,9 @@ impl NotesApp {
             }
             let col = if sel && open { acc } else { v.text_color() };
             ui.painter().text(r.center(), Align2::CENTER_CENTER, *name, font.clone(), col);
-            if resp.on_hover_text(if sel && open { "Click again to fold the toolbar away" } else { "" }).clicked() {
+            // only the open tab has something to say; an empty tooltip shows as a blank bubble
+            let resp = if sel && open { resp.tip("Click again to fold the toolbar away") } else { resp };
+            if resp.clicked() {
                 if sel { self.st.p.ribbon_open ^= true; } else { self.st.tab = *t; self.st.p.ribbon_open = true; }
                 self.st.dirty = true;
             }
@@ -288,14 +301,14 @@ impl NotesApp {
 
     fn tool_buttons(&mut self, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)]) {
         for (t, icon, label) in tools {
-            if rbtn(ui, icon, label, self.st.tool == *t).on_hover_text(match t { Tool::Type => "Type and select (T)", Tool::Pen => "Pen (P)", Tool::Lasso => "Select ink (L)", Tool::Eraser => "Eraser (E)", _ => label }).clicked() { self.st.tool = *t; }
+            if rbtn(ui, icon, label, self.st.tool == *t).tip(match t { Tool::Type => "Type and select (T)", Tool::Pen => "Pen (P)", Tool::Lasso => "Select ink (L)", Tool::Eraser => "Eraser (E)", _ => label }).clicked() { self.st.tool = *t; }
         }
     }
 
     fn ribbon_home(&mut self, ui: &mut egui::Ui) {
         group(ui, "Lecture", |ui| {
-            if rbtn(ui, "🎓", "New lecture", false).on_hover_text("A new page titled with today's date").clicked() { self.start_lecture(false); }
-            if rbtn(ui, "●", "Record lecture", false).on_hover_text("New lecture page, recording from the start").clicked() { self.start_lecture(true); }
+            if rbtn(ui, "🎓", "New lecture", false).tip("A new page titled with today's date").clicked() { self.start_lecture(false); }
+            if rbtn(ui, "●", "Record lecture", false).tip("New lecture page, recording from the start").clicked() { self.start_lecture(true); }
         });
         group(ui, "Tools", |ui| self.tool_buttons(ui, &[(Tool::Type, "Aa", "Type"), (Tool::Pen, "✏", "Pen"), (Tool::Lasso, "➰", "Select ink")]));
         let target = self.st.editing.or(self.st.last_text);
@@ -338,8 +351,8 @@ impl NotesApp {
                     }
                 }
             });
-            if rbtn(ui, "☑", "All tasks", self.st.tasks).on_hover_text("Every open to-do from every notebook, in one list").clicked() { self.st.tasks ^= true; self.st.p.show_nav = true; }
-            if rbtn(ui, "🔎", "Find tags", self.st.tag_filter.is_some()).on_hover_text("See every tagged note in all notebooks").clicked() {
+            if rbtn(ui, "☑", "All tasks", self.st.tasks).tip("Every open to-do from every notebook, in one list").clicked() { self.st.tasks ^= true; self.st.p.show_nav = true; }
+            if rbtn(ui, "🔎", "Find tags", self.st.tag_filter.is_some()).tip("See every tagged note in all notebooks").clicked() {
                 self.st.tag_filter = if self.st.tag_filter.is_some() { None } else { Some(Tag::None) };
                 self.st.p.show_nav = true;
             }
@@ -360,16 +373,16 @@ impl NotesApp {
         });
         group(ui, "Media", |ui| {
             if rbtn(ui, "🖼", "Picture", false).clicked() { self.pick_file(Ins::Picture); }
-            if rbtn(ui, "📄", "Printout", false).on_hover_text("Put a PDF's pages (or a picture, Markdown or text file) onto the page so you can write on it").clicked() { self.pick_file(Ins::Printout); }
-            if rbtn(ui, "📎", "Attach file", false).on_hover_text("Attach any file as an icon you can open later").clicked() { self.pick_file(Ins::Attach); }
+            if rbtn(ui, "📄", "Printout", false).tip("Put a PDF's pages (or a picture, Markdown or text file) onto the page so you can write on it").clicked() { self.pick_file(Ins::Printout); }
+            if rbtn(ui, "📎", "Attach file", false).tip("Attach any file as an icon you can open later").clicked() { self.pick_file(Ins::Attach); }
             if rbtn(ui, "🔗", "Link", false).clicked() { self.insert(Kind::Link { url: "https://".into(), title: String::new() }); }
         });
         group(ui, "Stamp", |ui| {
             if rbtn(ui, "🕓", "Date & time", false).clicked() { self.insert(Kind::Text { text: format_date(now_secs(), true), heading: 0 }); }
         });
         group(ui, "Page", |ui| {
-            if rbtn(ui, "+", "Blank page", false).on_hover_text("New page (Ctrl+N)").clicked() { self.new_page(None); }
-            let r = rbtn(ui, "▦", "Page on… ▾", false).on_hover_text("A new page on the background you pick");
+            if rbtn(ui, "+", "Blank page", false).tip("New page (Ctrl+N)").clicked() { self.new_page(None); }
+            let r = rbtn(ui, "▦", "Page on… ▾", false).tip("A new page on the background you pick");
             egui::Popup::menu(&r).show(|ui| {
                 for (p, icon, name) in PAPERS { if ui.button(format!("{icon}  {name}")).clicked() { self.new_page(Some(p)); ui.close(); } }
             });
@@ -380,7 +393,7 @@ impl NotesApp {
         group(ui, "Tools", |ui| {
             self.tool_buttons(ui, &[(Tool::Type, "Aa", "Type"), (Tool::Lasso, "➰", "Select ink")]);
             let er = self.st.tool == Tool::Eraser;
-            if rbtn(ui, "⌫", if self.st.p.erase_partial { "Eraser" } else { "Stroke eraser" }, er).on_hover_text("Eraser (E). Click again to switch between erasing parts of strokes and whole strokes.").clicked() {
+            if rbtn(ui, "⌫", if self.st.p.erase_partial { "Eraser" } else { "Stroke eraser" }, er).tip("Eraser (E). Click again to switch between erasing parts of strokes and whole strokes.").clicked() {
                 if er { self.st.p.erase_partial ^= true; } else { self.st.tool = Tool::Eraser; }
             }
         });
@@ -390,7 +403,7 @@ impl NotesApp {
             for i in 0..n {
                 let pen = self.st.p.pens[i];
                 let sel = self.st.tool == Tool::Pen && self.st.p.pen == i;
-                let r = pen_icon(ui, c4(pen.color), sel, Some(pen.kind)).on_hover_text(format!("{} · size {:.1}\nRight-click to remove", pen.kind.name(), pen.width));
+                let r = pen_icon(ui, c4(pen.color), sel, Some(pen.kind)).tip(format!("{} · size {:.1}\nRight-click to remove", pen.kind.name(), pen.width));
                 if r.clicked() { self.st.tool = Tool::Pen; self.st.p.pen = i; self.st.dirty = true; }
                 r.context_menu(|ui| { if n > 1 && ui.button("Remove this pen").clicked() { remove = Some(i); ui.close(); } });
             }
@@ -399,7 +412,7 @@ impl NotesApp {
                 if self.st.p.pen >= i && self.st.p.pen > 0 { self.st.p.pen -= 1; }
                 self.st.dirty = true;
             }
-            if ui.add(egui::Button::new(RichText::new("+").size(18.0)).min_size(Vec2::new(26.0, 50.0)).frame_when_inactive(false)).on_hover_text("Add a pen to the case (starts as a copy of the one in hand)").clicked() {
+            if ui.add(egui::Button::new(RichText::new("+").size(18.0)).min_size(Vec2::new(26.0, 50.0)).frame_when_inactive(false)).tip("Add a pen to the case (starts as a copy of the one in hand)").clicked() {
                 let p = *self.st.pen();
                 self.st.p.pens.push(p);
                 self.st.p.pen = self.st.p.pens.len() - 1;
@@ -409,7 +422,7 @@ impl NotesApp {
             ui.add_space(8.0);
             for c in [[253, 224, 71, 120], [134, 239, 172, 120], [249, 168, 212, 120], [125, 211, 252, 120]] {
                 let sel = self.st.tool == Tool::Highlighter && self.st.p.hl_color == c;
-                if pen_icon(ui, c4([c[0], c[1], c[2], 255]), sel, None).on_hover_text("Highlighter (H)").clicked() { self.st.tool = Tool::Highlighter; self.st.p.hl_color = c; self.st.dirty = true; }
+                if pen_icon(ui, c4([c[0], c[1], c[2], 255]), sel, None).tip("Highlighter (H)").clicked() { self.st.tool = Tool::Highlighter; self.st.p.hl_color = c; self.st.dirty = true; }
             }
         });
         group(ui, "Pen in hand", |ui| {
@@ -426,14 +439,14 @@ impl NotesApp {
                         if sel { ui.painter().rect_filled(r, 8.0, v.selection.bg_fill); } else if resp.hovered() { ui.painter().rect_filled(r, 8.0, v.widgets.hovered.weak_bg_fill); }
                         let ink = if v.dark_mode { Color32::from_rgb(150, 160, 170) } else { Color32::from_rgb(71, 85, 105) };
                         draw_pen(&ui.painter_at(r), r.center_top() + Vec2::new(0.0, 3.5), 0.74, Some(k), ink, false);
-                        if resp.on_hover_text(k.name()).clicked() { self.st.pen().kind = k; }
+                        if resp.tip(k.name()).clicked() { self.st.pen().kind = k; }
                     }
                 });
                 ui.vertical_centered(|ui| {
                     ui.spacing_mut().interact_size = Vec2::new(38.0, 28.0);
                     let pen = self.st.pen();
                     let mut c = pen.color;
-                    if ui.color_edit_button_srgba_unmultiplied(&mut c).on_hover_text("Colour and see-through-ness").changed() { pen.color = c; }
+                    if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Colour and see-through-ness").changed() { pen.color = c; }
                 });
                 // a deliberately shaky line, run through the same smoothing as real ink
                 let (stab, pen) = (self.st.p.stabilizer, *self.st.pen());
@@ -456,13 +469,13 @@ impl NotesApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Size").size(11.5).weak());
                     ui.spacing_mut().slider_width = 128.0;
-                    ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).on_hover_text(tip);
+                    ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).tip(tip);
                 });
                 ui.vertical_centered(|ui| ui.label(RichText::new("Colour").size(11.5).weak()));
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Smooth").size(11.5).weak());
                     ui.spacing_mut().slider_width = 50.0;
-                    ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).on_hover_text("Smoothing: irons out shaky lines (see the sample above). More smoothing makes the line trail the pen a little.");
+                    ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).tip("Smoothing: irons out shaky lines (see the sample above). More smoothing makes the line trail the pen a little.");
                 });
                 ui.end_row();
             });
@@ -476,7 +489,7 @@ impl NotesApp {
         let any = !self.st.selected.is_empty();
         if any { group(ui, "Selection", |ui| {
             ui.add_enabled_ui(any, |ui| {
-                if rbtn(ui, "🎨", "Recolour", false).on_hover_text("Give the selected ink the current pen colour").clicked() {
+                if rbtn(ui, "🎨", "Recolour", false).tip("Give the selected ink the current pen colour").clicked() {
                     let (sel, col) = (self.st.selected.clone(), self.st.pen().color);
                     let page = self.page();
                     let snap = page.clone();
@@ -497,15 +510,15 @@ impl NotesApp {
             });
         }); }
         group(ui, "Convert", |ui| {
-            if rbtn(ui, "✎→A", "Ink to text", false).on_hover_text("Turn handwriting (selected, or all on the page) into typed text — works offline").clicked() { self.ink_convert(false); }
-            if rbtn(ui, "✎→∑", "Ink to math", false).on_hover_text("Turn handwritten math into a LaTeX equation — works offline").clicked() { self.ink_convert(true); }
+            if rbtn(ui, "✎→A", "Ink to text", false).tip("Turn handwriting (selected, or all on the page) into typed text — works offline").clicked() { self.ink_convert(false); }
+            if rbtn(ui, "✎→∑", "Ink to math", false).tip("Turn handwritten math into a LaTeX equation — works offline").clicked() { self.ink_convert(true); }
         });
     }
 
     fn ribbon_ai(&mut self, ui: &mut egui::Ui) {
         group(ui, "This page", |ui| {
             if rbtn(ui, "✦", "Summarize", false).clicked() { self.chat("Summarize this page in a few bullet points.".into()); }
-            if rbtn(ui, "▤", "Flashcards", false).on_hover_text("Write flashcards from this page into it").clicked() { self.ai_cards(); }
+            if rbtn(ui, "▤", "Flashcards", false).tip("Write flashcards from this page into it").clicked() { self.ai_cards(); }
             if rbtn(ui, "☑", "Action items", false).clicked() { self.chat("List the action items from this page as a checklist.".into()); }
             if rbtn(ui, "?", "Quiz me", false).clicked() { self.chat("Write 3 short quiz questions about this page. Put the answers at the end.".into()); }
             if rbtn(ui, "💡", "Explain", false).clicked() { self.chat("Explain the main idea of this page simply, with one example.".into()); }
@@ -513,7 +526,7 @@ impl NotesApp {
         let has_text = self.st.last_text.is_some();
         group(ui, "Writing", |ui| {
             ui.add_enabled_ui(has_text, |ui| {
-                if rbtn(ui, "✓", "Fix spelling", false).on_hover_text("Fix spelling and grammar in the note you last typed in").clicked() { self.rewrite(Rewrite::Replace, "Fix spelling and grammar. Change nothing else."); }
+                if rbtn(ui, "✓", "Fix spelling", false).tip("Fix spelling and grammar in the note you last typed in").clicked() { self.rewrite(Rewrite::Replace, "Fix spelling and grammar. Change nothing else."); }
                 if rbtn(ui, "✂", "Shorter", false).clicked() { self.rewrite(Rewrite::Replace, "Make this more concise without losing information."); }
                 if rbtn(ui, "➜", "Continue", false).clicked() { self.rewrite(Rewrite::Append, "Continue this note with one or two short paragraphs in the same style. Reply with only the new text."); }
             });
@@ -546,18 +559,18 @@ impl NotesApp {
         let (is_deck, n_cards) = (page.kind == PageKind::Deck, page.deck().len());
         let due_all = self.st.due_now;
         group(ui, "Today", |ui| {
-            if rbtn(ui, "⏰", &format!("Review due ({due_all})"), due_all > 0).on_hover_text("Cards from all your decks that are due for review").clicked() { self.start_review(); }
+            if rbtn(ui, "⏰", &format!("Review due ({due_all})"), due_all > 0).tip("Cards from all your decks that are due for review").clicked() { self.start_review(); }
         });
         group(ui, "Decks", |ui| {
-            if rbtn(ui, "+", "New deck", false).on_hover_text("A new page of flashcards in this section").clicked() { self.new_deck("New deck", vec![]); }
+            if rbtn(ui, "+", "New deck", false).tip("A new page of flashcards in this section").clicked() { self.new_deck("New deck", vec![]); }
             ui.add_enabled_ui(is_deck && n_cards > 0, |ui| {
-                if rbtn(ui, "▶", &format!("Study deck ({n_cards})"), false).on_hover_text("Go through this deck's cards").clicked() { self.start_deck(); }
+                if rbtn(ui, "▶", &format!("Study deck ({n_cards})"), false).tip("Go through this deck's cards").clicked() { self.start_deck(); }
             });
         });
         group(ui, "Make a deck from these notes", |ui| {
             ui.add_enabled_ui(!is_deck, |ui| {
-                if rbtn(ui, "▤", "Suggest cards", false).on_hover_text("Builds a deck from questions, definitions and highlights on this page — you can edit everything after").clicked() { self.deck_from_notes(); }
-                if rbtn(ui, "✦", "With AI", false).on_hover_text("Your AI writes a deck from this page (needs your AI key)").clicked() { self.ai_cards(); }
+                if rbtn(ui, "▤", "Suggest cards", false).tip("Builds a deck from questions, definitions and highlights on this page — you can edit everything after").clicked() { self.deck_from_notes(); }
+                if rbtn(ui, "✦", "With AI", false).tip("Your AI writes a deck from this page (needs your AI key)").clicked() { self.ai_cards(); }
             });
         });
     }
@@ -712,7 +725,7 @@ impl NotesApp {
         });
         if let Some(p) = set { self.page().paper = p; self.st.dirty = true; }
         group(ui, "Page zoom", |ui| {
-            if rbtn(ui, "−", "Zoom out", false).on_hover_text("Or pinch / Ctrl+scroll on the page").clicked() { self.st.zoom_req = Some(ZoomReq::By(1.0 / 1.25)); }
+            if rbtn(ui, "−", "Zoom out", false).tip("Or pinch / Ctrl+scroll on the page").clicked() { self.st.zoom_req = Some(ZoomReq::By(1.0 / 1.25)); }
             if rbtn(ui, &format!("{:.0}%", self.st.zoom_now * 100.0), "Actual size", false).clicked() { self.st.zoom_req = Some(ZoomReq::To(1.0)); }
             if rbtn(ui, "+", "Zoom in", false).clicked() { self.st.zoom_req = Some(ZoomReq::By(1.25)); }
             if rbtn(ui, "⇔", "Fit width", false).clicked() { self.st.zoom_req = Some(ZoomReq::FitWidth); }
@@ -729,7 +742,7 @@ impl NotesApp {
             let dark = self.st.p.dark;
             if rbtn(ui, if dark { "☀" } else { "☾" }, if dark { "Light mode" } else { "Dark mode" }, false).clicked() { self.st.p.dark ^= true; apply_theme(ui.ctx(), self.st.p.dark); self.st.dirty = true; }
             let focus = !self.st.p.show_nav && !self.st.p.show_ai;
-            if rbtn(ui, "⛶", "Focus", focus).on_hover_text("Hide the side panels to concentrate on the page").clicked() {
+            if rbtn(ui, "⛶", "Focus", focus).tip("Hide the side panels to concentrate on the page").clicked() {
                 self.st.p.show_nav = focus;
                 self.st.p.show_ai = focus;
                 self.st.dirty = true;
@@ -754,9 +767,9 @@ impl NotesApp {
             }
             let left = (end - now) as u64;
             let label = format!("{}  {:02}:{:02}  ■", if brk { "☕ Break" } else { "⏱ Focus" }, left / 60, left % 60);
-            if ui.add(egui::Button::new(RichText::new(label).size(11.5).color(accent(ui))).frame_when_inactive(false)).on_hover_text("Stop the timer").clicked() { self.st.focus = None; }
+            if ui.add(egui::Button::new(RichText::new(label).size(11.5).color(accent(ui))).frame_when_inactive(false)).tip("Stop the timer").clicked() { self.st.focus = None; }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-        } else if ui.add(egui::Button::new(RichText::new("⏱ Focus 25").size(11.5)).frame_when_inactive(false)).on_hover_text("25 minutes of focused study, then a 5-minute break").clicked() {
+        } else if ui.add(egui::Button::new(RichText::new("⏱ Focus 25").size(11.5)).frame_when_inactive(false)).tip("25 minutes of focused study, then a 5-minute break").clicked() {
             self.st.focus = Some((now + 25.0 * 60.0, false));
             self.st.say("Focus time: 25 minutes. You've got this.");
         }
@@ -784,7 +797,7 @@ impl NotesApp {
     fn tasks_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("All tasks").font(rich::serif(18.0)).color(ui.visuals().strong_text_color()));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if ui.add(egui::Button::new("✕").frame_when_inactive(false)).on_hover_text("Back to pages").clicked() { self.st.tasks = false; } });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if ui.add(egui::Button::new("✕").frame_when_inactive(false)).tip("Back to pages").clicked() { self.st.tasks = false; } });
         });
         ui.label(RichText::new("Open to-dos from every notebook. Tick them off here.").size(11.5).weak());
         ui.separator();
@@ -797,7 +810,7 @@ impl NotesApp {
             for (at, title, bid, idx, text, _) in &tasks {
                 if last_page != Some(*at) {
                     ui.add_space(6.0);
-                    if ui.add(egui::Label::new(RichText::new(title).size(12.0).color(accent(ui))).sense(Sense::click())).on_hover_text("Open this page").clicked() { go = Some(*at); }
+                    if ui.add(egui::Label::new(RichText::new(title).size(12.0).color(accent(ui))).sense(Sense::click())).tip("Open this page").clicked() { go = Some(*at); }
                     last_page = Some(*at);
                 }
                 ui.horizontal(|ui| {
@@ -846,12 +859,12 @@ impl NotesApp {
                             else if self.st.sync_ok > 0 { (format!("🔄 Synced {}", ago(self.st.sync_ok)), "Click to sync now".into()) }
                             else { ("🔄 Sync".into(), "Click to sync now".into()) };
                         let col = if err { Color32::from_rgb(220, 80, 60) } else { ui.visuals().weak_text_color() };
-                        if ui.add(egui::Button::new(RichText::new(t).size(11.5).color(col)).frame_when_inactive(false)).on_hover_text(tip).clicked() {
+                        if ui.add(egui::Button::new(RichText::new(t).size(11.5).color(col)).frame_when_inactive(false)).tip(tip).clicked() {
                             if err { self.st.show_settings = true; self.st.settings_tab = 5; } else { self.st.sync_now = true; }
                         }
                     }
                     self.focus_timer(ui);
-                    if (self.st.zoom_now - 1.0).abs() > 0.02 && ui.add(egui::Button::new(RichText::new(format!("{:.0}%", self.st.zoom_now * 100.0)).size(11.5)).frame_when_inactive(false)).on_hover_text("Page zoom — click for actual size").clicked() { self.st.zoom_req = Some(ZoomReq::To(1.0)); }
+                    if (self.st.zoom_now - 1.0).abs() > 0.02 && ui.add(egui::Button::new(RichText::new(format!("{:.0}%", self.st.zoom_now * 100.0)).size(11.5)).frame_when_inactive(false)).tip("Page zoom — click for actual size").clicked() { self.st.zoom_req = Some(ZoomReq::To(1.0)); }
                     if !self.st.ai_rx.is_empty() { ui.label(RichText::new("AI working…").size(11.5).color(accent(ui))); ui.spinner(); }
                     if self.st.tool != Tool::Type {
                         ui.label(RichText::new(match self.st.tool { Tool::Pen => "✏ Pen", Tool::Highlighter => "Highlighter", Tool::Eraser => "Eraser", Tool::Lasso => "Select ink", Tool::Shape(_) => "Shape", Tool::Type => "" }).size(11.5).weak());
@@ -866,11 +879,11 @@ impl NotesApp {
             self.notebook_switcher(ui);
             ui.add_space(6.0);
             let jump = ui.add(egui::Button::new(RichText::new("↗  Jump to a page…").size(13.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
-                .on_hover_text("Quick switcher (Ctrl+K)");
+                .tip("Quick switcher (Ctrl+K)");
             if jump.clicked() { self.st.switcher = Some((String::new(), 0)); }
             let open_tasks = self.open_tasks().len();
             let t = ui.add(egui::Button::new(RichText::new(format!("☑  All tasks{}", if open_tasks > 0 { format!("  ·  {open_tasks}") } else { String::new() })).size(13.0).color(if self.st.tasks { accent(ui) } else { ui.visuals().weak_text_color() }))
-                .frame_when_inactive(false).selected(self.st.tasks).min_size(Vec2::new(ui.available_width(), 30.0))).on_hover_text("Every open to-do from every notebook");
+                .frame_when_inactive(false).selected(self.st.tasks).min_size(Vec2::new(ui.available_width(), 30.0))).tip("Every open to-do from every notebook");
             if t.clicked() { self.st.tasks ^= true; }
             // favourite pages, wherever they live
             let favs: Vec<(u64, String, (usize, usize, usize))> = self.st.p.favorites.iter().filter_map(|id| self.locate(*id).map(|at| {
@@ -890,7 +903,7 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("SECTIONS").size(10.5).weak());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new("+").size(15.0).color(accent(ui))).frame_when_inactive(false)).on_hover_text("New section").clicked() { self.add_section(); }
+                    if ui.add(egui::Button::new(RichText::new("+").size(15.0).color(accent(ui))).frame_when_inactive(false)).tip("New section").clicked() { self.add_section(); }
                 });
             });
             let nb_count = self.store.notebooks.len();
@@ -944,13 +957,13 @@ impl NotesApp {
                 ui.painter().circle_filled(dot.center(), 5.0, sec_color);
                 ui.label(RichText::new(name).font(rich::serif(18.0)).color(ui.visuals().strong_text_color()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let t = ui.add(egui::Button::new("▾").frame_when_inactive(false)).on_hover_text("New page on a background, or a flashcard deck");
+                    let t = ui.add(egui::Button::new("▾").frame_when_inactive(false)).tip("New page on a background, or a flashcard deck");
                     egui::Popup::menu(&t).show(|ui| {
                         for (p, icon, name) in PAPERS { if ui.button(format!("{icon}  {name}")).clicked() { self.new_page(Some(p)); ui.close(); } }
                         ui.separator();
                         if ui.button("▤  Flashcard deck").clicked() { self.new_deck("New deck", vec![]); ui.close(); }
                     });
-                    if ui.add(egui::Button::new(RichText::new("+ Page").color(accent(ui))).frame_when_inactive(false)).on_hover_text("New page (Ctrl+N)").clicked() { self.new_page(None); }
+                    if ui.add(egui::Button::new(RichText::new("+ Page").color(accent(ui))).frame_when_inactive(false)).tip("New page (Ctrl+N)").clicked() { self.new_page(None); }
                 });
             });
             ui.add_space(2.0);
@@ -983,7 +996,7 @@ impl NotesApp {
         p.text(Pos2::new(badge.right() + 8.0, rect.center().y), Align2::LEFT_CENTER, &name, FontId::proportional(14.5), v.strong_text_color());
         p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, "⏷", FontId::proportional(12.0), v.weak_text_color());
         if r.double_clicked() { self.st.rename = Some((id, name.clone())); }
-        let r = r.on_hover_text("Switch notebook");
+        let r = r.tip("Switch notebook");
         let mut pick = None;
         let mut action = 0;
         egui::Popup::menu(&r).show(|ui| {
@@ -1084,7 +1097,7 @@ impl NotesApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new(if self.st.tag_filter.is_some() && self.st.search.trim().is_empty() { "Tags" } else { "Search" }).size(15.0).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new("✕").frame_when_inactive(false)).on_hover_text("Close (Esc)").clicked() { self.st.search.clear(); self.st.tag_filter = None; }
+                if ui.add(egui::Button::new("✕").frame_when_inactive(false)).tip("Close (Esc)").clicked() { self.st.search.clear(); self.st.tag_filter = None; }
             });
         });
         ui.horizontal_wrapped(|ui| {
@@ -1120,7 +1133,7 @@ impl NotesApp {
                                     }
                                     let label = if text.chars().count() > 60 { format!("{}…", text.chars().take(60).collect::<String>()) } else { text.clone() };
                                     let r = ui.add(egui::Label::new({ let t = RichText::new(label).size(13.0); if b.tag == Tag::Done { t.strikethrough() } else { t } }).sense(Sense::click()).wrap());
-                                    if r.on_hover_text(format!("{} › {} › {}", n.name, s.name, p.title)).clicked() { go = Some((ni, si, pi)); }
+                                    if r.tip(format!("{} › {} › {}", n.name, s.name, p.title)).clicked() { go = Some((ni, si, pi)); }
                                 });
                             }
                             continue;
@@ -1173,9 +1186,9 @@ impl NotesApp {
                 ui.label(RichText::new("✦").size(17.0).color(acc));
                 ui.label(RichText::new("Assistant").size(16.0).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new("✕").frame_when_inactive(false)).on_hover_text("Close").clicked() { self.st.p.show_ai = false; }
-                    if ui.add(egui::Button::new("⚙").frame_when_inactive(false)).on_hover_text("AI settings").clicked() { self.st.show_settings = true; self.st.settings_tab = 3; }
-                    if !self.st.ai_log.is_empty() && ui.add(egui::Button::new("🗑").frame_when_inactive(false)).on_hover_text("Clear the conversation").clicked() { self.st.ai_log.clear(); }
+                    if ui.add(egui::Button::new("✕").frame_when_inactive(false)).tip("Close").clicked() { self.st.p.show_ai = false; }
+                    if ui.add(egui::Button::new("⚙").frame_when_inactive(false)).tip("AI settings").clicked() { self.st.show_settings = true; self.st.settings_tab = 3; }
+                    if !self.st.ai_log.is_empty() && ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Clear the conversation").clicked() { self.st.ai_log.clear(); }
                 });
             });
             if self.st.ai.ready() {
@@ -1213,7 +1226,7 @@ impl NotesApp {
                             let _ = rich::view(ui, text, 13.5, 0, &colors);
                             if !text.starts_with('⚠') {
                                 ui.horizontal(|ui| {
-                                    if ui.small_button("↧ Insert").on_hover_text("Add to the page as notes").clicked() { insert = Some(i); }
+                                    if ui.small_button("↧ Insert").tip("Add to the page as notes").clicked() { insert = Some(i); }
                                     if ui.small_button("⧉ Copy").clicked() { ui.ctx().copy_text(text.clone()); }
                                 });
                             }
@@ -1258,7 +1271,7 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Settings").font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).on_hover_text("Close (Esc)").clicked() { open = false; }
+                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { open = false; }
                 });
             });
             ui.add_space(10.0);
@@ -1294,10 +1307,10 @@ impl NotesApp {
                                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
                                     ui.painter().circle_filled(r.center(), 11.0, c3(c));
                                     if p.accent == c { ui.painter().circle_stroke(r.center(), 13.0, EStroke::new(2.0, ui.visuals().strong_text_color())); }
-                                    if resp.on_hover_text(name).clicked() { p.accent = c; }
+                                    if resp.tip(name).clicked() { p.accent = c; }
                                 }
                                 let mut col = c3(p.accent);
-                                if ui.color_edit_button_srgba(&mut col).on_hover_text("Any colour").changed() { p.accent = [col.r(), col.g(), col.b()]; }
+                                if ui.color_edit_button_srgba(&mut col).tip("Any colour").changed() { p.accent = [col.r(), col.g(), col.b()]; }
                             });
                             row(ui, "Interface size", "Makes everything larger or smaller (also Ctrl + / Ctrl −).", |ui| {
                                 let mut z = ctx.zoom_factor();
@@ -1502,8 +1515,8 @@ impl NotesApp {
             ui.add_space(6.0);
             ui.label(format!("The sync location already has notes ({pages} pages), and this device has its own. How should this device join?"));
             ui.add_space(12.0);
-            if ui.add(egui::Button::new(RichText::new("Combine both").size(14.0).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).on_hover_text("Every notebook from both sides, on every device").clicked() { choice = Some(Some(sync::First::Merge)); }
-            if ui.add(egui::Button::new(RichText::new("Use only the synced notes").size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).on_hover_text("This device's current notes are saved to a backup file first").clicked() { choice = Some(Some(sync::First::UseShared)); }
+            if ui.add(egui::Button::new(RichText::new("Combine both").size(14.0).color(Color32::WHITE)).fill(accent(ui)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("Every notebook from both sides, on every device").clicked() { choice = Some(Some(sync::First::Merge)); }
+            if ui.add(egui::Button::new(RichText::new("Use only the synced notes").size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("This device's current notes are saved to a backup file first").clicked() { choice = Some(Some(sync::First::UseShared)); }
             if ui.add(egui::Button::new("Not now — turn sync off").frame_when_inactive(false)).clicked() { choice = Some(None); }
         });
         let Some(c) = choice else { return };
