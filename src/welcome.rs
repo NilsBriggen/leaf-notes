@@ -7,6 +7,14 @@ const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.2.1", &[
+        "More room to write: a slimmer page header with a clear edge where the paper starts.",
+        "One set of pens: your pens, a highlighter group and the pen's settings, clearly labelled.",
+        "Recordings can always be removed from their ⋯ menu, however narrow the window.",
+        "Android: no more freezing when the screen rotates or dark mode switches.",
+        "Typing with the on-screen keyboard keeps your note in view; tapping a page with a recording starts a note again.",
+        "Many smaller layout, dark mode and wording fixes.",
+    ]),
     ("0.2.0", &[
         "A short welcome tour, a help page and a feedback button.",
         "Page history: bring back an earlier version of any page (⋯ ▸ Page history).",

@@ -806,4 +806,10 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("{n} notes", "{n} Notizen", "{n} notes"),
     ("{n} ink stroke", "{n} Strich", "{n} trait"),
     ("{n} ink strokes", "{n} Striche", "{n} traits"),
+    ("More room to write: a slimmer page header with a clear edge where the paper starts.", "Mehr Platz zum Schreiben: ein schmalerer Seitenkopf mit klarer Kante, wo das Papier beginnt.", "Plus de place pour écrire : un en-tête de page plus fin, avec un bord net là où commence le papier."),
+    ("One set of pens: your pens, a highlighter group and the pen's settings, clearly labelled.", "Eine Reihe Stifte: deine Stifte, eine Textmarker-Gruppe und die Stift-Einstellungen, klar beschriftet.", "Une seule série de stylos : vos stylos, un groupe surligneur et les réglages du stylo, bien nommés."),
+    ("Recordings can always be removed from their ⋯ menu, however narrow the window.", "Aufnahmen lassen sich immer über ihr ⋯-Menü entfernen, egal wie schmal das Fenster ist.", "Les enregistrements peuvent toujours être retirés via leur menu ⋯, même dans une fenêtre étroite."),
+    ("Android: no more freezing when the screen rotates or dark mode switches.", "Android: kein Einfrieren mehr beim Drehen des Bildschirms oder Wechsel in den Dunkelmodus.", "Android : plus de blocage quand l'écran pivote ou que le mode sombre change."),
+    ("Typing with the on-screen keyboard keeps your note in view; tapping a page with a recording starts a note again.", "Beim Tippen mit der Bildschirmtastatur bleibt die Notiz sichtbar; Tippen auf eine Seite mit Aufnahme beginnt wieder eine Notiz.", "La saisie au clavier virtuel garde la note visible ; toucher une page avec un enregistrement crée de nouveau une note."),
+    ("Many smaller layout, dark mode and wording fixes.", "Viele kleinere Verbesserungen an Layout, Dunkelmodus und Texten.", "De nombreuses petites corrections de mise en page, de mode sombre et de textes."),
 ];

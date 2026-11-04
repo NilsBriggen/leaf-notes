@@ -32,6 +32,7 @@
   <categories><category>Office</category><category>Education</category></categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.1" date="2026-11-05"><description><p>More room on the page, one clear set of pens, recordings that can always be removed, and Android fixes for rotation, dark mode and typing.</p></description></release>
     <release version="0.2.0" date="2026-11-05"><description><p>Welcome tour, page history, locked sections, search in handwriting and PDFs, transcripts and more.</p></description></release>
   </releases>
 </component>
