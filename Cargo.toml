@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Notes with pen, maths, recordings and flashcards"
 authors = ["Nils Briggen"]
+license = "GPL-3.0-only"
+homepage = "https://leafnotes.briggen.dev"
 
 [lib]
 crate-type = ["lib", "cdylib"]
@@ -29,6 +31,8 @@ getrandom = "0.3"
 [target.'cfg(not(target_os = "android"))'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit", "wayland", "x11", "clipboard"] }
 rfd = "0.17"
+# passwords and sign-ins in Windows Credential Manager / the Secret Service (GNOME Keyring, KWallet) / macOS Keychain
+keyring = { version = "3.6", features = ["windows-native", "apple-native", "async-secret-service", "async-io", "crypto-rust"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }

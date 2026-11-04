@@ -8,6 +8,7 @@ mod audio;
 pub(crate) mod canvas;
 mod chrome;
 pub mod sync;
+mod keys;
 
 use eframe::egui::{self, Color32, CornerRadius, Key, Modifiers, Pos2, Stroke as EStroke, TextureHandle, Vec2};
 use model::*;
@@ -357,9 +358,14 @@ impl NotesApp {
         setup_fonts(&cc.egui_ctx);
         let persist = screenshot.is_none();
         let store = if persist { load(STORE_FILE).unwrap_or_else(sample) } else { sample() };
-        let ai = if persist { load(SETTINGS_FILE).unwrap_or_default() } else { ai::AiSettings::default() };
+        let mut ai: ai::AiSettings = if persist { load(SETTINGS_FILE).unwrap_or_default() } else { ai::AiSettings::default() };
         let p: Prefs = if persist { load(PREFS_FILE).unwrap_or_default() } else { Prefs::default() };
-        let sync: sync::SyncSettings = if persist { load(sync::SYNC_FILE).unwrap_or_default() } else { Default::default() };
+        let mut sync: sync::SyncSettings = if persist { load(sync::SYNC_FILE).unwrap_or_default() } else { Default::default() };
+        if persist {
+            keys::load("ai-key", &mut ai.api_key);
+            keys::load("webdav-password", &mut sync.password);
+            keys::load("google-token", &mut sync.google_token);
+        }
         apply_prefs(&cc.egui_ctx, &p);
         cc.egui_ctx.all_styles_mut(|s| {
             s.spacing.item_spacing = Vec2::new(8.0, 6.0);
@@ -382,6 +388,7 @@ impl NotesApp {
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
             #[cfg(target_os = "android")] android: None, #[cfg(target_os = "android")] keyboard_shown: false };
         app.clamp();
+        app.st.dirty = persist; // a first save moves secrets from older settings files into the keyring
         if !persist {
             // A representative moment for the preview picture: a formatted note targeted, the AI pane mid-conversation.
             app.st.last_text = app.page().blocks.get(1).map(|b| b.id);
@@ -522,7 +529,13 @@ impl NotesApp {
         self.st.since_save = 0.0;
         if !self.st.persist { return; }
         self.st.p.last = (self.nb, self.sec, self.pg);
-        let r = save(STORE_FILE, &self.store).and_then(|_| save(SETTINGS_FILE, &self.st.ai)).and_then(|_| save(PREFS_FILE, &self.st.p)).and_then(|_| save(sync::SYNC_FILE, &self.st.sync));
+        // secrets go to the keyring; the files keep them only where there is none
+        let mut ai = self.st.ai.clone();
+        ai.api_key = keys::store("ai-key", &ai.api_key);
+        let mut sy = self.st.sync.clone();
+        sy.password = keys::store("webdav-password", &sy.password);
+        sy.google_token = keys::store("google-token", &sy.google_token);
+        let r = save(STORE_FILE, &self.store).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &self.st.p)).and_then(|_| save(sync::SYNC_FILE, &sy));
         self.st.sync_pending = true;
         if let Err(e) = r { self.st.say(format!("⚠ Could not save: {e}")); self.st.dirty = true; }
     }

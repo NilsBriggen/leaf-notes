@@ -1355,6 +1355,7 @@ impl NotesApp {
                                 ui.label("API key"); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text("paste your key").desired_width(300.0)); ui.end_row();
                                 ui.label("Model"); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(300.0)); ui.end_row();
                             });
+                            ui.label(RichText::new(format!("Your key is kept in {}.", crate::keys::place())).size(11.5).weak());
                             row(ui, "Use this AI for handwriting", "Off: the built-in recognizer reads handwriting offline. On: sent to your AI (better for cursive; needs a model that reads images).", |ui| { toggle(ui, &mut p.ink_ai); });
                             ui.horizontal(|ui| {
                                 if ui.button("Test connection").clicked() { test = true; }
@@ -1405,7 +1406,10 @@ impl NotesApp {
                                                     ui.hyperlink_to("Open the page again", url);
                                                     if ui.button("Cancel").clicked() { g_cancel = true; }
                                                 }
-                                                None => { if ui.add(egui::Button::new(RichText::new("Sign in with Google").color(Color32::WHITE)).fill(accent(ui)).corner_radius(8)).clicked() { g_start = true; } }
+                                                None => {
+                                                    if ui.add(egui::Button::new(RichText::new("Sign in with Google").color(Color32::WHITE)).fill(accent(ui)).corner_radius(8)).clicked() { g_start = true; }
+                                                    ui.hyperlink_to(RichText::new("Privacy policy").size(12.0), "https://leafnotes.briggen.dev/privacy");
+                                                }
                                             }
                                         });
                                     } else {
@@ -1425,7 +1429,7 @@ impl NotesApp {
                                     else if !self.st.sync_err.is_empty() { ui.label(RichText::new(format!("⚠ {}", self.st.sync_err)).color(Color32::from_rgb(220, 80, 60))); }
                                     else if self.st.sync_ok > 0 { ui.label(RichText::new(format!("✓ Synced {}", ago(self.st.sync_ok))).color(accent(ui))); }
                                 });
-                                ui.label(RichText::new("Sign-ins and passwords stay on this device, like your AI key. Pictures, PDFs and recordings sync too.").size(11.5).weak());
+                                ui.label(RichText::new(format!("Sign-ins and passwords are kept in {}. Pictures, PDFs and recordings sync too.", crate::keys::place())).size(11.5).weak());
                             }
                             if g_start {
                                 match sync::google_start() {
@@ -1469,6 +1473,10 @@ impl NotesApp {
                             });
                             row(ui, "Recently deleted", &format!("{} item(s) waiting to be restored or removed.", self.store.trash.len()), |ui| { if ui.button("Open").clicked() { self.st.show_trash = true; } });
                             row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| { if ui.button("Show").clicked() { self.st.show_shortcuts = true; } });
+                            row(ui, "Privacy and terms", &format!("Notes stay on your devices; secrets are kept in {}. Leaf Notes is free software under the GPL-3.0.", crate::keys::place()), |ui| {
+                                ui.hyperlink_to("Terms", "https://leafnotes.briggen.dev/terms");
+                                ui.hyperlink_to("Privacy policy", "https://leafnotes.briggen.dev/privacy");
+                            });
                             row(ui, "Reset settings", "Put every setting on this window back to how it started. Your notes are not touched.", |ui| {
                                 if ui.button("Reset").clicked() { let keep = (p.last, p.pens.clone()); *p = Prefs::default(); (p.last, p.pens) = keep; ctx.set_zoom_factor(1.0); }
                             });

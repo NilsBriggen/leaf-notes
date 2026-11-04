@@ -70,6 +70,10 @@ For Google Drive, the Google Cloud project also needs the **Google Drive API** t
 
 Notes are `notebooks.json` (written safely: a temporary file, then a rename, with a `.backup` copy from before each session), plus `files/` for pictures, PDFs and recordings. Settings ▸ Your data can save a full backup.
 
+Your AI key, WebDAV password and Google sign-in are kept in the system keyring: Windows Credential Manager, or the Secret Service on Linux (GNOME Keyring, KWallet). The settings files keep an empty field. If no keyring is running, and on Android (which has no keyring this app can use), they stay in the app's own folder; on Android no other app can read that folder.
+
+[Privacy policy](https://leafnotes.briggen.dev/privacy) · [Terms](https://leafnotes.briggen.dev/terms)
+
 ## Project layout
 
 ```
@@ -84,3 +88,7 @@ src/sync.rs      sync and merging     src/ai.rs     AI providers
 src/audio.rs     recording/playback   src/export.rs PDF export
 tools/handwriting/train.py   trains the handwriting models
 ```
+
+## License
+
+Leaf Notes is free software, licensed under the [GNU General Public License v3.0](LICENSE).
