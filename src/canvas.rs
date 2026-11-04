@@ -128,6 +128,12 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         if st.input != Input::Mouse && matches!(st.tool, Tool::Pen | Tool::Highlighter | Tool::Shape(_)) && !ui.ctx().egui_is_using_pointer() && ui.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| head.contains(p))) {
             st.say("The page title is up here. Ink goes on the paper below the line.");
         }
+        // The paper runs edge to edge across the card (only the header keeps its margins),
+        // stopping just short of the rounded bottom corners.
+        let r = ui.available_rect_before_wrap();
+        let mut sheet = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(Pos2::new(r.left() - 40.0, r.top()), Pos2::new(r.right() + 12.0, r.bottom() - 10.0))));
+        ui.advance_cursor_after_rect(r);
+        let ui = &mut sheet;
         // A zoomable, pannable canvas: pinch or Ctrl+scroll zooms, scrolling or dragging empty paper pans.
         let avail = ui.available_size();
         let outer = Rect::from_min_size(ui.cursor().min, avail);
@@ -192,9 +198,8 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         }
         st.canvas_avail = avail;
         egui::Scene::new().zoom_range(0.3..=4.0).max_inner_size(Vec2::splat(30000.0)).show(ui, &mut view, |ui| canvas(ui, page, st));
-        // keep the paper from drifting away from the top-left corner
-        if view.top() < -80.0 { view = view.translate(Vec2::new(0.0, -80.0 - view.top())); }
-        if view.left() < -200.0 { view = view.translate(Vec2::new(-200.0 - view.left(), 0.0)); }
+        // the paper's top-left corner stays put: panning stops at its edge instead of showing blank border
+        view = view.translate(Vec2::new((-view.left()).max(0.0), (-view.top()).max(0.0)));
         // pinch / Ctrl+scroll zoom inside the scene changes the view: take the new zoom from it
         scale = (avail.x / view.width().max(1.0)).clamp(0.3, 4.0);
         st.scales.insert(page.id, scale);

@@ -1520,6 +1520,9 @@ fn draw_pen(p: &egui::Painter, tip: Pos2, scale: f32, kind: Option<PenKind>, col
 mod tests {
     #[test]
     fn dates() {
+        // dates are translated: wait for tests that switch the language, then use English
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::i18n::set("en");
         assert_eq!(super::format_date(1_793_793_555, false), "Wednesday, November 4, 2026");
     }
 }

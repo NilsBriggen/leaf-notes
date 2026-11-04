@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "leafnotes"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "android-activity",
  "base64 0.22.1",

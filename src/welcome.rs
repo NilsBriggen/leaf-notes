@@ -7,6 +7,9 @@ const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.2.2", &[
+        "The paper fills the whole page card, and panning stops at its edge instead of showing a blank border.",
+    ]),
     ("0.2.1", &[
         "More room to write: a slimmer page header with a clear edge where the paper starts.",
         "One set of pens: your pens, a highlighter group and the pen's settings, clearly labelled.",
