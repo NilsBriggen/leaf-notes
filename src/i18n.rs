@@ -66,10 +66,14 @@ macro_rules! tf {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    /// Tests that switch the (global) interface language take turns.
+    pub(crate) static LANG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn translates_and_fills() {
+        let _turn = LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set("de");
         assert_eq!(tr("Settings"), "Einstellungen");
         assert_eq!(tr("no such text"), "no such text");

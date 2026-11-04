@@ -156,6 +156,7 @@ mod clickthrough {
 
     #[test]
     fn main_tasks_by_clicking() {
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = Harness::new();
         // a new page from the pages column
         let before = h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages.len();
