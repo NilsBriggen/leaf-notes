@@ -33,18 +33,31 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
     let mut action = None;
     // The page is a sheet of paper lying on the desk.
     let edge = |shown: bool| if shown { 0 } else { 14 };
-    crate::card(ui).inner_margin(egui::Margin { left: 40, right: 12, top: 20, bottom: 0 })
-        .outer_margin(egui::Margin { left: edge(st.p.show_nav), right: edge(st.p.show_ai), top: 0, bottom: 12 }).show(ui, |ui| {
-        ui.label(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2));
+    crate::card(ui).inner_margin(egui::Margin { left: 40, right: 12, top: 10, bottom: 0 })
+        .outer_margin(egui::Margin { left: edge(st.p.show_nav), right: edge(st.p.show_ai), top: 0, bottom: 6 }).show(ui, |ui| {
+        let head_top = ui.cursor().top();
+        // one small line: where the page lives, when it was made, and pages linking here
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2));
+            if page.kind == PageKind::Locked { return; }
+            ui.label(RichText::new(format!("·  {}", format_date(page.created, true))).size(11.0).weak());
+            if !backlinks.is_empty() {
+                ui.add_space(10.0);
+                ui.label(RichText::new(tr("↩ Linked from")).size(11.0).weak());
+                for (title, at) in backlinks {
+                    let t = if title.trim().is_empty() { "Untitled page" } else { title.as_str() };
+                    if ui.add(egui::Button::new(RichText::new(t).size(11.0).color(accent(ui))).corner_radius(9).min_size(Vec2::new(0.0, 18.0))).clicked() { action = Some(PageAction::Go(at.0, at.1, at.2)); }
+                }
+            }
+        });
         if page.kind == PageKind::Locked {
             if let Some(pw) = locked_view(ui, st) { action = Some(PageAction::Unlock(pw)); }
             ui.set_min_height(ui.available_height());
             return;
         }
-        ui.add_space(2.0);
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 110.0).clamp(160.0, 680.0); // room for the star and ⋯ at any size
-            let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(31.0))
+            let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(24.0))
                 .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(tr("Untitled page")).desired_width(w).margin(egui::Margin::ZERO));
             if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
             if r.changed() { st.dirty = true; }
@@ -96,25 +109,22 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 });
             });
         });
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(format_date(page.created, true)).size(12.0).weak());
-            if !backlinks.is_empty() {
-                ui.add_space(14.0);
-                ui.label(RichText::new(tr("↩ Linked from")).size(12.0).weak());
-                for (title, at) in backlinks {
-                    let t = if title.trim().is_empty() { "Untitled page" } else { title.as_str() };
-                    if ui.add(egui::Button::new(RichText::new(t).size(12.0).color(accent(ui))).corner_radius(10).min_size(Vec2::new(0.0, 22.0))).clicked() { action = Some(PageAction::Go(at.0, at.1, at.2)); }
-                }
-            }
-        });
         if page.kind == PageKind::Deck {
             ui.add_space(14.0);
             if deck_view(ui, page, st, study) { action = Some(PageAction::Study); }
             return;
         }
         audio_bar(ui, page, st);
-        ui.add_space(14.0);
+        ui.add_space(6.0);
+        // the paper starts here: a clear edge across the whole sheet, so it's obvious where writing works
+        let (y, full) = (ui.cursor().top(), ui.max_rect());
+        ui.painter().hline((full.left() - 40.0)..=(full.right() + 12.0), y, EStroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
+        ui.add_space(1.0);
+        // pen down above that edge: say where ink goes instead of silently doing nothing
+        let head = Rect::from_x_y_ranges((full.left() - 40.0)..=(full.right() + 12.0), head_top..=y);
+        if st.input != Input::Mouse && matches!(st.tool, Tool::Pen | Tool::Highlighter | Tool::Shape(_)) && ui.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| head.contains(p))) {
+            st.say("The page title is up here. Ink goes on the paper below the line.");
+        }
         // A zoomable, pannable canvas: pinch or Ctrl+scroll zooms, scrolling or dragging empty paper pans.
         let avail = ui.available_size();
         let outer = Rect::from_min_size(ui.cursor().min, avail);
@@ -949,44 +959,50 @@ fn playback_moment(page: &Page, st: &mut St) -> Option<impl Fn(f64) -> bool> {
 
 /// Under the title: recording controls, or playback with a scrubber.
 fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
-    let recording_here = st.recorder.as_ref().is_some_and(|r| r.1 == page.id);
-    if page.recordings.is_empty() && !recording_here { return; }
-    let red = Color32::from_rgb(220, 50, 47);
-    ui.add_space(6.0);
-    egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(12).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+    // (a recording in progress shows in the title bar, with its Stop button)
+    let Some(mut i) = current_recording(page, st) else { return };
+    ui.add_space(4.0);
+    egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(12).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            if recording_here {
-                let secs = st.recorder.as_ref().map_or(0.0, |r| (now_f() - r.3) as f32);
-                ui.label(RichText::new("●").color(red));
-                ui.label(RichText::new(tf!("Recording  {x}", x = mmss(secs))).color(red));
-                if ui.button(tr("■ Stop")).clicked() { st.rec_toggle = true; }
-                if page.recordings.is_empty() { return; }
-                ui.separator();
-            }
-            let Some(mut i) = current_recording(page, st) else { return };
+            let narrow = ui.available_width() < 560.0;
             let playing = st.player.as_ref().is_some_and(|p| p.id == page.recordings[i].id && p.playing());
-            if ui.add(egui::Button::new(RichText::new(if playing { "⏸" } else { "▶" }).size(16.0)).min_size(Vec2::new(34.0, 28.0))).tip(if playing { "Pause" } else { "Play" }).clicked()
+            if ui.add(egui::Button::new(RichText::new(if playing { "⏸" } else { "▶" }).size(16.0)).min_size(Vec2::new(34.0, 26.0)).frame_when_inactive(false)).tip(if playing { "Pause" } else { "Play" }).clicked()
                 && ensure_player(page, st, i) { st.player.as_ref().unwrap().set_playing(!playing); }
-            if page.recordings.len() > 1 {
-                let label = |k: usize, r: &Recording| format!("Recording {} · {}", k + 1, mmss(r.secs));
+            let label = |k: usize, r: &Recording| tf!("Recording {n} · {len}", n = k + 1, len = mmss(r.secs));
+            // several recordings: pick one here, or in the ⋯ menu when space is short
+            if page.recordings.len() > 1 && !narrow {
                 egui::ComboBox::from_id_salt(("recs", page.id)).selected_text(label(i, &page.recordings[i])).show_ui(ui, |ui| {
                     for (k, r) in page.recordings.iter().enumerate() { if ui.selectable_label(k == i, label(k, r)).clicked() { i = k; st.player = None; let _ = ensure_player(page, st, k); } }
                 });
             }
-            let rec = &page.recordings[i];
-            let mut t = st.player.as_ref().filter(|p| p.id == rec.id).map_or(0.0, |p| p.time());
-            ui.spacing_mut().slider_width = (ui.available_width() - 250.0).clamp(80.0, 420.0);
-            if ui.add(egui::Slider::new(&mut t, 0.0..=rec.secs.max(0.1)).show_value(false)).changed() && ensure_player(page, st, i) { st.player.as_ref().unwrap().seek(t); }
-            ui.label(RichText::new(format!("{} / {}", mmss(t), mmss(rec.secs))).size(12.0).monospace().weak());
-            let tip = "On: clicking a note or ink plays what was said while you wrote it";
-            if ui.add(egui::Button::new(RichText::new(tr("👆 Tap notes to jump")).size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
-            if ui.add(egui::Button::new(RichText::new(tr("✍ Text")).size(12.0)).corner_radius(10)).tip("Turn this recording into text with your AI key; each paragraph is linked to its moment").clicked() { st.transcribe_req = Some(rec.id); }
-            if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Remove this recording from the page (Undo brings it back)").clicked() {
-                st.snap(page);
-                let id = page.recordings[i].id;
-                page.recordings.retain(|r| r.id != id);
-                if st.player.as_ref().is_some_and(|p| p.id == id) { st.player = None; }
-            }
+            // right to left, so the ⋯ menu (with Remove) stays on screen however narrow the window is; the slider takes what's left
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let more = ui.add(egui::Button::new(RichText::new("⋯").size(17.0)).frame_when_inactive(false)).tip("More for this recording");
+                egui::Popup::menu(&more).show(|ui| {
+                    if narrow && page.recordings.len() > 1 {
+                        for (k, r) in page.recordings.iter().enumerate() { if ui.selectable_label(k == i, label(k, r)).clicked() { i = k; st.player = None; let _ = ensure_player(page, st, k); ui.close(); } }
+                        ui.separator();
+                    }
+                    if ui.button(tr("✍  Turn into text")).tip("Turn this recording into text with your AI key; each paragraph is linked to its moment").clicked() { st.transcribe_req = Some(page.recordings[i].id); ui.close(); }
+                    if ui.button(RichText::new(tr("🗑  Remove recording")).color(Color32::from_rgb(200, 60, 50))).tip("Remove this recording from the page (Undo brings it back)").clicked() {
+                        st.snap(page);
+                        let id = page.recordings[i].id;
+                        page.recordings.retain(|r| r.id != id);
+                        if st.player.as_ref().is_some_and(|p| p.id == id) { st.player = None; }
+                        ui.close();
+                    }
+                });
+                if page.recordings.len() <= i { return; }
+                let tip = "On: clicking a note or ink plays what was said while you wrote it";
+                let jump = if narrow { "👆".to_string() } else { tr("👆 Tap notes to jump").to_string() };
+                if ui.add(egui::Button::new(RichText::new(jump).size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
+                let rec = &page.recordings[i];
+                let mut t = st.player.as_ref().filter(|p| p.id == rec.id).map_or(0.0, |p| p.time());
+                let time = if narrow { mmss(t) } else { format!("{} / {}", mmss(t), mmss(rec.secs)) };
+                ui.label(RichText::new(time).size(12.0).monospace().weak());
+                ui.spacing_mut().slider_width = (ui.available_width() - 8.0).clamp(40.0, 520.0);
+                if ui.add(egui::Slider::new(&mut t, 0.0..=rec.secs.max(0.1)).show_value(false)).changed() && ensure_player(page, st, i) { st.player.as_ref().unwrap().seek(t); }
+            });
         });
     });
 }

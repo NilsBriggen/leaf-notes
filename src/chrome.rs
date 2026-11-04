@@ -193,7 +193,21 @@ impl NotesApp {
         egui::Panel::top("title").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 10 })).show(ui, |ui| {
             // Narrow windows (and phones): the tabs get their own row, then buttons shrink to icons.
             let full = ui.available_width();
-            let (two_rows, compact) = (full < if crate::i18n::code() == "en" { 1080.0 } else { 1180.0 }, full < 845.0);
+            // Measured, not guessed: one row with labels if everything fits (the Record button
+            // counts at its widest, with the timer), else one row with icons, else two rows.
+            let tw = |t: &str, size: f32| ui.painter().layout_no_wrap(t.to_string(), FontId::proportional(size), Color32::WHITE).size().x;
+            let tabs_w = self.tabs_width(ui, 30.0);
+            let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
+            let need = |compact: bool| {
+                let brand = 34.0 + 30.0 + if compact { 0.0 } else { tw(tr("Leaf Notes"), 19.0) } + 3.0 * ui.spacing().item_spacing.x;
+                let rec = tw("●  00:00  ■", 14.0).max(if compact { 0.0 } else { tw(tr("●  Record"), 14.0) }) + pad;
+                let ai = if compact { tw("✦", 14.0) } else { tw(tr("✦  Assistant"), 14.0) } + pad;
+                // settings, help, undo, redo, the smallest search box, gaps
+                brand + 18.0 + tabs_w + rec + ai + 4.0 * 34.0 + 150.0 + 6.0 * 6.0 + 12.0
+            };
+            let two_rows = need(true) > full;
+            let compact = if two_rows { full < 845.0 } else { need(false) > full };
+            let rec_w = tw(if self.st.recorder.is_some() { "●  00:00  ■" } else if compact { "●" } else { tr("●  Record") }, 14.0) + pad;
             ui.horizontal(|ui| {
                 ui.set_min_height(34.0);
                 let v = ui.visuals().clone();
@@ -204,7 +218,7 @@ impl NotesApp {
                 ui.painter().rect_filled(tile, 9.0, accent_base());
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tile.shrink(5.0)));
                 leaf(&mut child, 20.0, mix(accent_base(), Color32::WHITE, 0.8), accent_base());
-                if full >= 560.0 { ui.label(RichText::new(tr("Leaf Notes")).font(rich::serif(19.0)).color(v.strong_text_color())); }
+                if full >= 560.0 && !(compact && !two_rows) { ui.label(RichText::new(tr("Leaf Notes")).font(rich::serif(19.0)).color(v.strong_text_color())); }
                 if !two_rows {
                     ui.add_space(18.0);
                     self.tabs(ui);
@@ -219,7 +233,7 @@ impl NotesApp {
                         .corner_radius(17).min_size(Vec2::new(0.0, 34.0));
                     if ui.add(b).tip("Show or hide the AI assistant").clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
                     // room left for undo, redo and Record
-                    let w = (ui.available_width() - if compact { 130.0 } else { 190.0 }).clamp(90.0, 300.0);
+                    let w = (ui.available_width() - rec_w - 2.0 * 34.0 - 30.0).clamp(90.0, 300.0);
                     // The pill, icon and key hint are drawn here; only the typing area is a text box,
                     // vertically centred between them so nothing overlaps.
                     let (pill, pill_resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
@@ -263,23 +277,32 @@ impl NotesApp {
         });
     }
 
+    fn tab_names(&self) -> [String; 6] {
+        let due = self.st.due_now;
+        let study = if due > 0 { tf!("Study · {due}", due = due) } else { tr("Study").to_string() };
+        [tr("Home").into(), tr("Insert").into(), tr("Draw").into(), tr("AI").into(), study, tr("View").into()]
+    }
+
+    /// The width the tab pill takes with `pad` around each name.
+    fn tabs_width(&self, ui: &egui::Ui, pad: f32) -> f32 {
+        self.tab_names().iter().map(|n| ui.painter().layout_no_wrap(n.clone(), FontId::proportional(14.0), Color32::WHITE).size().x + pad).sum::<f32>() + 8.0
+    }
+
     /// The ribbon tabs as a segmented pill; clicking the open tab folds the toolbar away.
     fn tabs(&mut self, ui: &mut egui::Ui) {
         let v = ui.visuals().clone();
         let acc = accent(ui);
-        let due = self.st.due_now;
-        let study = if due > 0 { tf!("Study · {due}", due = due) } else { tr("Study").to_string() };
-        let names = [(Tab::Home, tr("Home")), (Tab::Insert, tr("Insert")), (Tab::Draw, tr("Draw")), (Tab::Ai, tr("AI")), (Tab::Study, study.as_str()), (Tab::View, tr("View"))];
+        let names = [Tab::Home, Tab::Insert, Tab::Draw, Tab::Ai, Tab::Study, Tab::View].into_iter().zip(self.tab_names()).collect::<Vec<_>>();
         let font = FontId::proportional(14.0);
         let pad = if ui.available_width() < 440.0 { 16.0 } else { 30.0 };
-        let widths: Vec<f32> = names.iter().map(|(_, n)| ui.painter().layout_no_wrap(n.to_string(), font.clone(), Color32::WHITE).size().x + pad).collect();
+        let widths: Vec<f32> = self.tab_names().iter().map(|n| ui.painter().layout_no_wrap(n.to_string(), font.clone(), Color32::WHITE).size().x + pad).collect();
         let (track, _) = ui.allocate_exact_size(Vec2::new(widths.iter().sum::<f32>() + 8.0, 34.0), Sense::hover());
         ui.painter().rect_filled(track, 17.0, if v.dark_mode { Color32::from_rgb(30, 36, 37) } else { Color32::from_rgb(222, 229, 226) });
         let mut x = track.left() + 4.0;
         for ((t, name), w) in names.iter().zip(widths) {
             let r = Rect::from_min_size(Pos2::new(x, track.top() + 4.0), Vec2::new(w, 26.0));
             x += w;
-            let resp = ui.interact(r, ui.scope_id().with(("tab", *name)), Sense::click());
+            let resp = ui.interact(r, ui.scope_id().with(("tab", name.as_str())), Sense::click());
             focus_ring(ui, &resp, r, 13.0);
             let (label, chosen) = (name.to_string(), self.st.tab == *t);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, chosen, &label));
@@ -292,7 +315,7 @@ impl NotesApp {
                 ui.painter().rect_filled(r, 13.0, v.widgets.hovered.weak_bg_fill);
             }
             let col = if sel && open { acc } else { v.text_color() };
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, *name, font.clone(), col);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, name, font.clone(), col);
             // only the open tab has something to say; an empty tooltip shows as a blank bubble
             let resp = if sel && open { resp.tip("Click again to fold the toolbar away") } else { resp };
             if resp.clicked() {
@@ -423,13 +446,13 @@ impl NotesApp {
                 if er { self.st.p.erase_partial ^= true; } else { self.st.tool = Tool::Eraser; }
             }
         });
-        group(ui, "Pen case", |ui| {
+        group(ui, "My pens", |ui| {
             let n = self.st.p.pens.len();
             let mut remove = None;
             for i in 0..n {
                 let pen = self.st.p.pens[i];
                 let sel = self.st.tool == Tool::Pen && self.st.p.pen == i;
-                let r = pen_icon(ui, c4(pen.color), sel, Some(pen.kind)).tip(tf!("{name} · size {width}\nRight-click to remove", name = tr(pen.kind.name()), width = format!("{:.1}", pen.width)));
+                let r = pen_icon(ui, c4(pen.color), sel, Some(pen.kind)).tip(tf!("{name} · size {width}\nChange it under Pen settings. Right-click to remove", name = tr(pen.kind.name()), width = format!("{:.1}", pen.width)));
                 if r.clicked() { self.st.tool = Tool::Pen; self.st.p.pen = i; self.st.dirty = true; }
                 r.context_menu(|ui| { if n > 1 && ui.button(tr("Remove this pen")).clicked() { remove = Some(i); ui.close(); } });
             }
@@ -438,73 +461,60 @@ impl NotesApp {
                 if self.st.p.pen >= i && self.st.p.pen > 0 { self.st.p.pen -= 1; }
                 self.st.dirty = true;
             }
-            if ui.add(egui::Button::new(RichText::new("+").size(18.0)).min_size(Vec2::new(26.0, 50.0)).frame_when_inactive(false)).tip("Add a pen to the case (starts as a copy of the one in hand)").clicked() {
+            if ui.add(egui::Button::new(RichText::new("+").size(18.0)).min_size(Vec2::new(26.0, 50.0)).frame_when_inactive(false)).tip("Add a pen (starts as a copy of the chosen one)").clicked() {
                 let p = *self.st.pen();
                 self.st.p.pens.push(p);
                 self.st.p.pen = self.st.p.pens.len() - 1;
                 self.st.tool = Tool::Pen;
                 self.st.dirty = true;
             }
-            ui.add_space(8.0);
+        });
+        group(ui, "Highlighter", |ui| {
             for c in [[253, 224, 71, 120], [134, 239, 172, 120], [249, 168, 212, 120], [125, 211, 252, 120]] {
                 let sel = self.st.tool == Tool::Highlighter && self.st.p.hl_color == c;
-                if pen_icon(ui, c4([c[0], c[1], c[2], 255]), sel, None).tip("Highlighter (H)").clicked() { self.st.tool = Tool::Highlighter; self.st.p.hl_color = c; self.st.dirty = true; }
+                if pen_icon(ui, c4([c[0], c[1], c[2], 255]), sel, None).tip("Highlighter (H): see-through colour over your notes").clicked() { self.st.tool = Tool::Highlighter; self.st.p.hl_color = c; self.st.dirty = true; }
             }
         });
-        group(ui, "Pen in hand", |ui| {
+        // Settings of the chosen pen: words and sliders, not more pen pictures, so there's only one set of pens.
+        group(ui, "Pen settings", |ui| {
             let before = *self.st.pen();
-            ui.add_space(4.0);
-            // Three labelled columns: what kind of pen (and how thick), its colour, and how it writes (and how smoothly).
-            egui::Grid::new("pen-in-hand").num_columns(3).spacing([26.0, 8.0]).show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    for k in PenKind::ALL {
-                        let sel = self.st.pen().kind == k;
-                        let (r, resp) = ui.allocate_exact_size(Vec2::new(32.0, 38.0), Sense::click());
-                        let v = ui.visuals();
-                        if sel { ui.painter().rect_filled(r, 8.0, v.selection.bg_fill); } else if resp.hovered() { ui.painter().rect_filled(r, 8.0, v.widgets.hovered.weak_bg_fill); }
-                        let ink = if v.dark_mode { Color32::from_rgb(150, 160, 170) } else { Color32::from_rgb(71, 85, 105) };
-                        draw_pen(&ui.painter_at(r), r.center_top() + Vec2::new(0.0, 3.5), 0.74, Some(k), ink, false);
-                        if resp.tip(k.name()).clicked() { self.st.pen().kind = k; }
-                    }
-                });
-                ui.vertical_centered(|ui| {
-                    ui.spacing_mut().interact_size = Vec2::new(38.0, 28.0);
+                    let kind = self.st.pen().kind;
+                    egui::ComboBox::from_id_salt("pen-kind").width(118.0).selected_text(tr(kind.name())).show_ui(ui, |ui| {
+                        for k in PenKind::ALL { if ui.selectable_label(kind == k, tr(k.name())).clicked() { self.st.pen().kind = k; } }
+                    }).response.tip("What the chosen pen writes like");
+                    ui.spacing_mut().interact_size = Vec2::new(32.0, 24.0);
                     let pen = self.st.pen();
                     let mut c = pen.color;
                     if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Colour and see-through-ness").changed() { pen.color = c; }
                 });
-                // a deliberately shaky line, run through the same smoothing as real ink
-                let (stab, pen) = (self.st.p.stabilizer, *self.st.pen());
-                let mut pts: Vec<[f32; 3]> = vec![];
-                for i in 0..60 {
-                    let t = i as f32 / 59.0;
-                    let (x, y) = (t * 84.0, 14.0 - 8.0 * (t * 6.3).sin() + 1.8 * (i as f32 * 2.7).sin() + 1.2 * (i as f32 * 5.3).cos());
-                    let pr = 0.35 + 0.65 * (t * 3.1).sin().abs();
-                    let (x, y) = pts.last().map_or((x, y), |l| crate::canvas::trail(*l, x, y, stab));
-                    pts.push([x, y, pr]);
-                }
-                crate::canvas::smooth_passes(&mut pts, stab);
-                let sample = Stroke { id: 0, points: pts, color: pen.color, width: pen.width.min(6.0), highlighter: false, pen: pen.kind, t: 0.0 };
-                let (r, _) = ui.allocate_exact_size(Vec2::new(96.0, 32.0), Sense::hover());
-                ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
-                crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
-                ui.end_row();
-
-                let tip = match self.st.force { Some(f) => tf!("Pen thickness. Pen pressure now: {pct}%", pct = format!("{:.0}", f * 100.0)), None => "Pen thickness. Pressure comes from your pen, or from speed with a mouse".into() };
                 ui.horizontal(|ui| {
+                    let tip = match self.st.force { Some(f) => tf!("Pen thickness. Pen pressure now: {pct}%", pct = format!("{:.0}", f * 100.0)), None => "Pen thickness. Pressure comes from your pen, or from speed with a mouse".into() };
                     ui.label(RichText::new(tr("Size")).size(11.5).weak());
-                    ui.spacing_mut().slider_width = 128.0;
+                    ui.spacing_mut().slider_width = 70.0;
                     ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).tip(tip);
-                });
-                ui.vertical_centered(|ui| ui.add(egui::Label::new(RichText::new(tr("Colour")).size(11.5).weak()).extend()));
-                ui.horizontal(|ui| {
                     ui.label(RichText::new(tr("Smooth")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 50.0;
-                    ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).tip("Smoothing: irons out shaky lines (see the sample above). More smoothing makes the line trail the pen a little.");
+                    ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).tip("Smoothing: irons out shaky lines (see the sample). More smoothing makes the line trail the pen a little.");
                 });
-                ui.end_row();
             });
+            // a deliberately shaky line, run through the same smoothing as real ink
+            let (stab, pen) = (self.st.p.stabilizer, *self.st.pen());
+            let mut pts: Vec<[f32; 3]> = vec![];
+            for i in 0..60 {
+                let t = i as f32 / 59.0;
+                let (x, y) = (t * 84.0, 18.0 - 9.0 * (t * 6.3).sin() + 1.8 * (i as f32 * 2.7).sin() + 1.2 * (i as f32 * 5.3).cos());
+                let pr = 0.35 + 0.65 * (t * 3.1).sin().abs();
+                let (x, y) = pts.last().map_or((x, y), |l| crate::canvas::trail(*l, x, y, stab));
+                pts.push([x, y, pr]);
+            }
+            crate::canvas::smooth_passes(&mut pts, stab);
+            let sample = Stroke { id: 0, points: pts, color: pen.color, width: pen.width.min(6.0), highlighter: false, pen: pen.kind, t: 0.0 };
+            let (r, _) = ui.allocate_exact_size(Vec2::new(96.0, 40.0), Sense::hover());
+            ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
+            crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
             if *self.st.pen() != before { self.st.tool = Tool::Pen; self.st.dirty = true; }
         });
         group(ui, "Shapes", |ui| {
@@ -866,7 +876,10 @@ impl NotesApp {
     }
 
     pub(crate) fn status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status").show_separator_line(false).frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 7 })).show(ui, |ui| {
+        egui::Panel::bottom("status").show_separator_line(false).frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 3 })).show(ui, |ui| {
+            // one thin line of small text, even with touch-sized controls elsewhere
+            ui.spacing_mut().interact_size.y = 18.0;
+            ui.spacing_mut().button_padding = Vec2::new(6.0, 1.0);
             ui.horizontal(|ui| {
                 let page = &self.store.notebooks[self.nb].sections[self.sec].pages[self.pg];
                 let words: usize = page.blocks.iter().map(|b| b.kind.summary().split_whitespace().count().max(match &b.kind { Kind::Text { text, .. } => text.split_whitespace().count(), _ => 0 })).sum();

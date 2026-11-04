@@ -82,7 +82,7 @@ impl NotesApp {
                                 ui.selectable_value(&mut p.erase_partial, true, tr("Partial"));
                                 ui.selectable_value(&mut p.erase_partial, false, tr("Whole strokes"));
                             });
-                            row(ui, "Pen case", "Restore the original six pens.", |ui| { if ui.button(tr("Reset pens")).clicked() { p.pens = default_pens(); p.pen = 0; } });
+                            row(ui, "My pens", "Restore the original six pens.", |ui| { if ui.button(tr("Reset pens")).clicked() { p.pens = default_pens(); p.pen = 0; } });
                         }
                         2 => {
                             heading(ui, "Notes & pages");
