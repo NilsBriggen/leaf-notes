@@ -49,17 +49,6 @@ fn group(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.painter().vline(r.center().x, r.y_range().shrink(6.0), EStroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
 }
 
-/// A small leaf drawn with shapes, used as the app mark.
-fn leaf(ui: &mut egui::Ui, size: f32, fill: Color32, vein: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let c = rect.center();
-    let rot = |u: f32, w: f32| { let a = -std::f32::consts::FRAC_PI_4; c + Vec2::new(u * a.cos() - w * a.sin(), u * a.sin() + w * a.cos()) };
-    let len = size * 0.48;
-    let mut pts: Vec<Pos2> = (0..=12).map(|i| { let t = i as f32 / 12.0; rot(-len + 2.0 * len * t, (t * std::f32::consts::PI).sin() * size * 0.26) }).collect();
-    pts.extend((1..12).rev().map(|i| { let t = i as f32 / 12.0; rot(-len + 2.0 * len * t, -(t * std::f32::consts::PI).sin() * size * 0.26) }));
-    ui.painter().add(egui::Shape::convex_polygon(pts, fill, EStroke::NONE));
-    ui.painter().line_segment([rot(-len * 1.15, 0.0), rot(len * 0.7, 0.0)], EStroke::new(1.2, vein));
-}
 
 pub(crate) fn format_date(secs: u64, time: bool) -> String {
     let days = (secs / 86_400) as i64;
@@ -215,11 +204,17 @@ impl NotesApp {
                 let v = ui.visuals().clone();
                 let acc = accent(ui);
                 if ui.add(egui::Button::new(RichText::new("☰").size(17.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Show or hide notebooks").clicked() { self.st.p.show_nav ^= true; self.st.dirty = true; }
-                // brand: a leaf on a teal tile, and the name in the serif
-                let (tile, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-                ui.painter().rect_filled(tile, 9.0, accent_base());
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tile.shrink(5.0)));
-                leaf(&mut child, 20.0, mix(accent_base(), Color32::WHITE, 0.8), accent_base());
+                // brand: the app icon itself, and the name in the serif
+                let (tile, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
+                // (loaded once, then kept; loading inside data_mut would lock egui twice)
+                let id = egui::Id::unique("logo");
+                let logo = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
+                    let img = image::load_from_memory(include_bytes!("../packaging/leafnotes.png")).map(|i| i.to_rgba8()).unwrap_or_default();
+                    let t = ui.ctx().load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()), egui::TextureOptions::LINEAR);
+                    ui.ctx().data_mut(|d| d.insert_temp(id, t.clone()));
+                    t
+                });
+                ui.painter().image(logo.id(), tile, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                 if full >= 560.0 && !(compact && !two_rows) { ui.label(RichText::new(tr("Leaf Notes")).font(rich::serif(19.0)).color(v.strong_text_color())); }
                 if !two_rows {
                     ui.add_space(18.0);

@@ -7,6 +7,10 @@ const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.2.3", &[
+        "The title bar shows the same, more detailed logo as the app icon.",
+        "The paper fills the whole page card, and panning stops at its edge instead of showing a blank border.",
+    ]),
     ("0.2.2", &[
         "The paper fills the whole page card, and panning stops at its edge instead of showing a blank border.",
     ]),
