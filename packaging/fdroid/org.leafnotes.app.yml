@@ -10,9 +10,9 @@ AutoName: Leaf Notes
 RepoType: git
 Repo: https://github.com/NilsBriggen/leaf-notes.git
 Builds:
-  - versionName: 0.2.3
-    versionCode: 5
-    commit: v0.2.3-beta
+  - versionName: 0.3.0
+    versionCode: 6
+    commit: v0.3.0-beta
     sudo:
       - apt-get update && apt-get install -y openjdk-17-jdk-headless zip
     output: target/release/apk/LeafNotes.apk
@@ -24,5 +24,5 @@ Builds:
       - source $HOME/.cargo/env && cargo apk build --release --lib && sh tools/android-java.sh target/release/apk/LeafNotes.apk
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
-CurrentVersion: 0.2.3
-CurrentVersionCode: 5
+CurrentVersion: 0.3.0
+CurrentVersionCode: 6
