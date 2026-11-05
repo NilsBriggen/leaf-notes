@@ -118,6 +118,9 @@ pub(crate) struct Prefs {
     stabilizer: f32,
     hl_color: [u8; 4],
     erase_partial: bool,
+    /// Eraser size (radius, page points) and highlighter thickness.
+    eraser_size: f32,
+    hl_width: f32,
     /// Read handwriting with the person's AI instead of the built-in offline recognizer.
     ink_ai: bool,
     last: (usize, usize, usize),
@@ -157,7 +160,7 @@ pub(crate) struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
-            hl_color: [253, 224, 71, 120], erase_partial: true, ink_ai: false, last: (0, 0, 0),
+            hl_color: [253, 224, 71, 120], erase_partial: true, eraser_size: 8.0, hl_width: 16.0, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
             draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, scratch_out: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new(), high_contrast: false, check_updates: true }
     }

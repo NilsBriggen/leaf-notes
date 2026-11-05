@@ -594,7 +594,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     st.snapped = false;
                     st.still = (start, ui.input(|i| i.time));
                     st.current = Some(Stroke { id: new_id(), points: vec![[start.x, start.y, if st.p.pressure { st.frame_force.unwrap_or(0.8) } else { 0.85 }]],
-                        color: if hl { st.p.hl_color } else { pen.color }, width: if hl { 16.0 } else { pen.width }, highlighter: hl, pen: pen.kind, t: now_f() });
+                        color: if hl { st.p.hl_color } else { pen.color }, width: if hl { st.p.hl_width } else { pen.width }, highlighter: hl, pen: pen.kind, t: now_f() });
                 }
                 Tool::Eraser => st.snap(page),
                 Tool::Lasso => {
@@ -638,9 +638,10 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     }
                 },
                 Tool::Eraser => {
-                    let hit = if st.p.erase_partial { erase_partial(&mut page.strokes, [p.x, p.y], 7.0) } else {
+                    let r = st.p.eraser_size;
+                    let hit = if st.p.erase_partial { erase_partial(&mut page.strokes, [p.x, p.y], r * 0.9) } else {
                         let before = page.strokes.len();
-                        page.strokes.retain(|s| !s.points.iter().any(|q| (q[0] - p.x).hypot(q[1] - p.y) < 9.0 + s.width * 0.5));
+                        page.strokes.retain(|s| !s.points.iter().any(|q| (q[0] - p.x).hypot(q[1] - p.y) < r + 1.0 + s.width * 0.5));
                         page.strokes.len() != before
                     };
                     if hit { st.dirty = true; }
@@ -713,8 +714,8 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
         let painter = ui.painter_at(rect);
         match st.tool {
             Tool::Pen => { let pen = *st.pen(); ui.ctx().set_cursor_icon(egui::CursorIcon::None); painter.circle_filled(h, (pen.width * 0.5).max(1.5), c4(pen.color)); }
-            Tool::Highlighter => { ui.ctx().set_cursor_icon(egui::CursorIcon::None); painter.rect_filled(Rect::from_center_size(h, Vec2::new(5.0, 16.0)), 1.0, c4(st.p.hl_color)); }
-            Tool::Eraser => { ui.ctx().set_cursor_icon(egui::CursorIcon::None); painter.circle_stroke(h, 8.0, EStroke::new(1.2, ui.visuals().text_color())); }
+            Tool::Highlighter => { ui.ctx().set_cursor_icon(egui::CursorIcon::None); painter.rect_filled(Rect::from_center_size(h, Vec2::new(5.0, st.p.hl_width)), 1.0, c4(st.p.hl_color)); }
+            Tool::Eraser => { ui.ctx().set_cursor_icon(egui::CursorIcon::None); painter.circle_stroke(h, st.p.eraser_size, EStroke::new(1.2, ui.visuals().text_color())); }
             Tool::Lasso if selection_bounds(page, &st.selected).is_some_and(|r| r.expand(8.0).contains(h - o.to_vec2())) => ui.ctx().set_cursor_icon(egui::CursorIcon::Move),
             _ => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
         }
@@ -1065,11 +1066,13 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
                     }
                 });
                 if page.recordings.len() <= i { return; }
-                // playback speed: each tap goes to the next one
-                if ui.add(egui::Button::new(RichText::new(format!("{}×", st.speed)).size(12.0).monospace()).frame_when_inactive(false)).tip("Playback speed").clicked() {
-                    st.speed = match st.speed { s if s < 1.0 => 1.0, s if s < 1.2 => 1.25, s if s < 1.4 => 1.5, s if s < 1.9 => 2.0, _ => 0.75 };
-                    if let Some(p) = &st.player { p.set_speed(st.speed); }
-                }
+                // playback speed: pick from a short list
+                let sp = ui.add(egui::Button::new(RichText::new(format!("{}× ▾", st.speed)).size(12.0)).frame_when_inactive(false)).tip("Playback speed");
+                egui::Popup::menu(&sp).show(|ui| {
+                    for x in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
+                        if ui.selectable_label(st.speed == x, format!("{x}×")).clicked() { st.speed = x; if let Some(p) = &st.player { p.set_speed(x); } ui.close(); }
+                    }
+                });
                 let tip = "On: clicking a note or ink plays what was said while you wrote it";
                 let jump = if narrow { "👆".to_string() } else { tr("👆 Tap notes to jump").to_string() };
                 if ui.add(egui::Button::new(RichText::new(jump).size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }

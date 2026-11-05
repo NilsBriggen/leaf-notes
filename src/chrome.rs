@@ -352,7 +352,9 @@ impl NotesApp {
                 // each tab keeps its own sideways scroll; a solid bar shows when there's more to the right
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 ui.spacing_mut().scroll.bar_width = 4.0;
-                egui::ScrollArea::horizontal().id_salt(("ribbon-scroll", self.st.tab as u8)).show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                let w = ui.available_width() - 30.0;
+                egui::ScrollArea::horizontal().id_salt(("ribbon-scroll", self.st.tab as u8)).max_width(w).auto_shrink([false, true]).show(ui, |ui| {
                     // the ribbon scrolls sideways: text inside it must never wrap into a tall column
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.horizontal(|ui| {
@@ -366,6 +368,12 @@ impl NotesApp {
                             Tab::View => self.ribbon_view(ui),
                         }
                     });
+                });
+                // a visible way to fold the toolbar away (clicking the open tab does the same)
+                if ui.add(egui::Button::new(RichText::new("⌃").size(16.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false)).tip("Hide the toolbar (click a tab to show it again)").clicked() {
+                    self.st.p.ribbon_open = false;
+                    self.st.dirty = true;
+                }
                 });
             });
         });
@@ -469,10 +477,8 @@ impl NotesApp {
     fn ribbon_draw(&mut self, ui: &mut egui::Ui) {
         group(ui, "Tools", |ui| {
             self.tool_buttons(ui, &[(Tool::Type, "Aa", "Type"), (Tool::Lasso, "➰", "Select ink")]);
-            let er = self.st.tool == Tool::Eraser;
-            if rbtn(ui, "⌫", if self.st.p.erase_partial { "Eraser" } else { "Stroke eraser" }, er).tip("Eraser (E). Click again to switch between erasing parts of strokes and whole strokes.").clicked() {
-                if er { self.st.p.erase_partial ^= true; } else { self.st.tool = Tool::Eraser; }
-            }
+            // (its size and whether it erases parts or whole strokes are in Eraser settings, shown while it's picked)
+            if rbtn(ui, "⌫", "Eraser", self.st.tool == Tool::Eraser).tip("Eraser (E)").clicked() { self.st.tool = Tool::Eraser; }
         });
         group(ui, "My pens", |ui| {
             let n = self.st.p.pens.len();
@@ -503,7 +509,49 @@ impl NotesApp {
                 if pen_icon(ui, c4([c[0], c[1], c[2], 255]), sel, None).tip("Highlighter (H): see-through colour over your notes").clicked() { self.st.tool = Tool::Highlighter; self.st.p.hl_color = c; self.st.dirty = true; }
             }
         });
-        // Settings of the chosen pen: words and sliders, not more pen pictures, so there's only one set of pens.
+        // The settings of whatever is in hand: the eraser, the highlighter, or the chosen pen (also used by shapes).
+        let before = (self.st.p.erase_partial, self.st.p.eraser_size, self.st.p.hl_width, self.st.p.hl_color);
+        if self.st.tool == Tool::Eraser {
+            group(ui, "Eraser settings", |ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        let p = &mut self.st.p;
+                        if ui.selectable_label(p.erase_partial, tr("Part of a stroke")).tip("Erases only where you rub, like a real eraser").clicked() { p.erase_partial = true; }
+                        if ui.selectable_label(!p.erase_partial, tr("Whole stroke")).tip("Erases every stroke it touches, in one go").clicked() { p.erase_partial = false; }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(tr("Size")).size(11.5).weak());
+                        ui.spacing_mut().slider_width = 110.0;
+                        ui.add(egui::Slider::new(&mut self.st.p.eraser_size, 3.0..=40.0).show_value(false)).tip("How big the eraser is");
+                    });
+                });
+                // the eraser at its real size
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
+                ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
+                ui.painter().circle_stroke(r.center(), self.st.p.eraser_size.min(24.0), EStroke::new(1.2, ui.visuals().text_color()));
+            });
+        } else if self.st.tool == Tool::Highlighter {
+            group(ui, "Highlighter settings", |ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(tr("Colour")).size(11.5).weak());
+                        ui.spacing_mut().interact_size = Vec2::new(32.0, 24.0);
+                        let mut c = self.st.p.hl_color;
+                        if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Any colour for the highlighter").changed() { self.st.p.hl_color = [c[0], c[1], c[2], c[3].min(160)]; }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(tr("Size")).size(11.5).weak());
+                        ui.spacing_mut().slider_width = 110.0;
+                        ui.add(egui::Slider::new(&mut self.st.p.hl_width, 6.0..=40.0).show_value(false)).tip("How thick the highlighter is");
+                    });
+                });
+                let (r, _) = ui.allocate_exact_size(Vec2::new(70.0, 52.0), Sense::hover());
+                ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
+                ui.painter().line_segment([r.left_center() + Vec2::new(10.0, 0.0), r.right_center() - Vec2::new(10.0, 0.0)], EStroke::new(self.st.p.hl_width.min(40.0), c4(self.st.p.hl_color)));
+            });
+        } else {
         group(ui, "Pen settings", |ui| {
             let before = *self.st.pen();
             ui.vertical(|ui| {
@@ -517,6 +565,13 @@ impl NotesApp {
                     let pen = self.st.pen();
                     let mut c = pen.color;
                     if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Colour and see-through-ness").changed() { pen.color = c; }
+                    // removing a pen shouldn't need a right-click (or a long-press) to find
+                    if self.st.p.pens.len() > 1 && ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Remove this pen from My pens").clicked() {
+                        let i = self.st.p.pen;
+                        self.st.p.pens.remove(i);
+                        self.st.p.pen = i.min(self.st.p.pens.len() - 1);
+                        self.st.dirty = true;
+                    }
                 });
                 ui.horizontal(|ui| {
                     let tip = match self.st.force { Some(f) => tf!("Pen thickness. Pen pressure now: {pct}%", pct = format!("{:.0}", f * 100.0)), None => "Pen thickness. Pressure comes from your pen, or from speed with a mouse".into() };
@@ -546,6 +601,8 @@ impl NotesApp {
             crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
             if *self.st.pen() != before { self.st.tool = Tool::Pen; self.st.dirty = true; }
         });
+        }
+        if (self.st.p.erase_partial, self.st.p.eraser_size, self.st.p.hl_width, self.st.p.hl_color) != before { self.st.dirty = true; }
         group(ui, "Shapes", |ui| {
             for (s, icon, label) in [(Shape::Line, "╱", "Line"), (Shape::Arrow, "↗", "Arrow"), (Shape::Rect, "▭", "Box"), (Shape::Ellipse, "◯", "Circle")] {
                 if rbtn(ui, icon, label, self.st.tool == Tool::Shape(s)).clicked() { self.st.tool = Tool::Shape(s); }
@@ -805,7 +862,8 @@ impl NotesApp {
         });
         group(ui, "Look", |ui| {
             let dark = self.st.p.dark;
-            if rbtn(ui, if dark { "☀" } else { "☾" }, if dark { "Light mode" } else { "Dark mode" }, false).clicked() { self.st.p.dark ^= true; apply_theme(ui.ctx(), self.st.p.dark); self.st.dirty = true; }
+            // (an explicit choice: stop following the system, or the system's theme would switch it straight back)
+            if rbtn(ui, if dark { "☀" } else { "☾" }, if dark { "Light mode" } else { "Dark mode" }, false).clicked() { self.st.p.dark ^= true; self.st.p.follow_system = false; apply_theme(ui.ctx(), self.st.p.dark); self.st.dirty = true; }
             let focus = !self.st.p.show_nav && !self.st.p.show_ai;
             if rbtn(ui, "⛶", "Focus", focus).tip("Hide the side panels to concentrate on the page").clicked() {
                 self.st.p.show_nav = focus;
