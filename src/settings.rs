@@ -10,9 +10,11 @@ impl NotesApp {
         #[allow(unused_mut)]
         let (mut restore, mut import, mut backup_to): (Option<std::path::PathBuf>, Vec<std::path::PathBuf>, Option<std::path::PathBuf>) = (None, vec![], None);
         let before = serde_json::to_string(&self.st.p).unwrap_or_default();
-        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
+        // phones: a thinner frame, and the section list shows only icons
+        let narrow = ctx.content_rect().width() < 640.0;
+        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(if narrow { 12 } else { 22 })).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("settings")).frame(frame).show(ctx, |ui| {
-            let size = Vec2::new((ctx.content_rect().width() - 80.0).clamp(560.0, 780.0), (ctx.content_rect().height() - 120.0).clamp(360.0, 560.0));
+            let size = Vec2::new(if narrow { ctx.content_rect().width() - 40.0 } else { (ctx.content_rect().width() - 80.0).clamp(560.0, 780.0) }, (ctx.content_rect().height() - 120.0 - self.st.bars[0] - self.st.bars[1]).clamp(200.0, 560.0)); // (minus Android's bars)
             ui.set_width(size.x);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Settings")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
@@ -25,30 +27,30 @@ impl NotesApp {
                 ui.set_height(size.y);
                 // section list
                 ui.vertical(|ui| {
-                    ui.set_width(170.0);
+                    ui.set_width(if narrow { 40.0 } else { 170.0 });
                     for (i, (icon, name)) in [("🎨", "Appearance"), ("✏", "Pen & input"), ("¶", "Notes & pages"), ("✦", "AI"), ("💾", "Your data"), ("🔄", "Sync")].iter().enumerate() {
                         let sel = self.st.settings_tab == i as u8;
                         // icons in their own fixed column, so the names line up whatever the icon's width
-                        let (rect, r) = ui.allocate_exact_size(Vec2::new(166.0, 34.0), Sense::click());
+                        let (rect, r) = ui.allocate_exact_size(Vec2::new(if narrow { 38.0 } else { 166.0 }, if narrow { 40.0 } else { 34.0 }), Sense::click());
                         if sel || r.hovered() { ui.painter().rect_filled(rect, 8.0, if sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
                         let col = if sel { accent(ui) } else { ui.visuals().text_color() };
                         ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), egui::Align2::CENTER_CENTER, *icon, egui::FontId::proportional(14.0), col);
-                        ui.painter().text(rect.left_center() + Vec2::new(38.0, 0.0), egui::Align2::LEFT_CENTER, tr(name), egui::FontId::proportional(14.0), col);
+                        if !narrow { ui.painter().text(rect.left_center() + Vec2::new(38.0, 0.0), egui::Align2::LEFT_CENTER, tr(name), egui::FontId::proportional(14.0), col); }
                         crate::chrome::focus_ring(ui, &r, rect, 8.0);
                         r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, sel, tr(name)));
                         if r.clicked() { self.st.settings_tab = i as u8; }
                     }
                 });
-                ui.add_space(8.0);
+                ui.add_space(if narrow { 2.0 } else { 8.0 });
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(if narrow { 2.0 } else { 8.0 });
                 egui::ScrollArea::vertical().id_salt("settings-scroll").auto_shrink([false, false]).max_height(size.y).show(ui, |ui| ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 10.0;
                     let p = &mut self.st.p;
                     match self.st.settings_tab {
                         0 => {
                             heading(ui, "Appearance");
-                            row_below(ui, "Theme", "Light, dark, or match your computer.", |ui| {
+                            row_below(ui, "Theme", "Light, dark, or the same as the system.", |ui| {
                                 let mut mode = if p.follow_system { 2 } else if p.dark { 1 } else { 0 };
                                 for (i, l) in ["Light", "Dark", "System"].iter().enumerate() { ui.selectable_value(&mut mode, i, tr(l)); }
                                 p.follow_system = mode == 2;
@@ -64,7 +66,7 @@ impl NotesApp {
                                 let mut col = c3(p.accent);
                                 if ui.color_edit_button_srgba(&mut col).tip("Any colour").changed() { p.accent = [col.r(), col.g(), col.b()]; }
                             });
-                            row(ui, "Interface size", "Makes everything larger or smaller (also Ctrl + / Ctrl −).", |ui| {
+                            row(ui, "Interface size", if self.st.touch_ui { "Makes everything larger or smaller." } else { "Makes everything larger or smaller (also Ctrl + / Ctrl −)." }, |ui| {
                                 let mut z = ctx.zoom_factor();
                                 if ui.add(egui::Slider::new(&mut z, 0.7..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed() { ctx.set_zoom_factor(z); p.zoom = z; }
                             });
@@ -84,6 +86,7 @@ impl NotesApp {
                             row(ui, "Draw with a finger", "Some phones report finger pressure like a pen; on those, fingers may still draw.", |ui| { toggle(ui, &mut p.draw_finger); });
                             row(ui, "Pressure-sensitive lines", "Press harder for thicker ink (fountain pen, pencil). Off: even lines.", |ui| { toggle(ui, &mut p.pressure); });
                             row(ui, "Smoothing", "Irons out shaky lines; higher values trail the pen slightly.", |ui| { ui.add(egui::Slider::new(&mut p.stabilizer, 0.0..=1.0).show_value(false)); });
+                            row(ui, "Scribble to erase", "Scribbling back and forth over ink erases it (Undo brings it back).", |ui| { toggle(ui, &mut p.scratch_out); });
                             row(ui, "Straighten highlighter strokes", "Nearly straight highlights snap to a ruler-straight line.", |ui| { toggle(ui, &mut p.straighten_hl); });
                             row_below(ui, "Eraser", "Erase only what you touch, or whole strokes.", |ui| {
                                 ui.selectable_value(&mut p.erase_partial, true, tr("Partial"));
@@ -296,7 +299,7 @@ impl NotesApp {
         let mut choice = None;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         egui::Modal::new(egui::Id::unique("sync-ask")).frame(frame).show(ctx, |ui| {
-            ui.set_width(460.0);
+            ui.set_width(crate::fit_w(ui.ctx(), 460.0));
             ui.label(RichText::new(tr("Join your synced notes")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
             ui.add_space(6.0);
             ui.label(tf!("The sync location already has notes ({pages} pages), and this device has its own. How should this device join?", pages = pages));

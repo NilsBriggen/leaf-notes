@@ -133,6 +133,8 @@ pub(crate) struct Prefs {
     draw_finger: bool,
     pressure: bool,
     straighten_hl: bool,
+    /// Scribbling back and forth over ink erases it.
+    scratch_out: bool,
     click_to_type: bool,
     auto_lists: bool,
     note_width: f32,
@@ -157,7 +159,7 @@ impl Default for Prefs {
         Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
             hl_color: [253, 224, 71, 120], erase_partial: true, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
-            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new(), high_contrast: false, check_updates: true }
+            draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, scratch_out: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new(), high_contrast: false, check_updates: true }
     }
 }
 
@@ -179,6 +181,14 @@ struct St {
     canvas_avail: Vec2,
     /// Typing a note with the on-screen keyboard up: the toolbar and page header step aside.
     typing_kb: bool,
+    /// The screen is short (a phone on its side): the toolbar starts folded away.
+    short: bool,
+    /// Where a press on a selection's buttons began (touch forgets it by the time the finger lifts).
+    sel_press: Option<Pos2>,
+    /// Fingers on the screen now (where each started), and the current touch gesture: when it began,
+    /// most fingers at once, whether any moved (a quick two-finger tap undoes, three fingers redo).
+    fingers: HashMap<u64, Pos2>,
+    gesture: (f64, usize, bool),
     /// Each page's zoom.
     scales: HashMap<u64, f32>,
     /// The tool to go back to after erasing with the stylus's eraser end or side button.
@@ -236,6 +246,8 @@ struct St {
     player: Option<audio::Player>,
     /// "Tap notes to jump": clicking a note or ink plays the recording from that moment.
     listen: bool,
+    /// Playback speed of recordings (1.0 = normal).
+    speed: f32,
     /// The "may we use the microphone?" question is showing; or we're waiting for the system's answer (since when).
     mic_prompt: bool,
     mic_wait: Option<f64>,
@@ -387,6 +399,35 @@ fn setup_fonts(ctx: &egui::Context) {
 }
 
 /// Card surfaces (page, page list, toolbar, assistant) float on a softly tinted desk.
+/// A dialog's width, never wider than the screen (phones are about 400 points wide).
+/// (72: room for the dialog's own frame and margins on both sides)
+pub(crate) fn fit_w(ctx: &egui::Context, w: f32) -> f32 { w.min(ctx.content_rect().width() - 72.0).max(160.0) }
+
+/// Copy a picture into the app, upright (phone photos keep their rotation in a separate tag) and at
+/// most 2400 px on its long side (phone cameras take 12+ megapixels: slow to show and to sync).
+/// Anything it can't decode is copied as it is. Returns the stored size in bytes.
+fn store_picture(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<u64> {
+    use image::ImageDecoder;
+    let fixed = (|| -> Option<image::DynamicImage> {
+        let mut dec = image::ImageReader::open(src).ok()?.with_guessed_format().ok()?.into_decoder().ok()?;
+        let turn = dec.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+        let mut img = image::DynamicImage::from_decoder(dec).ok()?;
+        let big = img.width().max(img.height()) > 2400;
+        if !big && turn == image::metadata::Orientation::NoTransforms { return None; }
+        img.apply_orientation(turn);
+        if big { img = img.resize(2400, 2400, image::imageops::FilterType::Triangle); }
+        Some(img)
+    })();
+    match fixed {
+        // JPEG has no transparency: flatten before saving
+        Some(img) if matches!(dest.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(), Some("jpg" | "jpeg")) =>
+            image::DynamicImage::ImageRgb8(img.to_rgb8()).save(dest).map_err(std::io::Error::other)?,
+        Some(img) => img.save(dest).map_err(std::io::Error::other)?,
+        None => { std::fs::copy(src, dest)?; }
+    }
+    std::fs::metadata(dest).map(|m| m.len())
+}
+
 /// Where an exported file can be found, for messages: the share menu's copy on Android, the file itself elsewhere.
 fn where_saved(path: &std::path::Path) -> String {
     if cfg!(target_os = "android") { "Downloads/Leaf Notes".into() } else { path.display().to_string() }
@@ -506,7 +547,7 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
@@ -844,11 +885,13 @@ impl NotesApp {
         if self.page().kind == PageKind::Locked { return; }
         let y = self.next_free_y();
         let w = match kind { Kind::Table { .. } | Kind::Checklist { .. } | Kind::Link { .. } | Kind::File { .. } => 380.0, _ => self.st.p.note_width };
+        // never wider than the paper on screen (phones)
+        let pid = self.page().id;
+        let w = self.st.views.get(&pid).map_or(w, |v| w.min(v.right() - 24.0 - 12.0).max(160.0));
         let b = block(24.0, y, w, kind);
         let id = b.id;
         let page = self.page();
         let snap = page.clone();
-        let pid = page.id;
         page.blocks.push(b);
         self.st.snap(&snap);
         self.st.focus_id = Some(egui::Id::unique(("ed", id)));
@@ -890,7 +933,8 @@ impl NotesApp {
         let is_image = how == Ins::Picture || matches!(ext.as_str(), "png" | "jpg" | "jpeg");
         let stored = format!("{}.{ext}", new_id());
         let dir = data_dir().join("files");
-        match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(path, dir.join(&stored))) {
+        let copied = std::fs::create_dir_all(&dir).and_then(|_| if is_image { store_picture(path, &dir.join(&stored)) } else { std::fs::copy(path, dir.join(&stored)) });
+        match copied {
             Err(e) => self.st.say(tf!("⚠ Could not add {path}: {e}", path = path.display(), e = e)),
             Ok(size) => {
                 let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -1184,6 +1228,8 @@ impl NotesApp {
         if cmd(Key::N) { self.new_page(None); }
         if cmd(Key::F) { self.st.focus_id = Some(egui::Id::unique("search")); }
         if cmd(Key::K) || cmd(Key::P) { self.st.switcher = Some((String::new(), 0)); }
+        // Android's Back: closes whatever is on top, one thing per press; with nothing open, leaves the app
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::BrowserBack)) { self.back(ctx); return; }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             if self.st.popup.take().is_some() || self.st.switcher.take().is_some() { return; }
             if self.st.capture.is_some() { self.cancel_capture("PDF export cancelled."); return; }
@@ -1192,6 +1238,23 @@ impl NotesApp {
             self.st.search.clear();
             self.st.tag_filter = None;
             self.st.current = None;
+        }
+    }
+
+    fn back(&mut self, ctx: &egui::Context) {
+        let st = &mut self.st;
+        if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); }
+        else if st.popup.take().is_some() || st.switcher.take().is_some() || st.tour.take().is_some() {}
+        else if st.capture.is_some() { self.cancel_capture("PDF export cancelled."); }
+        else if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some() {}
+        else if std::mem::take(&mut st.show_settings) || std::mem::take(&mut st.show_help) || std::mem::take(&mut st.show_news) || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) {}
+        else if st.editing.take().is_some() || !std::mem::take(&mut st.selected).is_empty() {}
+        else if st.narrow && st.p.show_ai { st.p.show_ai = false; }
+        else if !st.search.is_empty() || st.tag_filter.is_some() { st.search.clear(); st.tag_filter = None; }
+        else if st.narrow && st.p.show_nav { st.p.show_nav = false; }
+        else {
+            #[cfg(target_os = "android")]
+            droid::to_background();
         }
     }
 
@@ -1212,10 +1275,28 @@ impl eframe::App for NotesApp {
         // the eraser end / side button erased one stroke: back to the tool from before (a frame later,
         // so the stroke finishes as an eraser stroke)
         if std::mem::take(&mut self.st.restore_tool) { if let Some(t) = self.st.tool_before_erase.take() { self.st.tool = t; } }
+        let mut tap = 0; // fingers in a quick tap that just ended
         ctx.input(|i| {
             let touched = i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. }));
             for e in &i.events {
                 match e {
+                    // fingers (no pressure): also watched for the quick multi-finger taps
+                    egui::Event::Touch { force: None, phase, id, pos, .. } => {
+                        let (st, now) = (&mut self.st, i.time);
+                        match phase {
+                            egui::TouchPhase::Start => {
+                                if st.fingers.is_empty() { st.gesture = (now, 0, false); }
+                                st.fingers.insert(id.0, *pos);
+                                st.gesture.1 = st.gesture.1.max(st.fingers.len());
+                            }
+                            egui::TouchPhase::Move => if st.fingers.get(&id.0).is_some_and(|p| p.distance(*pos) > 24.0) { st.gesture.2 = true; },
+                            egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                                if *phase == egui::TouchPhase::Cancel { st.gesture.2 = true; }
+                                if st.fingers.remove(&id.0).is_some() && st.fingers.is_empty() && !st.gesture.2 && now - st.gesture.0 < 0.35 { tap = st.gesture.1; }
+                            }
+                        }
+                        if *phase == egui::TouchPhase::Start { self.st.input = Input::Finger; if !self.st.p.pen_detect { self.st.p.pen_detect = true; self.st.dirty = true; } }
+                    }
                     egui::Event::Touch { force, phase, .. } => {
                         // a stylus encodes its eraser end as pressure below 0 and a held side button as above 1
                         let (pressure, erase) = match *force { Some(f) if f < 0.0 => (Some(-f), true), Some(f) if f > 1.0 => (Some(f - 1.0), true), f => (f, false) };
@@ -1236,6 +1317,13 @@ impl eframe::App for NotesApp {
                 }
             }
         });
+        if tap >= 2 {
+            // the first finger may also have tapped the paper and started an empty note: drop it
+            self.st.editing = None;
+            self.st.current = None;
+            self.undo(tap >= 3);
+            self.st.say(if tap >= 3 { "Redone (three-finger tap)." } else { "Undone (two-finger tap). Tap with three fingers to redo." });
+        }
         if self.st.p.follow_system {
             if let Some(t) = ctx.system_theme() {
                 let dark = t == egui::Theme::Dark;
@@ -1292,6 +1380,11 @@ impl eframe::App for NotesApp {
             self.st.narrow = narrow;
             self.st.p.show_nav = !narrow;
             if narrow { self.st.p.show_ai = false; }
+        }
+        let short = ctx.content_rect().height() < 520.0;
+        if short != self.st.short {
+            self.st.short = short;
+            self.st.p.ribbon_open = !short; // the tabs stay: tapping one opens its toolbar
         }
         let touch = cfg!(target_os = "android") || matches!(self.st.input, Input::Finger | Input::Pen); // (Android: from the very first frame)
         if touch != self.st.touch_ui {
@@ -1526,4 +1619,21 @@ fn system_bars() -> Option<[i32; 4]> {
         if r.is_err() { let _ = env.exception_clear(); } // a pending Java exception would break every later call
         r
     }).ok().flatten()
+}
+
+#[cfg(test)]
+mod picture_tests {
+    #[test]
+    fn big_pictures_are_stored_smaller() {
+        let dir = std::env::temp_dir().join(format!("ln-pic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (big, small) = (dir.join("big.png"), dir.join("small.png"));
+        image::RgbaImage::new(3000, 100).save(&big).unwrap();
+        image::RgbaImage::new(300, 100).save(&small).unwrap();
+        super::store_picture(&big, &dir.join("a.png")).unwrap();
+        super::store_picture(&small, &dir.join("b.png")).unwrap();
+        assert_eq!(image::image_dimensions(dir.join("a.png")).unwrap(), (2400, 80));
+        assert_eq!(std::fs::read(dir.join("b.png")).unwrap(), std::fs::read(&small).unwrap()); // small ones are copied as they are
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

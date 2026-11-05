@@ -192,17 +192,21 @@ impl NotesApp {
             // Measured, not guessed: one row with labels if everything fits (the Record button
             // counts at its widest, with the timer), else one row with icons, else two rows.
             let tw = |t: &str, size: f32| ui.painter().layout_no_wrap(t.to_string(), FontId::proportional(size), Color32::WHITE).size().x;
-            let tabs_w = self.tabs_width(ui, 30.0);
+            // short screens (phones on their side): no logo and tighter tabs, so everything fits one row
+            let tight = self.st.short;
+            let tabs_w = self.tabs_width(ui, if tight { 16.0 } else { 30.0 });
             let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
-            let need = |compact: bool| {
-                let brand = 34.0 + 30.0 + if compact { 0.0 } else { tw(tr("Leaf Notes"), 19.0) } + 3.0 * ui.spacing().item_spacing.x;
+            let need = |compact: bool, search_icon: bool| {
+                let brand = if tight { 0.0 } else { 34.0 } + 30.0 + if compact { 0.0 } else { tw(tr("Leaf Notes"), 19.0) } + 3.0 * ui.spacing().item_spacing.x;
                 let rec = tw("●  00:00  ■", 14.0).max(if compact { 0.0 } else { tw(tr("●  Record"), 14.0) }) + pad;
                 let ai = if compact { tw("✦", 14.0) } else { tw(tr("✦  Assistant"), 14.0) } + pad;
                 // settings, help, undo, redo, the smallest search box, gaps
-                brand + 18.0 + tabs_w + rec + ai + 4.0 * 34.0 + 150.0 + 6.0 * 6.0 + 12.0
+                brand + 18.0 + tabs_w + rec + ai + 4.0 * 34.0 + if search_icon { 34.0 } else { 150.0 } + 6.0 * 6.0 + 12.0
             };
-            let two_rows = need(true) > full;
-            let compact = if two_rows { full < 845.0 } else { need(false) > full };
+            // the search box gives way to a 🔍 button before the tabs move to a second row (and on phones)
+            let search_icon = full < 480.0 || (need(true, false) > full && need(true, true) <= full);
+            let two_rows = need(true, search_icon) > full;
+            let compact = if two_rows { full < 845.0 } else { need(false, search_icon) > full };
             let rec_w = tw(if self.st.recorder.is_some() { "●  00:00  ■" } else if compact { "●" } else { tr("●  Record") }, 14.0) + pad;
             ui.horizontal(|ui| {
                 ui.set_min_height(34.0);
@@ -211,17 +215,19 @@ impl NotesApp {
                 let v = ui.visuals().clone();
                 let acc = accent(ui);
                 if ui.add(egui::Button::new(RichText::new("☰").size(17.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Show or hide notebooks").clicked() { self.st.p.show_nav ^= true; self.st.dirty = true; }
-                // brand: the app icon itself, and the name in the serif
-                let (tile, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
-                // (loaded once, then kept; loading inside data_mut would lock egui twice)
-                let id = egui::Id::unique("logo");
-                let logo = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
-                    let img = image::load_from_memory(include_bytes!("../packaging/leafnotes.png")).map(|i| i.to_rgba8()).unwrap_or_default();
-                    let t = ui.ctx().load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()), egui::TextureOptions::LINEAR);
-                    ui.ctx().data_mut(|d| d.insert_temp(id, t.clone()));
-                    t
-                });
-                ui.painter().image(logo.id(), tile, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                if !tight {
+                    // brand: the app icon itself, and the name in the serif
+                    let (tile, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
+                    // (loaded once, then kept; loading inside data_mut would lock egui twice)
+                    let id = egui::Id::unique("logo");
+                    let logo = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
+                        let img = image::load_from_memory(include_bytes!("../packaging/leafnotes.png")).map(|i| i.to_rgba8()).unwrap_or_default();
+                        let t = ui.ctx().load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()), egui::TextureOptions::LINEAR);
+                        ui.ctx().data_mut(|d| d.insert_temp(id, t.clone()));
+                        t
+                    });
+                    ui.painter().image(logo.id(), tile, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                }
                 if full >= 560.0 && !(compact && !two_rows) { ui.label(RichText::new(tr("Leaf Notes")).font(rich::serif(19.0)).color(v.strong_text_color())); }
                 if !two_rows {
                     ui.add_space(18.0);
@@ -237,7 +243,7 @@ impl NotesApp {
                         .corner_radius(17).min_size(Vec2::new(0.0, 34.0));
                     if ui.add(b).tip("Show or hide the AI assistant").clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
                     // phones: no room for a search box; the 🔍 opens the page finder, which also searches page text
-                    if full < 480.0 {
+                    if search_icon {
                         if ui.add(egui::Button::new(RichText::new("🔍").size(15.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Find a page (Ctrl+K)").clicked() { self.st.switcher = Some((String::new(), 0)); }
                     } else {
                         // room left for undo, redo and Record
@@ -265,8 +271,8 @@ impl NotesApp {
                         if pill_resp.clicked() { r.request_focus(); }
                         want_focus(&mut self.st, &r);
                     }
-                    if ui.add_enabled(!self.st.redo.is_empty(), egui::Button::new(RichText::new("↷").size(16.0)).frame_when_inactive(false)).tip("Redo (Ctrl+Y)").clicked() { self.undo(true); }
-                    if ui.add_enabled(!self.st.undo.is_empty(), egui::Button::new(RichText::new("↶").size(16.0)).frame_when_inactive(false)).tip("Undo (Ctrl+Z)").clicked() { self.undo(false); }
+                    if ui.add_enabled(!self.st.redo.is_empty(), egui::Button::new(RichText::new("↷").size(if self.st.touch_ui { 20.0 } else { 16.0 })).frame_when_inactive(false)).tip("Redo (Ctrl+Y)").clicked() { self.undo(true); }
+                    if ui.add_enabled(!self.st.undo.is_empty(), egui::Button::new(RichText::new("↶").size(if self.st.touch_ui { 20.0 } else { 16.0 })).frame_when_inactive(false)).tip("Undo (Ctrl+Z)").clicked() { self.undo(false); }
                     ui.add_space(6.0);
                     let red = Color32::from_rgb(220, 50, 47);
                     let rec_btn = if let Some((_, _, _, start)) = &self.st.recorder {
@@ -303,7 +309,7 @@ impl NotesApp {
         let acc = accent(ui);
         let names = [Tab::Home, Tab::Insert, Tab::Draw, Tab::Ai, Tab::Study, Tab::View].into_iter().zip(self.tab_names()).collect::<Vec<_>>();
         let font = FontId::proportional(14.0);
-        let pad = if ui.available_width() < 440.0 { 16.0 } else { 30.0 };
+        let pad = if ui.available_width() < 440.0 || self.st.short { 16.0 } else { 30.0 };
         let widths: Vec<f32> = self.tab_names().iter().map(|n| ui.painter().layout_no_wrap(n.to_string(), font.clone(), Color32::WHITE).size().x + pad).collect();
         let (track, _) = ui.allocate_exact_size(Vec2::new(widths.iter().sum::<f32>() + 8.0, 34.0), Sense::hover());
         ui.painter().rect_filled(track, 17.0, if v.dark_mode { Color32::from_rgb(30, 36, 37) } else { Color32::from_rgb(222, 229, 226) });
@@ -439,6 +445,11 @@ impl NotesApp {
         });
         group(ui, "Media", |ui| {
             if rbtn(ui, "🖼", "Picture", false).clicked() { self.pick_file(Ins::Picture); }
+            #[cfg(target_os = "android")]
+            if rbtn(ui, "📷", "Photo", false).tip("Take a photo with the camera and put it on the page").clicked() {
+                self.st.picking_since = now_f(); // keeps the app awake to collect the photo
+                if let Err(e) = crate::droid::take_photo() { self.st.say(tf!("⚠ {e}", e = e)); }
+            }
             if rbtn(ui, "📄", "Printout", false).tip("Put a PDF's pages (or a picture, Markdown or text file) onto the page so you can write on it").clicked() { self.pick_file(Ins::Printout); }
             if rbtn(ui, "📎", "Attach file", false).tip("Attach any file as an icon you can open later").clicked() { self.pick_file(Ins::Attach); }
             if rbtn(ui, "🔗", "Link", false).clicked() { self.insert(Kind::Link { url: "https://".into(), title: String::new() }); }
@@ -661,7 +672,7 @@ impl NotesApp {
         let (mut allow, mut no) = (false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(24)).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("mic")).frame(frame).show(ctx, |ui| {
-            ui.set_width(440.0);
+            ui.set_width(crate::fit_w(ui.ctx(), 440.0));
             // a microphone in a soft circle
             let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
             let (c, acc) = (r.center(), accent(ui));
@@ -696,7 +707,7 @@ impl NotesApp {
         if sd.shown { if k1 { rate = Some(0) } else if k2 { rate = Some(1) } else if k3 { rate = Some(2) } }
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("study")).frame(frame).show(ctx, |ui| {
-            ui.set_width(600.0);
+            ui.set_width(crate::fit_w(ui.ctx(), 600.0));
             let acc = accent(ui);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Study")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
@@ -743,10 +754,10 @@ impl NotesApp {
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         if !sd.shown {
-                            if ui.add(egui::Button::new(RichText::new(tr("Show answer   Space")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() { sd.shown = true; }
+                            if ui.add(egui::Button::new(RichText::new(tr(if self.st.touch_ui { "Show answer" } else { "Show answer   Space" })).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() { sd.shown = true; }
                         } else {
                             let w = (ui.available_width() - 16.0) / 3.0;
-                            for (k, (label, col)) in [(tr("Again   1"), Color32::from_rgb(214, 82, 62)), (tr("Good   2"), acc), (tr("Easy   3"), Color32::from_rgb(21, 128, 61))].into_iter().enumerate() {
+                            for (k, (label, col)) in { let t = self.st.touch_ui; [(tr(if t { "Again" } else { "Again   1" }), Color32::from_rgb(214, 82, 62)), (tr(if t { "Good" } else { "Good   2" }), acc), (tr(if t { "Easy" } else { "Easy   3" }), Color32::from_rgb(21, 128, 61))] }.into_iter().enumerate() {
                                 if ui.add(egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(col).min_size(Vec2::new(w, 38.0))).clicked() { rate = Some(k); }
                             }
                         }
@@ -1035,7 +1046,7 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 let (dot, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
                 ui.painter().circle_filled(dot.center(), 5.0, sec_color);
-                ui.label(RichText::new(name).font(rich::serif(18.0)).color(ui.visuals().strong_text_color()));
+                // the buttons first, then the section's name in what's left (shortened on narrow screens)
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let t = ui.add(egui::Button::new("▾").frame_when_inactive(false)).tip("New page on a background, or a flashcard deck");
                     egui::Popup::menu(&t).show(|ui| {
@@ -1044,6 +1055,7 @@ impl NotesApp {
                         if ui.button(tr("▤  Flashcard deck")).clicked() { self.new_deck("New deck", vec![]); ui.close(); }
                     });
                     if ui.add(egui::Button::new(RichText::new(tr("+ Page")).color(accent(ui))).frame_when_inactive(false)).tip("New page (Ctrl+N)").clicked() { self.new_page(None); }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| { ui.add(egui::Label::new(RichText::new(name).font(rich::serif(18.0)).color(ui.visuals().strong_text_color())).truncate()); });
                 });
             });
             ui.add_space(2.0);
@@ -1267,7 +1279,11 @@ impl NotesApp {
     }
 
     pub(crate) fn ai_pane(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("ai").default_size(284.0).size_range(240.0..=520.0).show_separator_line(false)
+        // phones: the assistant takes the whole width (✦ or Back closes it)
+        let full = ui.ctx().content_rect().width();
+        let panel = egui::Panel::right("ai").show_separator_line(false);
+        let panel = if full < 600.0 { panel.exact_size(full - 30.0).resizable(false) } else { panel.default_size(284.0).size_range(240.0..=520.0) };
+        panel
             .frame(crate::card(ui).inner_margin(14).outer_margin(egui::Margin { left: 6, right: 14, top: 0, bottom: 12 })).show(ui, |ui| {
             let acc = accent(ui);
             ui.horizontal(|ui| {
@@ -1336,7 +1352,7 @@ impl NotesApp {
             let r = ui.add(egui::TextEdit::multiline(&mut self.st.ai_prompt).hint_text(tr("Ask about this page…")).desired_rows(2).desired_width(f32::INFINITY));
             let enter = r.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(tr("Shift+Enter for a new line")).size(10.5).weak());
+                if !self.st.touch_ui { ui.label(RichText::new(tr("Shift+Enter for a new line")).size(10.5).weak()); }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let send = ui.add(egui::Button::new(RichText::new(tr("Send ➤")).color(Color32::WHITE)).fill(accent_base())).clicked();
                     if (send || enter) && !self.st.ai_prompt.trim().is_empty() {
@@ -1364,6 +1380,7 @@ impl NotesApp {
                 let t = title.to_lowercase();
                 if t.starts_with(&ql) { 3.0 } else if ql.split_whitespace().all(|w| t.contains(w)) { 2.0 }
                 else if ql.split_whitespace().all(|w| path.to_lowercase().contains(w) || t.contains(w)) { 1.0 }
+                else if crate::index::fuzzy_find(&t, &ql).is_some() { 0.8 } // a typo in the title
                 else if p.plain_text().to_lowercase().contains(&ql) { 0.5 } else { continue }
             };
             hits.push((score, title, path, (a, b, c)));
@@ -1377,7 +1394,7 @@ impl NotesApp {
         let mut create = false;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)).corner_radius(16);
         let modal = egui::Modal::new(egui::Id::unique("switcher")).frame(frame).show(ctx, |ui| {
-            ui.set_width(520.0);
+            ui.set_width(crate::fit_w(ui.ctx(), 520.0));
             let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tr("Jump to a page…")).font(FontId::proportional(18.0)).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
             if !r.has_focus() { r.request_focus(); }
             if r.changed() { sel = 0; }
@@ -1394,7 +1411,7 @@ impl NotesApp {
                 if ui.button(tf!("+  Create a page called “{trim}”", trim = q.trim())).clicked() { create = true; }
                 if enter { create = true; }
             }
-            ui.label(RichText::new(tr("↑↓ to choose · Enter to open · Esc to close")).size(10.5).weak());
+            if !self.st.touch_ui { ui.label(RichText::new(tr("↑↓ to choose · Enter to open · Esc to close")).size(10.5).weak()); }
         });
         if let Some((a, b, c)) = go { self.go_to(a, b, c); return; }
         if create { let t = q.clone(); self.open_title(&t); return; }
@@ -1418,7 +1435,7 @@ impl NotesApp {
             let mut open = true;
             let mut restore = None;
             let mut purge = None;
-            egui::Window::new(tr("Recently deleted")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_width(420.0).show(ctx, |ui| {
+            egui::Window::new(tr("Recently deleted")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_width(crate::fit_w(ctx, 420.0)).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
                 if self.store.trash.is_empty() { ui.label(RichText::new(tr("Nothing here. Deleted pages, sections and notebooks wait here until you empty the bin.")).weak()); }
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (i, t) in self.store.trash.iter().enumerate().rev() {

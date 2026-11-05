@@ -24,11 +24,26 @@ pub enum Loaded {
 fn page_path(dir: &Path, id: u64) -> PathBuf { dir.join("pages").join(format!("{id}.json")) }
 fn history_path(dir: &Path, id: u64) -> PathBuf { dir.join("history").join(format!("{id}.jsonl")) }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+/// Write a file so that a crash, a dead battery or a pulled plug leaves either the old or the new
+/// version, never an empty file: a temporary file, flushed to the disk, then renamed over the old
+/// one (and the folder flushed, so the rename itself is kept).
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    // a unique name: two writers (this app, a sync folder) never share a temporary file
+    let tmp = path.with_extension(format!("{}.tmp", crate::new_id()));
+    let done = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if done.is_err() { let _ = std::fs::remove_file(&tmp); }
+    done?;
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) { let _ = d.sync_all(); }
+    Ok(())
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> { serde_json::from_slice(&std::fs::read(path).ok()?).ok() }
@@ -43,8 +58,13 @@ fn stub(p: &Page) -> Page {
 pub fn load(dir: &Path) -> Result<Loaded, String> {
     let lib = dir.join(LIBRARY);
     if lib.exists() {
-        let mut store: Store = read_json(&lib).or_else(|| read_json(&dir.join(format!("{LIBRARY}.backup"))))
-            .ok_or_else(|| format!("{} is damaged and has no readable backup.", lib.display()))?;
+        let mut store: Store = match read_json(&lib).or_else(|| read_json(&dir.join(format!("{LIBRARY}.backup")))) {
+            Some(s) => s,
+            // An empty file holds nothing to protect (older versions could leave one after a sudden
+            // power-off): bring back the pages themselves, or start fresh if there are none.
+            None if std::fs::metadata(&lib).is_ok_and(|m| m.len() == 0) => return Ok(recover_pages(dir).map_or(Loaded::Fresh, |s| Loaded::Store(s, vec![]))),
+            None => return Err(format!("{} is damaged and has no readable backup.", lib.display())),
+        };
         let mut damaged = vec![];
         for p in store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).flat_map(|s| s.pages.iter_mut()) {
             match read_json::<Page>(&page_path(dir, p.id)) {
@@ -61,6 +81,15 @@ pub fn load(dir: &Path) -> Result<Loaded, String> {
         return Ok(Loaded::Store(store, vec![]));
     }
     Ok(Loaded::Fresh)
+}
+
+/// Every readable page file, gathered into one notebook (when the list of notebooks is lost).
+fn recover_pages(dir: &Path) -> Option<Store> {
+    let mut pages: Vec<Page> = std::fs::read_dir(dir.join("pages")).ok()?.flatten().filter_map(|e| read_json::<Page>(&e.path())).collect();
+    if pages.is_empty() { return None; }
+    pages.sort_by_key(|p| p.created);
+    let section = Section { id: new_id(), name: crate::i18n::tr("Recovered pages").into(), color: crate::model::PALETTE[1], pages, lock: None };
+    Some(Store { notebooks: vec![Notebook { id: new_id(), name: crate::i18n::tr("Recovered notes").into(), color: crate::model::PALETTE[0], sections: vec![section] }], trash: vec![], study: Default::default() })
 }
 
 fn hash(b: &[u8]) -> u64 { b.iter().fold(0xcbf29ce484222325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x100000001b3)) }
@@ -150,6 +179,22 @@ mod tests {
     use super::*;
     fn tmp() -> PathBuf { let d = std::env::temp_dir().join(format!("ln-store-{}", new_id())); std::fs::create_dir_all(&d).unwrap(); d }
     fn titles(s: &Store) -> Vec<String> { s.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).map(|p| p.title.clone()).collect() }
+
+    #[test]
+    fn empty_library_file_recovers() {
+        // nothing at all: an empty library file means a fresh start, not "can't read, never save"
+        let d = tmp();
+        std::fs::write(d.join(LIBRARY), b"").unwrap();
+        assert!(matches!(load(&d), Ok(Loaded::Fresh)));
+        // with page files next to it: they come back
+        let p = Page::new("Kept");
+        write_atomic(&page_path(&d, p.id), &serde_json::to_vec(&p).unwrap()).unwrap();
+        match load(&d) { Ok(Loaded::Store(s, _)) => assert_eq!(titles(&s), vec!["Kept".to_string()]), _ => panic!("pages not recovered") }
+        // a library with real but unreadable content is still never treated as empty
+        std::fs::write(d.join(LIBRARY), b"{ not json").unwrap();
+        assert!(load(&d).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn splits_saves_and_reloads() {

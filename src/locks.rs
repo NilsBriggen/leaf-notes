@@ -117,7 +117,7 @@ impl NotesApp {
         let (mut go, mut cancel) = (false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("lock-section")).frame(frame).show(ctx, |ui| {
-            ui.set_width(420.0);
+            ui.set_width(crate::fit_w(ui.ctx(), 420.0));
             ui.label(RichText::new(tr("Lock this section")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
             ui.add_space(6.0);
             ui.label(tr("Its pages are encrypted with this password. You'll need it to open them, also on your other devices."));

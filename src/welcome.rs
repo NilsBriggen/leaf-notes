@@ -7,6 +7,15 @@ const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.3.0", &[
+        "Phones: every screen fits, pages fit the width when opened, the toolbar folds away on short screens, and Back closes whatever is open.",
+        "Gestures: tap with two fingers to undo, three to redo; scribble back and forth over ink to erase it.",
+        "Take a photo straight onto the page (Android). Pictures are stored upright and at a sensible size.",
+        "Selected ink has its own Delete and Duplicate buttons.",
+        "Recordings play at 0.75× to 2× speed.",
+        "Search and the page finder forgive typos; tapping just above or below a note edits it.",
+        "Exports open the share menu on Android, and saving is safer if the device switches off suddenly.",
+    ]),
     ("0.2.3", &[
         "The title bar shows the same, more detailed logo as the app icon.",
         "The paper fills the whole page card, and panning stops at its edge instead of showing a blank border.",
@@ -49,7 +58,7 @@ impl NotesApp {
         let (mut close, mut empty_start) = (false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(26)).corner_radius(20);
         egui::Modal::new(egui::Id::unique("tour")).frame(frame).show(ctx, |ui| {
-            ui.set_width(520.0);
+            ui.set_width(crate::fit_w(ui.ctx(), 520.0));
             let big = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).font(rich::serif(26.0)).color(ui.visuals().strong_text_color())); ui.add_space(6.0); };
             let text = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).size(15.0)); ui.add_space(4.0); };
             // the steps differ in length: keep the buttons below them in one place
@@ -130,7 +139,7 @@ impl NotesApp {
 
     pub(crate) fn news_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        egui::Window::new(tf!("What's new in Leaf Notes {v}", v = VERSION)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).default_width(460.0).show(ctx, |ui| {
+        egui::Window::new(tf!("What's new in Leaf Notes {v}", v = VERSION)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).default_width(crate::fit_w(ctx, 460.0)).max_width(crate::fit_w(ctx, 460.0)).show(ctx, |ui| {
             if let Some((_, items)) = CHANGES.iter().find(|(v, _)| *v == VERSION) {
                 for item in *items { ui.label(RichText::new(format!("•  {}", tr(item))).size(14.0)); }
             }
@@ -142,7 +151,8 @@ impl NotesApp {
 
     pub(crate) fn help_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        let topics: [(&str, &str); 10] = [
+        let topics: [(&str, &str); 11] = [
+            ("Gestures", "Pinch to zoom; two fingers scroll. Tap with two fingers to undo, three to redo. Scribble back and forth over ink to erase it. Long-press (or right-click) for more options. On Android, Back closes whatever is open."),
             ("Organising", "Notebooks hold sections, sections hold pages. Right-click a notebook, section or page to rename, move, colour or delete it; deleted things wait in Recently deleted. Right-click a page ▸ Make subpage to tuck it under the one above. Ctrl+K jumps to any page."),
             ("Typing", "Click empty paper to type. Type / for headings, lists, checklists, tables, code, equations and more, and [[ to link to another page. **bold**, *italic*, ==highlight== and $maths$ work as you type."),
             ("Pen and handwriting", "Pick a pen in the Draw tab. A stylus always draws; the mouse and fingers only if you allow it in Settings ▸ Pen & input. Select ink with the lasso to move it, or convert it to text or maths. The built-in reader knows printed letters, also ä, é, ç and the like; for joined-up handwriting switch on Settings ▸ AI ▸ Use this AI for handwriting. Search also finds words in your handwriting and in PDF printouts."),
@@ -154,11 +164,13 @@ impl NotesApp {
             ("Locked sections", "Right-click a section ▸ Lock with a password. Its pages are encrypted; without the password they can't be opened, by anyone."),
             ("Keyboard", "Settings ▸ Your data ▸ Keyboard shortcuts lists them all."),
         ];
-        egui::Window::new(tr("Help")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([560.0, 520.0]).show(ctx, |ui| {
+        egui::Window::new(tr("Help")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 560.0), 520.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                 for (title, body) in topics {
                     ui.label(RichText::new(tr(title)).size(16.0).strong());
-                    ui.label(tr(body));
+                    // touch screens have no right-click: say long-press instead
+                    let body = if self.st.touch_ui { tr(body).replace("Right-click", tr("Long-press")).replace("Rechtsklick", tr("Long-press")).replace("Clic droit", tr("Long-press")) } else { tr(body).to_string() };
+                    ui.label(body);
                     ui.add_space(8.0);
                 }
             });
@@ -212,7 +224,7 @@ impl NotesApp {
         let (mut send, mut delete) = (false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         egui::Modal::new(egui::Id::unique("crash")).frame(frame).show(ctx, |ui| {
-            ui.set_width(520.0);
+            ui.set_width(crate::fit_w(ui.ctx(), 520.0));
             ui.label(RichText::new(tr("Leaf Notes closed unexpectedly")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
             ui.label(tr("Your notes were saved up to a few seconds before. A short report of what went wrong can help fix it; it contains no notes, only where in the program it happened. You'll see it before it's sent."));
             ui.add_space(6.0);

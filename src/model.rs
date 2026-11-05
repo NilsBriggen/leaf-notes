@@ -387,6 +387,27 @@ pub fn flashcards(page: &Page) -> Vec<Card> {
     cards
 }
 
+/// Scratch-out: if `pts` is a scribble (a tight back-and-forth zigzag), the ids of the strokes it
+/// covers, which it erases. Empty when it isn't a scribble or covers nothing (then it stays ink).
+pub fn scratched(pts: &[[f32; 3]], strokes: &[Stroke]) -> Vec<u64> {
+    if pts.len() < 12 { return vec![]; }
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for p in pts { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+    let (w, h) = (hi[0] - lo[0], hi[1] - lo[1]);
+    let axis = if w >= h { 0 } else { 1 };
+    let path: f32 = pts.windows(2).map(|q| (q[1][0] - q[0][0]).hypot(q[1][1] - q[0][1])).sum();
+    // direction changes along the long side, ignoring jitter under 4 points
+    let (mut turns, mut dir, mut run) = (0, 0.0f32, 0.0f32);
+    for q in pts.windows(2) {
+        let d = q[1][axis] - q[0][axis];
+        if d * dir < 0.0 { run += d.abs(); if run > 4.0 { turns += 1; dir = d.signum(); run = 0.0; } }
+        else { if dir == 0.0 { dir = d.signum(); } run = 0.0; }
+    }
+    if turns < 4 || path < 3.5 * w.max(h) || w.max(h) < 12.0 { return vec![]; }
+    let inside = |p: &[f32; 3]| p[0] >= lo[0] - 4.0 && p[0] <= hi[0] + 4.0 && p[1] >= lo[1] - 4.0 && p[1] <= hi[1] + 4.0;
+    strokes.iter().filter(|s| !s.points.is_empty() && s.points.iter().filter(|p| inside(p)).count() * 10 >= s.points.len() * 6).map(|s| s.id).collect()
+}
+
 /// Recognise a hand-drawn shape and return a perfect version: a straight line, a circle/ellipse,
 /// a box, or a polygon (triangle, etc). None if it doesn't look like any of these.
 pub fn snap_shape(pts: &[[f32; 3]]) -> Option<(Vec<[f32; 3]>, &'static str)> {
@@ -572,9 +593,7 @@ pub fn save<T: Serialize>(name: &str, value: &T) -> std::io::Result<()> {
     std::fs::create_dir_all(&dir)?;
     // Keep the version from before this session, so even a bad session can be rolled back by hand.
     if name.starts_with("notebooks") { BACKED_UP.call_once(|| { let _ = std::fs::copy(dir.join(name), dir.join(format!("{name}.backup"))); }); }
-    let tmp = dir.join(format!("{name}.tmp"));
-    std::fs::write(&tmp, serde_json::to_vec(value)?)?;
-    std::fs::rename(tmp, dir.join(name))
+    crate::storage::write_atomic(&dir.join(name), &serde_json::to_vec(value)?)
 }
 
 /// Draw strokes onto a white PNG for handwriting recognition.
@@ -615,6 +634,21 @@ pub fn rasterize(strokes: &[&Stroke]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scratch_out() {
+        let line = |id, pts: Vec<[f32; 3]>| Stroke { id, points: pts, color: [0, 0, 0, 255], width: 2.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 };
+        let word = line(1, (0..20).map(|i| [100.0 + i as f32 * 3.0, 50.0, 1.0]).collect());
+        let far = line(2, (0..20).map(|i| [400.0 + i as f32 * 3.0, 300.0, 1.0]).collect());
+        // a back-and-forth scribble across the word
+        let zag: Vec<[f32; 3]> = (0..48).map(|i| [if i % 2 == 0 { 95.0 } else { 165.0 }, 42.0 + i as f32 * 0.35, 1.0]).collect();
+        assert_eq!(scratched(&zag, &[word.clone(), far.clone()]), vec![1]);
+        // a plain stroke over the word is not a scribble
+        let plain: Vec<[f32; 3]> = (0..30).map(|i| [90.0 + i as f32 * 3.0, 50.0 + i as f32, 1.0]).collect();
+        assert!(scratched(&plain, &[word.clone(), far]).is_empty());
+        // a scribble over nothing erases nothing
+        let alone: Vec<[f32; 3]> = zag.iter().map(|p| [p[0] + 600.0, p[1] + 600.0, 1.0]).collect();
+        assert!(scratched(&alone, &[word]).is_empty());
+    }
     #[test]
     fn rasterizes_and_roundtrips() {
         let s = Stroke { id: 1, points: vec![[0.0, 0.0, 1.0], [50.0, 30.0, 1.0]], color: [0, 0, 0, 255], width: 3.0, highlighter: false, pen: PenKind::Fountain, t: 0.0 };

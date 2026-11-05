@@ -8,10 +8,11 @@ A notetaking app for Linux, Windows and Android, built for students: write with 
 
 - **Notebooks › sections › pages**, with subpages, favourites, recent pages, page links (`[[Page name]]`) and backlinks, tags, a task list across all notes, search, and a quick switcher (Ctrl+K).
 - **Free-form pages**: click anywhere to type. Notes can be text with Markdown-style formatting, checklists, tables, code, LaTeX equations, pictures, files and links. Type `/` for the insert menu.
-- **Pen and ink**: pen, pencil, highlighter, eraser, lasso, and shapes that snap into place. Supports pressure and smoothing. Choose a background: plain, ruled, grid, dots, Cornell or music staves.
+- **Pen and ink**: pen, pencil, highlighter, eraser, lasso, and shapes that snap into place. Supports pressure and smoothing; scribble over ink to erase it. Choose a background: plain, ruled, grid, dots, Cornell or music staves.
+- **Made for touch too**: phone and tablet layouts, palm rejection while the stylus writes, two-finger tap to undo (three to redo), pinch to zoom, and photos straight from the camera on Android.
 - **Handwriting to text and to LaTeX**, offline (a small built-in recognizer), or with your AI if you prefer.
 - **PDF printouts**: put a PDF's pages on a page and write on them, then export as a PDF with your notes on top.
-- **Audio recording linked to notes**: tap something you wrote to hear what was being said at that moment.
+- **Audio recording linked to notes**: tap something you wrote to hear what was being said at that moment; play back at 0.75× to 2×.
 - **Flashcard decks** as their own page type, with spaced repetition. Make a deck by hand, from your notes, or with AI.
 - **AI with your own key** (Anthropic, or any OpenAI-compatible server, including local ones): chat about a page, summarise, rewrite, make cards.
 - **Sync** through Google Drive, a synced folder (Dropbox, OneDrive, Syncthing…) or a WebDAV server (Nextcloud…). Changes merge note by note; a page changed on two devices at once is kept in both versions.

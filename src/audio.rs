@@ -192,14 +192,17 @@ pub struct Player {
     _stream: cpal::Stream,
     pos: Arc<AtomicU64>, // position in 16 kHz samples, as f64 bits
     playing: Arc<AtomicBool>,
+    speed: Arc<AtomicU64>, // playback speed, as f64 bits (1.0 = normal)
     pub len: f32,
     pub id: u64,
 }
 
-fn output_stream<T: SizedSample + FromSample<f32>>(dev: &cpal::Device, cfg: cpal::StreamConfig, data: Arc<Vec<i16>>, pos: Arc<AtomicU64>, playing: Arc<AtomicBool>) -> Result<cpal::Stream, String> {
+fn output_stream<T: SizedSample + FromSample<f32>>(dev: &cpal::Device, cfg: cpal::StreamConfig, data: Arc<Vec<i16>>, pos: Arc<AtomicU64>, playing: Arc<AtomicBool>, speed: Arc<AtomicU64>) -> Result<cpal::Stream, String> {
     let ch = cfg.channels as usize;
-    let step = RATE as f64 / cfg.sample_rate as f64;
+    let base = RATE as f64 / cfg.sample_rate as f64;
     dev.build_output_stream(cfg, move |out: &mut [T], _: &cpal::OutputCallbackInfo| {
+        // faster playback reads the recording faster (voices get a little higher, like on any simple player)
+        let step = base * f64::from_bits(speed.load(Ordering::Relaxed)).clamp(0.5, 3.0);
         let mut p = f64::from_bits(pos.load(Ordering::Relaxed));
         let on = playing.load(Ordering::Relaxed);
         for frame in out.chunks_mut(ch.max(1)) {
@@ -223,21 +226,22 @@ impl Player {
         let len = data.len() as f32 / RATE as f32;
         let dev = cpal::default_host().default_output_device().ok_or("No speaker found.")?;
         let sup = dev.default_output_config().map_err(|e| e.to_string())?;
-        let (pos, playing) = (Arc::new(AtomicU64::new(0f64.to_bits())), Arc::new(AtomicBool::new(false)));
+        let (pos, playing, speed) = (Arc::new(AtomicU64::new(0f64.to_bits())), Arc::new(AtomicBool::new(false)), Arc::new(AtomicU64::new(1f64.to_bits())));
         let cfg: cpal::StreamConfig = sup.clone().into();
         let stream = match sup.sample_format() {
-            SampleFormat::F32 => output_stream::<f32>(&dev, cfg, data, pos.clone(), playing.clone()),
-            SampleFormat::I16 => output_stream::<i16>(&dev, cfg, data, pos.clone(), playing.clone()),
-            SampleFormat::U16 => output_stream::<u16>(&dev, cfg, data, pos.clone(), playing.clone()),
-            SampleFormat::I32 => output_stream::<i32>(&dev, cfg, data, pos.clone(), playing.clone()),
+            SampleFormat::F32 => output_stream::<f32>(&dev, cfg, data, pos.clone(), playing.clone(), speed.clone()),
+            SampleFormat::I16 => output_stream::<i16>(&dev, cfg, data, pos.clone(), playing.clone(), speed.clone()),
+            SampleFormat::U16 => output_stream::<u16>(&dev, cfg, data, pos.clone(), playing.clone(), speed.clone()),
+            SampleFormat::I32 => output_stream::<i32>(&dev, cfg, data, pos.clone(), playing.clone(), speed.clone()),
             f => Err(tf!("Unsupported speaker format {f}", f = format!("{:?}", f))),
         }?;
         stream.play().map_err(|e| e.to_string())?;
-        Ok(Player { _stream: stream, pos, playing, len, id })
+        Ok(Player { _stream: stream, pos, playing, speed, len, id })
     }
     pub fn time(&self) -> f32 { (f64::from_bits(self.pos.load(Ordering::Relaxed)) / RATE as f64) as f32 }
     pub fn seek(&self, secs: f32) { self.pos.store(((secs.clamp(0.0, self.len) as f64) * RATE as f64).to_bits(), Ordering::Relaxed); }
     pub fn playing(&self) -> bool { self.playing.load(Ordering::Relaxed) }
+    pub fn set_speed(&self, x: f32) { self.speed.store((x as f64).to_bits(), Ordering::Relaxed); }
     pub fn set_playing(&self, on: bool) {
         if on && self.time() >= self.len - 0.05 { self.seek(0.0); }
         self.playing.store(on, Ordering::Relaxed);

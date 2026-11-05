@@ -174,4 +174,26 @@ mod clickthrough {
         h.click("?");
         assert!(h.app.st.show_help);
     }
+
+    #[test]
+    fn two_finger_tap_undoes() {
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = Harness::new();
+        let blocks = |h: &Harness| h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].blocks.len();
+        let before = blocks(&h);
+        h.click("Insert");
+        h.click("Checklist");
+        assert_eq!(blocks(&h), before + 1);
+        let touch = |id: u64, x: f32, phase| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(id), phase, pos: egui::pos2(x, 600.0), force: None };
+        h.run(vec![touch(1, 900.0, egui::TouchPhase::Start), touch(2, 1000.0, egui::TouchPhase::Start)]);
+        h.run(vec![touch(1, 900.0, egui::TouchPhase::End), touch(2, 1000.0, egui::TouchPhase::End)]);
+        assert_eq!(blocks(&h), before, "a quick two-finger tap undoes");
+        // a two-finger drag (scrolling) does not (the Insert tab is still open)
+        h.click("Checklist");
+        assert_eq!(blocks(&h), before + 1);
+        h.run(vec![touch(1, 900.0, egui::TouchPhase::Start), touch(2, 1000.0, egui::TouchPhase::Start)]);
+        h.run(vec![touch(1, 900.0, egui::TouchPhase::Move), egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(2), phase: egui::TouchPhase::Move, pos: egui::pos2(1000.0, 500.0), force: None }]);
+        h.run(vec![touch(1, 900.0, egui::TouchPhase::End), touch(2, 1000.0, egui::TouchPhase::End)]);
+        assert_eq!(blocks(&h), before + 1);
+    }
 }

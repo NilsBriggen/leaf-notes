@@ -18,6 +18,11 @@ pub fn pick(kind: i32, mime: &str, many: bool) -> Result<(), String> {
     })
 }
 
+/// Take a photo with the camera app; it arrives with the picked files, as a picture.
+pub fn take_photo() -> Result<(), String> {
+    with_activity(|env, act| { env.call_method(&act, JNIString::new("takePhoto"), jni::jni_sig!("()V"), &[])?; Ok(()) })
+}
+
 /// Files picked or shared since the last call: (kind, where the copy is).
 pub fn incoming() -> Vec<(i32, PathBuf)> {
     let text = with_activity(|env, act| {
@@ -59,6 +64,11 @@ pub fn language() -> Option<String> {
         let o = env.call_method(&act, JNIString::new("language"), jni::jni_sig!("()Ljava/lang/String;"), &[])?.l()?;
         string(env, o)
     }).ok()
+}
+
+/// Send the app to the background, as Back does in other apps when there is nothing left to close.
+pub fn to_background() {
+    let _ = with_activity(|env, act| { env.call_method(&act, JNIString::new("moveTaskToBack"), jni::jni_sig!("(Z)Z"), &[true.into()])?; Ok(()) });
 }
 
 fn crypt(method: &str, input: &str) -> Option<String> {

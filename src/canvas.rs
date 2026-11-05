@@ -144,7 +144,11 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         let outer = Rect::from_min_size(ui.cursor().min, avail);
         let mut view = st.views.get(&page.id).copied().unwrap_or(Rect::from_min_size(Pos2::ZERO, avail));
         // the page's zoom is kept as such, so resizing the page area (panels, keyboard, interface size) never changes it
-        let mut scale = st.scales.get(&page.id).copied().unwrap_or(1.0);
+        // first time on a narrow screen (phones): zoom out so the page's widest note or ink fits across
+        let mut scale = st.scales.get(&page.id).copied().unwrap_or_else(|| {
+            let right = page.blocks.iter().map(|b| b.pos[0] + b.width).chain(page.strokes.iter().flat_map(|s| s.points.iter().map(|p| p[0]))).fold(0.0, f32::max);
+            if avail.x < 600.0 && right > avail.x - 12.0 { (avail.x / (right + 12.0)).clamp(0.55, 1.0) } else { 1.0 }
+        });
         if let Some(c) = st.capture.as_mut().filter(|c| c.page == page.id && !c.done()) {
             // show tile k exactly, then photograph it once it has settled for a few frames
             let s = c.scale(avail);
@@ -294,8 +298,17 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     if let Some(t) = heard {
         jump_to(page, st, t);
     } else if clicked && typing && st.p.click_to_type {
-        if let Some(p) = click_pos {
-            let b = block((p.x - o.x - 4.0).max(0.0), (p.y - o.y - 16.0).max(0.0), st.p.note_width, Kind::Text { text: String::new(), heading: 0 });
+        // a tap just above, below or beside a text note edits it, instead of stacking a new note on top
+        let near = click_pos.and_then(|p| { let q = p - o.to_vec2(); page.blocks.iter().rev().find(|b| matches!(b.kind, Kind::Text { .. })
+            && Rect::from_min_size(Pos2::new(b.pos[0], b.pos[1]), Vec2::new(b.width, st.heights.get(&b.id).copied().unwrap_or(30.0))).expand2(Vec2::new(8.0, 18.0)).contains(q)).map(|b| b.id) });
+        if let Some(id) = near {
+            st.editing = Some(id);
+            st.focus_id = Some(egui::Id::unique(("ed", id)));
+        } else if let Some(p) = click_pos {
+            let (x, y) = ((p.x - o.x - 4.0).max(0.0), (p.y - o.y - 16.0).max(0.0));
+            // never wider than the paper on screen (phones)
+            let w = st.views.get(&page.id).map_or(st.p.note_width, |v| st.p.note_width.min(v.right() - x - 12.0).max(160.0));
+            let b = block(x, y, w, Kind::Text { text: String::new(), heading: 0 });
             st.focus_id = Some(egui::Id::unique(("ed", b.id)));
             st.editing = Some(b.id);
             page.blocks.push(b);
@@ -353,6 +366,9 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         if later.as_ref().is_some_and(|f| f(s.t)) { let mut faded = s.clone(); faded.color[3] = (faded.color[3] as f32 * 0.22) as u8; paint_stroke(&painter, &faded, o); } else { paint_stroke(&painter, s, o); }
     }
     if let Some(s) = &st.current { paint_stroke(&painter, s, o); }
+    // a selection only lasts while its ink exists, and not into erasing
+    if st.tool == Tool::Eraser { st.selected.clear(); }
+    st.selected.retain(|id| page.strokes.iter().any(|s| s.id == *id));
     if let Some(r) = selection_bounds(page, &st.selected).filter(|_| st.capture.is_none()) {
         let r = r.translate(o.to_vec2()).expand(6.0);
         let acc = accent(ui);
@@ -368,13 +384,44 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     if st.tool == Tool::Lasso { selection_handles(ui, o, page, st); }
 }
 
+/// Where the Delete and Duplicate buttons sit under a selection box `r` (page coordinates).
+fn sel_buttons(r: Rect) -> [Rect; 2] {
+    let at = r.left_bottom() + Vec2::new(0.0, 8.0);
+    [Rect::from_min_size(at, Vec2::new(40.0, 32.0)), Rect::from_min_size(at + Vec2::new(46.0, 0.0), Vec2::new(40.0, 32.0))]
+}
+
+/// A tap at `p` (page coordinates) on a selection button: 0 deletes the selected ink, 1 duplicates it.
+fn sel_button_tap(page: &mut Page, st: &mut St, p: Pos2) -> bool {
+    let Some(r) = selection_bounds(page, &st.selected) else { return false };
+    let Some(k) = sel_buttons(r.expand(6.0)).iter().position(|b| b.contains(p)) else { return false };
+    st.snap(page);
+    if k == 0 {
+        let sel = std::mem::take(&mut st.selected);
+        page.strokes.retain(|s| !sel.contains(&s.id));
+        st.say("Deleted. Undo brings it back.");
+    } else {
+        let copies: Vec<Stroke> = page.strokes.iter().filter(|s| st.selected.contains(&s.id)).map(|s| Stroke { id: new_id(), points: s.points.iter().map(|p| [p[0] + 24.0, p[1] + 24.0, p[2]]).collect(), ..s.clone() }).collect();
+        st.selected = copies.iter().map(|s| s.id).collect();
+        page.strokes.extend(copies);
+    }
+    true
+}
+
 /// Handles on the selected ink: bottom-right corner resizes, the knob above rotates.
 fn selection_handles(ui: &mut egui::Ui, o: Pos2, page: &mut Page, st: &mut St) {
     let Some(r) = selection_bounds(page, &st.selected) else { return };
     let r = r.expand(6.0);
     let acc = accent(ui);
     let (corner, knob) = (r.right_bottom(), r.center_top() - Vec2::new(0.0, 24.0));
+    // touch screens have no Delete key: the selection carries its own buttons. They are only drawn
+    // here; a tap on them is handled by the ink layer underneath (see `sel_button_tap`), which gets
+    // every press anyway and would otherwise start a new lasso.
     let painter = ui.painter();
+    for (b, icon) in sel_buttons(r).into_iter().zip(["🗑", "⧉"]) {
+        let b = b.translate(o.to_vec2());
+        painter.rect(b, 8.0, ui.visuals().widgets.inactive.weak_bg_fill, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
+        painter.text(b.center(), Align2::CENTER_CENTER, icon, FontId::proportional(15.0), ui.visuals().text_color());
+    }
     painter.line_segment([o + r.center_top().to_vec2(), o + knob.to_vec2()], EStroke::new(1.2, acc));
     for (c, round) in [(corner, false), (knob, true)] {
         let c = o + c.to_vec2();
@@ -551,7 +598,10 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                 }
                 Tool::Eraser => st.snap(page),
                 Tool::Lasso => {
-                    if selection_bounds(page, &st.selected).is_some_and(|r| r.expand(8.0).contains(p)) { st.moving = true; st.snap(page); }
+                    let sel = selection_bounds(page, &st.selected);
+                    // a press on the selection's own buttons is theirs, not a new lasso
+                    if sel.is_some_and(|r| sel_buttons(r.expand(6.0)).iter().any(|b| b.contains(p))) { st.sel_press = Some(p); }
+                    else if sel.is_some_and(|r| r.expand(8.0).contains(p)) { st.moving = true; st.snap(page); }
                     else { st.lasso = vec![p]; st.selected.clear(); }
                 }
                 Tool::Shape(_) => {
@@ -631,7 +681,13 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     }
                     smooth_passes(&mut s.points, st.p.stabilizer);
                 }
-                if !s.points.is_empty() { st.snap(page); page.strokes.push(s); }
+                let gone = if st.p.scratch_out && !s.highlighter && !st.snapped && st.tool == Tool::Pen { crate::model::scratched(&s.points, &page.strokes) } else { vec![] };
+                if !gone.is_empty() {
+                    // a scribble over ink erases what it covers, and isn't kept itself
+                    st.snap(page);
+                    page.strokes.retain(|k| !gone.contains(&k.id));
+                    st.say(tf!("Scribbled out {n} stroke(s). Undo brings them back.", n = gone.len()));
+                } else if !s.points.is_empty() { st.snap(page); page.strokes.push(s); }
                 st.anchor = None;
             },
             Tool::Lasso => {
@@ -643,7 +699,11 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                         inside * 2 > s.points.len()
                     }).map(|s| s.id).collect();
                     st.say(if st.selected.is_empty() { "Nothing selected — draw a loop around the ink.".to_string() } else { tf!("{n} strokes selected — drag to move, or convert them.", n = st.selected.len()) });
-                } else { st.selected.clear(); }
+                } else {
+                    // a tap clears the selection, except on its own buttons (they act on it this same frame)
+                    // a tap clears the selection, or works its buttons
+                    if !st.sel_press.take().is_some_and(|p| sel_button_tap(page, st, p)) { st.selected.clear(); }
+                }
                 st.lasso.clear();
             }
             _ => {}
@@ -938,7 +998,7 @@ fn ensure_player(page: &Page, st: &mut St, i: usize) -> bool {
     let rec = &page.recordings[i];
     if st.player.as_ref().is_some_and(|p| p.id == rec.id) { return true; }
     match crate::audio::Player::open(&data_dir().join("files").join(&rec.file), rec.id) {
-        Ok(p) => { st.player = Some(p); true }
+        Ok(p) => { p.set_speed(st.speed); st.player = Some(p); true }
         Err(e) => { st.say(tf!("⚠ Can't play the recording: {e}", e = e)); false }
     }
 }
@@ -1005,6 +1065,11 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
                     }
                 });
                 if page.recordings.len() <= i { return; }
+                // playback speed: each tap goes to the next one
+                if ui.add(egui::Button::new(RichText::new(format!("{}×", st.speed)).size(12.0).monospace()).frame_when_inactive(false)).tip("Playback speed").clicked() {
+                    st.speed = match st.speed { s if s < 1.0 => 1.0, s if s < 1.2 => 1.25, s if s < 1.4 => 1.5, s if s < 1.9 => 2.0, _ => 0.75 };
+                    if let Some(p) = &st.player { p.set_speed(st.speed); }
+                }
                 let tip = "On: clicking a note or ink plays what was said while you wrote it";
                 let jump = if narrow { "👆".to_string() } else { tr("👆 Tap notes to jump").to_string() };
                 if ui.add(egui::Button::new(RichText::new(jump).size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
@@ -1414,5 +1479,25 @@ mod tests {
         let mut t = String::from("x + ");
         assert_eq!(super::insert_snippet(&mut t, 4, 4, r"\frac{}{}"), (10, 10));
         assert_eq!(t, r"x + \frac{}{}");
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    #[test]
+    fn selection_buttons() {
+        let ctx = egui::Context::default();
+        let mut app = crate::NotesApp::new(&eframe::CreationContext::_new_kittest(ctx), Some(std::env::temp_dir().join("ln-sel.png")));
+        let st = &mut app.st;
+        let mut page = Page::new("t");
+        page.strokes.push(Stroke { id: 7, points: vec![[100.0, 100.0, 1.0], [200.0, 140.0, 1.0]], color: [0, 0, 0, 255], width: 2.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 });
+        st.selected = vec![7];
+        let [del, dup] = sel_buttons(selection_bounds(&page, &st.selected).unwrap().expand(6.0));
+        assert!(!sel_button_tap(&mut page, st, Pos2::new(500.0, 500.0)), "elsewhere is not a button");
+        assert!(sel_button_tap(&mut page, st, dup.center()));
+        assert_eq!(page.strokes.len(), 2);
+        assert!(sel_button_tap(&mut page, st, del.center() + Vec2::new(24.0, 24.0)), "the copy is selected, its buttons moved with it");
+        assert_eq!(page.strokes.iter().map(|s| s.id).collect::<Vec<_>>(), vec![7]);
     }
 }

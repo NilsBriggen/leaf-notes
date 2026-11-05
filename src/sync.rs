@@ -129,11 +129,7 @@ fn list_files(dir: &Path) -> Vec<String> {
     v
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", new_id()));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| { let _ = std::fs::remove_file(&tmp); })
-}
+use crate::storage::write_atomic;
 
 /// Floats and maps compare reliably only after a round trip through JSON text.
 fn canon<T: Serialize>(v: &T) -> Value { serde_json::to_vec(v).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null) }

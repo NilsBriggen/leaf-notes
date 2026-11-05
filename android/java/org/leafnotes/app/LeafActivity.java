@@ -40,6 +40,9 @@ import javax.crypto.spec.GCMParameterSpec;
  */
 public class LeafActivity extends NativeActivity {
     private static final int PICK = 4200;
+    private static final int CAMERA = 4400;
+    /** Where the camera app writes the photo being taken (Pictures/Leaf Notes, so it's in the gallery too). */
+    private Uri photo;
     /** Files that arrived (picked or shared), as "kind|path", collected by the Rust side. */
     private final ConcurrentLinkedQueue<String> incoming = new ConcurrentLinkedQueue<>();
 
@@ -67,8 +70,31 @@ public class LeafActivity extends NativeActivity {
         }});
     }
 
+    /** Take a photo with the camera app; it arrives like a picked picture (kind 1). */
+    public void takePhoto() {
+        runOnUiThread(new Runnable() { public void run() {
+            try {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.MediaColumns.DISPLAY_NAME, "Leaf Notes " + System.currentTimeMillis() + ".jpg");
+                v.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
+                if (Build.VERSION.SDK_INT >= 29) v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/Leaf Notes");
+                photo = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT, photo)
+                    .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivityForResult(i, CAMERA);
+            } catch (Exception e) { toast("No camera app is available."); }
+        }});
+    }
+
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == CAMERA && photo != null) {
+            final Uri u = photo;
+            photo = null;
+            if (result != RESULT_OK) { try { getContentResolver().delete(u, null, null); } catch (Exception e) { /* nothing to tidy */ } return; }
+            new Thread(new Runnable() { public void run() { String p = copyIn(u); if (p != null) incoming.add("1|" + p); } }).start();
+            return;
+        }
         if (request < PICK || request > PICK + 99 || result != RESULT_OK || data == null) return;
         final int kind = request - PICK;
         final List<Uri> uris = new ArrayList<>();
