@@ -2,9 +2,9 @@
 
 Each release on GitHub shows its section from this file. Downloads are on the [releases page](https://github.com/NilsBriggen/leaf-notes/releases): `.AppImage` for Linux, `.msi` for Windows, `.apk` for Android.
 
-## Unreleased
+## 0.3.1 — 2026-11-05
 
-- The eraser has its own settings while it's in hand: a size slider, and "Part of a stroke" or "Whole stroke" as two clear choices (no more clicking it twice to switch).
+- The eraser has its own settings while it's in hand: a size slider, and "Part of a stroke" or "Whole stroke" as one clear switch (no more clicking it twice to switch).
 - The highlighter has a size slider and can take any colour.
 - Pens can be removed with a visible button in Pen settings, not only by right-click or long-press.
 - Recording speed is picked from a short menu instead of tapping through the speeds.

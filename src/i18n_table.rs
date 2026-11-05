@@ -851,4 +851,8 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("Remove this pen from My pens", "Diesen Stift aus Meine Stifte entfernen", "Retirer ce stylo de Mes stylos"),
     ("Hide the toolbar (click a tab to show it again)", "Werkzeugleiste ausblenden (ein Reiter zeigt sie wieder)", "Masquer la barre d'outils (un onglet la réaffiche)"),
     ("Colour", "Farbe", "Couleur"),
+    ("The eraser has its own settings: a size, and \"Part of a stroke\" or \"Whole stroke\" as one clear switch.", "Der Radierer hat eigene Einstellungen: eine Größe und „Teil eines Strichs“ oder „Ganzer Strich“ als klarer Schalter.", "La gomme a ses propres réglages : une taille, et « Partie d'un trait » ou « Trait entier » dans un seul interrupteur."),
+    ("The highlighter has a size and can take any colour.", "Der Textmarker hat eine Größe und kann jede Farbe haben.", "Le surligneur a une taille et peut prendre n'importe quelle couleur."),
+    ("Pens can be removed with a visible button; recording speed is picked from a menu.", "Stifte lassen sich über eine sichtbare Schaltfläche entfernen; die Wiedergabegeschwindigkeit wählst du aus einem Menü.", "Les stylos se retirent avec un bouton visible ; la vitesse de lecture se choisit dans un menu."),
+    ("A ⌃ button hides the toolbar, and View ▸ Dark mode stays on even when the theme followed the system.", "Eine ⌃-Schaltfläche blendet die Werkzeugleiste aus, und Ansicht ▸ Dunkelmodus bleibt an, auch wenn das Design dem System folgte.", "Un bouton ⌃ masque la barre d'outils, et Affichage ▸ Mode sombre reste actif même si le thème suivait le système."),
 ];

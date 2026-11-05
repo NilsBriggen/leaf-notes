@@ -7,6 +7,12 @@ const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.3.1", &[
+        "The eraser has its own settings: a size, and \"Part of a stroke\" or \"Whole stroke\" as one clear switch.",
+        "The highlighter has a size and can take any colour.",
+        "Pens can be removed with a visible button; recording speed is picked from a menu.",
+        "A ⌃ button hides the toolbar, and View ▸ Dark mode stays on even when the theme followed the system.",
+    ]),
     ("0.3.0", &[
         "Phones: every screen fits, pages fit the width when opened, the toolbar folds away on short screens, and Back closes whatever is open.",
         "Gestures: tap with two fingers to undo, three to redo; scribble back and forth over ink to erase it.",

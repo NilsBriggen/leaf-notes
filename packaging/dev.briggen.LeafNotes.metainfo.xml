@@ -32,6 +32,7 @@
   <categories><category>Office</category><category>Education</category></categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.1" date="2026-11-05"><description><p>Eraser and highlighter settings, and no more hidden click-again modes.</p></description></release>
     <release version="0.3.0" date="2026-11-05"><description><p>Works properly on phones, touch gestures, photos from the camera, scribble to erase, playback speed, typo-tolerant search and safer saving.</p></description></release>
     <release version="0.2.3" date="2026-11-05"><description><p>The title bar shows the same logo as the app icon; the paper fills the whole page.</p></description></release>
     <release version="0.2.2" date="2026-11-05"><description><p>The paper fills the whole page, and panning stops at its edge.</p></description></release>
