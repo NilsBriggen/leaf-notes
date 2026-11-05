@@ -95,6 +95,40 @@ impl Index {
     pub fn busy(&self) -> bool { self.job.is_some() }
 }
 
+/// Where `q` occurs in `hay` (both lower case), as a byte range, and whether it was an exact match.
+/// Without an exact match, each query word may be a little misspelled (one letter off, two for
+/// long words) or the start of a longer word: typos, and handwriting the recognizer read slightly wrong.
+pub fn fuzzy_find(hay: &str, q: &str) -> Option<(usize, usize, bool)> {
+    if q.is_empty() { return None; }
+    if let Some(at) = hay.find(q) { return Some((at, at + q.len(), true)); }
+    // (byte offset, word); the offset comes from the slice itself, so separators of any width are fine
+    let words: Vec<(usize, &str)> = hay.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| (w.as_ptr() as usize - hay.as_ptr() as usize, w)).collect();
+    let mut first = None;
+    for qw in q.split_whitespace() {
+        let n = qw.chars().count();
+        let allow = if n >= 8 { 2 } else if n >= 4 { 1 } else { 0 };
+        let hit = words.iter().find(|(_, w)| w.starts_with(qw) || (allow > 0 && (w.chars().count() as i32 - n as i32).abs() <= allow as i32 && within(w, qw, allow)))?;
+        first = first.or(Some((hit.0, hit.0 + hit.1.len(), false)));
+    }
+    first
+}
+
+/// Edit distance between `a` and `b` is at most `k` (letters added, dropped, changed, or two neighbours swapped).
+fn within(a: &str, b: &str, k: usize) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for i in 0..=a.len() { d[i][0] = i; }
+    for j in 0..=b.len() { d[0][j] = j; }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            d[i][j] = (d[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1])).min(d[i - 1][j] + 1).min(d[i][j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] { d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1); }
+        }
+        if d[i].iter().min().is_some_and(|m| *m > k) { return false; }
+    }
+    d[a.len()][b.len()] <= k
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +171,19 @@ mod tests {
         sec.lock = Some(Lock { salt: String::new(), nonce: String::new(), data: String::new() });
         for i in 0..20 { ix.tick(&store, files.clone(), false, 300.0 + i as f64); }
         assert!(!ix.map.contains_key(&inked));
+    }
+
+    #[test]
+    fn fuzzy() {
+        let t = "the fourier series of a square wave";
+        assert_eq!(fuzzy_find(t, "series"), Some((12, 18, true)));
+        assert_eq!(fuzzy_find(t, "fourir"), Some((4, 11, false))); // one letter missing
+        assert_eq!(fuzzy_find(t, "sqaure wave"), Some((24, 30, false))); // swapped letters, two words
+        assert_eq!(fuzzy_find(t, "squ"), Some((24, 27, true)));
+        assert_eq!(fuzzy_find(t, "wav"), Some((31, 34, true)));
+        assert_eq!(fuzzy_find(t, "cat"), None); // short words must match exactly
+        assert_eq!(fuzzy_find(t, "fourier cosine"), None); // every word has to be there
+        let t = "signals — week 3 # fourier";
+        assert_eq!(fuzzy_find(t, "fourir").map(|(a, b, _)| &t[a..b]), Some("fourier")); // after a wide "—"
     }
 }

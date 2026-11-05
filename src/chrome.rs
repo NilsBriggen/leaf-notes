@@ -1194,6 +1194,7 @@ impl NotesApp {
         let mut go = None;
         let mut toggle = None;
         let mut found = 0;
+        let mut hits: Vec<(bool, (usize, usize, usize), String, String, String, usize, usize)> = vec![];
         egui::ScrollArea::vertical().id_salt("search-scroll").auto_shrink([false; 2]).show(ui, |ui| {
             for (ni, n) in self.store.notebooks.iter().enumerate() {
                 for (si, s) in n.sections.iter().enumerate() {
@@ -1222,32 +1223,37 @@ impl NotesApp {
                         let mut text = p.plain_text();
                         if let Some(extra) = self.st.index.text(p.id) { text.push('\n'); text.push_str(extra); }
                         let lower = text.to_lowercase();
-                        let Some(at) = lower.find(&q) else { continue };
-                        found += 1;
-                        let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
-                        if r.hovered() { ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill); }
-                        let painter = ui.painter_at(rect.shrink(4.0));
-                        painter.text(rect.min + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, if p.title.is_empty() { "Untitled page" } else { &p.title }, FontId::proportional(14.0), ui.visuals().strong_text_color());
-                        painter.text(rect.min + Vec2::new(8.0, 24.0), Align2::LEFT_TOP, format!("{} › {}", n.name, s.name), FontId::proportional(10.5), acc);
-                        // snippet around the match, with the match highlighted
-                        let start = lower[..at].char_indices().rev().nth(24).map_or(0, |(i, _)| i);
-                        let end = (at + q.len()).min(text.len());
-                        let tail_end = text[end..].char_indices().nth(40).map_or(text.len(), |(i, _)| end + i);
-                        if text.is_char_boundary(start) && text.is_char_boundary(at) && text.is_char_boundary(end) && text.is_char_boundary(tail_end) {
-                            let mut job = egui::text::LayoutJob::default();
-                            let f = |c: Color32, bg: Color32| egui::TextFormat { font_id: FontId::proportional(11.5), color: c, background: bg, ..Default::default() };
-                            let weak = ui.visuals().weak_text_color();
-                            job.append(&text[start..at].replace('\n', " "), 0.0, f(weak, Color32::TRANSPARENT));
-                            job.append(&text[at..end], 0.0, f(ui.visuals().text_color(), mark));
-                            job.append(&text[end..tail_end].replace('\n', " "), 0.0, f(weak, Color32::TRANSPARENT));
-                            job.wrap.max_width = rect.width() - 16.0;
-                            job.wrap.max_rows = 1;
-                            let g = painter.layout_job(job);
-                            painter.galley(rect.min + Vec2::new(8.0, 39.0), g, weak);
-                        }
-                        if r.clicked() { go = Some((ni, si, pi)); }
+                        // exact matches first, then near misses (typos, handwriting read slightly wrong)
+                        let Some((at, end, exact)) = crate::index::fuzzy_find(&lower, &q) else { continue };
+                        hits.push((!exact, (ni, si, pi), p.title.clone(), format!("{} › {}", n.name, s.name), text, at, end));
                     }
                 }
+            }
+            hits.sort_by_key(|h| h.0);
+            for (_, at_page, title, path, text, at, end) in &hits {
+                let (at, end) = (*at, (*end).min(text.len()));
+                found += 1;
+                let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
+                if r.hovered() { ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill); }
+                let painter = ui.painter_at(rect.shrink(4.0));
+                painter.text(rect.min + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, if title.is_empty() { "Untitled page" } else { title.as_str() }, FontId::proportional(14.0), ui.visuals().strong_text_color());
+                painter.text(rect.min + Vec2::new(8.0, 24.0), Align2::LEFT_TOP, path, FontId::proportional(10.5), acc);
+                // snippet around the match, with the match highlighted
+                let start = text.get(..at).unwrap_or("").char_indices().rev().nth(24).map_or(0, |(i, _)| i);
+                let tail_end = text.get(end..).and_then(|t| t.char_indices().nth(40)).map_or(text.len(), |(i, _)| end + i);
+                if text.is_char_boundary(start) && text.is_char_boundary(at) && text.is_char_boundary(end) && text.is_char_boundary(tail_end) {
+                    let mut job = egui::text::LayoutJob::default();
+                    let f = |c: Color32, bg: Color32| egui::TextFormat { font_id: FontId::proportional(11.5), color: c, background: bg, ..Default::default() };
+                    let weak = ui.visuals().weak_text_color();
+                    job.append(&text[start..at].replace('\n', " "), 0.0, f(weak, Color32::TRANSPARENT));
+                    job.append(&text[at..end], 0.0, f(ui.visuals().text_color(), mark));
+                    job.append(&text[end..tail_end].replace('\n', " "), 0.0, f(weak, Color32::TRANSPARENT));
+                    job.wrap.max_width = rect.width() - 16.0;
+                    job.wrap.max_rows = 1;
+                    let g = painter.layout_job(job);
+                    painter.galley(rect.min + Vec2::new(8.0, 39.0), g, weak);
+                }
+                if r.clicked() { go = Some(*at_page); }
             }
             if found == 0 { ui.add_space(20.0); ui.vertical_centered(|ui| ui.label(RichText::new(tr(if filter.is_some() { "No tagged notes yet.\nTag a note from the Home tab." } else { "No matches." })).weak())); }
         });
