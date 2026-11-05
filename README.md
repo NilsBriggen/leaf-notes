@@ -27,7 +27,7 @@ Every push to `main` builds three files under **Actions ▸ Build ▸ Artifacts*
 | Windows | `LeafNotes-<version>-x86_64.msi`: installer |
 | Android (arm64) | `LeafNotes-<version>-arm64.apk`: allow installing from this source |
 
-Push a version tag (`git tag v0.1.0 && git push --tags`) to publish the three files as a GitHub release.
+Push a version tag (`git tag v0.1.0 && git push --tags`) to publish the three files as a GitHub release. Its description comes from that version's section in [CHANGELOG.md](CHANGELOG.md), so add the section first (the release stops if it's missing).
 
 ## Build from source
 
