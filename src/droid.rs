@@ -33,14 +33,22 @@ pub fn has_incoming() -> bool {
 }
 
 /// Open a file in another app (via a copy in Downloads/Leaf Notes).
-pub fn open(path: &Path, name: &str) {
+pub fn open(path: &Path, name: &str) { call_file("openFile", path, name) }
+
+/// Show the share menu for an exported file (a copy also lands in Downloads/Leaf Notes).
+pub fn share(path: &Path) {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    call_file("shareFile", path, &name)
+}
+
+fn call_file(method: &str, path: &Path, name: &str) {
     let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
-        "pdf" => "application/pdf", "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "txt" | "md" => "text/plain", "wav" => "audio/wav",
+        "pdf" => "application/pdf", "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "txt" => "text/plain", "md" => "text/markdown", "json" => "application/json", "wav" => "audio/wav",
         "doc" | "docx" => "application/msword", "zip" => "application/zip", _ => "application/octet-stream",
     };
     let _ = with_activity(|env, act| {
         let (p, n, m) = (env.new_string(path.to_string_lossy())?, env.new_string(name)?, env.new_string(mime)?);
-        env.call_method(&act, JNIString::new("openFile"), jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"), &[(&p).into(), (&n).into(), (&m).into()])?;
+        env.call_method(&act, JNIString::new(method), jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"), &[(&p).into(), (&n).into(), (&m).into()])?;
         Ok(())
     });
 }

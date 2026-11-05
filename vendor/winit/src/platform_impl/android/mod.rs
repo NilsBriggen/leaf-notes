@@ -143,6 +143,10 @@ pub struct EventLoop<T: 'static> {
     cause: StartCause,
     ignore_volume_keys: bool,
     combining_accent: Option<char>,
+    // Leaf Notes: palm rejection. While a stylus is down, finger and palm touches are dropped, and
+    // fingers already down are cancelled, so they can't hold on to the pointer the stylus needs.
+    stylus_down: Option<u64>,
+    fingers: Vec<(u64, PhysicalPosition<f64>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,6 +196,8 @@ impl<T: 'static> EventLoop<T> {
             cause: StartCause::Init,
             ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
+            stylus_down: None,
+            fingers: Vec::new(),
         })
     }
 
@@ -404,6 +410,29 @@ impl<T: 'static> EventLoop<T> {
                     for pointer in pointers {
                         let location =
                             PhysicalPosition { x: pointer.x() as _, y: pointer.y() as _ };
+                        let id = pointer.pointer_id() as u64;
+                        let stylus = matches!(pointer.tool_type(), android_activity::input::ToolType::Stylus | android_activity::input::ToolType::Eraser);
+                        if stylus {
+                            match phase {
+                                event::TouchPhase::Started => {
+                                    self.stylus_down = Some(id);
+                                    for (fid, at) in std::mem::take(&mut self.fingers) {
+                                        let cancel = event::WindowEvent::Touch(event::Touch { device_id, phase: event::TouchPhase::Cancelled, location: at, id: fid, force: None });
+                                        callback(event::Event::WindowEvent { window_id, event: cancel }, self.window_target());
+                                    }
+                                },
+                                event::TouchPhase::Ended | event::TouchPhase::Cancelled => self.stylus_down = None,
+                                event::TouchPhase::Moved => {},
+                            }
+                        } else {
+                            let known = self.fingers.iter().position(|f| f.0 == id);
+                            match phase {
+                                _ if self.stylus_down.is_some() && known.is_none() => continue,
+                                event::TouchPhase::Started => self.fingers.push((id, location)),
+                                event::TouchPhase::Moved => match known { Some(i) => self.fingers[i].1 = location, None => continue },
+                                event::TouchPhase::Ended | event::TouchPhase::Cancelled => match known { Some(i) => { self.fingers.remove(i); }, None => continue },
+                            }
+                        }
                         trace!(
                             "Input event {device_id:?}, {phase:?}, loc={location:?}, \
                              pointer={pointer:?}"
@@ -414,7 +443,7 @@ impl<T: 'static> EventLoop<T> {
                                 device_id,
                                 phase,
                                 location,
-                                id: pointer.pointer_id() as u64,
+                                id,
                                 // Leaf Notes: only a stylus reports pressure, so apps can tell it from a finger
                                 // (Android reports a pressure value for fingers too; the tool type tells them apart).
                                 // The stylus state rides along: below 0 = the eraser end, above 1 = side button held.

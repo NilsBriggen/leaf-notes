@@ -814,4 +814,6 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("Many smaller layout, dark mode and wording fixes.", "Viele kleinere Verbesserungen an Layout, Dunkelmodus und Texten.", "De nombreuses petites corrections de mise en page, de mode sombre et de textes."),
     ("The paper fills the whole page card, and panning stops at its edge instead of showing a blank border.", "Das Papier füllt die ganze Seitenkarte, und Verschieben hört am Rand auf, statt einen leeren Rand zu zeigen.", "Le papier remplit toute la carte de la page, et le défilement s'arrête à son bord au lieu de montrer une marge vide."),
     ("The title bar shows the same, more detailed logo as the app icon.", "Die Titelleiste zeigt dasselbe, detailliertere Logo wie das App-Symbol.", "La barre de titre affiche le même logo, plus détaillé, que l'icône de l'app."),
+    ("Exported {n} PDF page(s) to {out}", "{n} PDF-Seite(n) exportiert nach {out}", "{n} page(s) PDF exportée(s) vers {out}"),
+    ("Find a page (Ctrl+K)", "Seite finden (Strg+K)", "Trouver une page (Ctrl+K)"),
 ];

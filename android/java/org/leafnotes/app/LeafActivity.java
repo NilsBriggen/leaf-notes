@@ -2,6 +2,7 @@ package org.leafnotes.app;
 
 import android.app.NativeActivity;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
@@ -126,25 +127,51 @@ public class LeafActivity extends NativeActivity {
         } catch (Exception e) { return null; }
     }
 
-    /** Open an attachment in another app: a copy goes to Downloads/Leaf Notes, which other apps may read. */
+    /** A copy of the file in Downloads/Leaf Notes, which other apps may read (null if that failed). */
+    private Uri toDownloads(String path, String name, String mime) throws Exception {
+        if (Build.VERSION.SDK_INT < 29) { toast("This needs Android 10 or newer."); return null; }
+        ContentResolver r = getContentResolver();
+        ContentValues v = new ContentValues();
+        v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+        v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+        v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/Leaf Notes");
+        Uri u = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+        if (u == null) { toast("Couldn't copy the file to Downloads."); return null; }
+        try (InputStream in = new FileInputStream(path); OutputStream out = r.openOutputStream(u)) {
+            byte[] buf = new byte[65536];
+            for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+        }
+        return u;
+    }
+
+    /** Open an attachment in another app. */
     public void openFile(final String path, final String name, final String mime) {
         runOnUiThread(new Runnable() { public void run() {
-            if (Build.VERSION.SDK_INT < 29) { toast("Opening attachments needs Android 10 or newer."); return; }
             try {
-                ContentResolver r = getContentResolver();
-                ContentValues v = new ContentValues();
-                v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-                v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
-                v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/Leaf Notes");
-                Uri u = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
-                if (u == null) { toast("Couldn't copy the file to Downloads."); return; }
-                try (InputStream in = new FileInputStream(path); OutputStream out = r.openOutputStream(u)) {
-                    byte[] buf = new byte[65536];
-                    for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
-                }
+                Uri u = toDownloads(path, name, mime);
+                if (u == null) return;
                 Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(u, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 try { startActivity(view); } catch (ActivityNotFoundException e) { toast("No app here can open this file. It's in Downloads/Leaf Notes."); }
             } catch (Exception e) { toast("Couldn't open the file: " + e.getMessage()); }
+        }});
+    }
+
+    /** Hand an exported file to the share menu (mail, Drive, Files…); a copy also stays in Downloads/Leaf Notes. */
+    public void shareFile(final String path, final String name, final String mime) {
+        runOnUiThread(new Runnable() { public void run() {
+            try {
+                Uri u = toDownloads(path, name, mime);
+                if (u == null) return;
+                Intent send = new Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, u).putExtra(Intent.EXTRA_TITLE, name).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                send.setClipData(ClipData.newUri(getContentResolver(), name, u)); // shows the file's name in the share sheet
+                Intent chooser = Intent.createChooser(send, name);
+                // the share sheet itself reads the file's name for its preview
+                chooser.setClipData(send.getClipData());
+                chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                // Leaf Notes itself accepts shared files; don't offer it as a place to send its own export
+                chooser.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, new android.content.ComponentName[] { new android.content.ComponentName(LeafActivity.this, LeafActivity.class) });
+                startActivity(chooser);
+            } catch (Exception e) { toast("Couldn't share the file: " + e.getMessage()); }
         }});
     }
 

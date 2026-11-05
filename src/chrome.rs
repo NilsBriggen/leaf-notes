@@ -40,12 +40,15 @@ fn group(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui)) {
     let caption = tr(caption);
     // room for two rows of controls in every group: captions line up and the ribbon keeps its height across tabs
     let h = (ui.spacing().interact_size.y * 2.0 + 6.0).max(52.0);
+    let captions = ui.spacing().interact_size.y < 30.0; // the touch ribbon (see `ribbon`) leaves them out
     ui.vertical(|ui| {
         let r = ui.horizontal(|ui| { ui.set_min_height(h); add(ui); }).response.rect;
-        let (cr, _) = ui.allocate_exact_size(Vec2::new(r.width(), 13.0), Sense::hover());
-        ui.painter().text(cr.center(), Align2::CENTER_CENTER, caption, FontId::proportional(10.5), ui.visuals().weak_text_color());
+        if captions {
+            let (cr, _) = ui.allocate_exact_size(Vec2::new(r.width(), 13.0), Sense::hover());
+            ui.painter().text(cr.center(), Align2::CENTER_CENTER, caption, FontId::proportional(10.5), ui.visuals().weak_text_color());
+        }
     });
-    let (r, _) = ui.allocate_exact_size(Vec2::new(9.0, h + 12.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(Vec2::new(9.0, if captions { h + 12.0 } else { h }), Sense::hover());
     ui.painter().vline(r.center().x, r.y_range().shrink(6.0), EStroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
 }
 
@@ -181,7 +184,9 @@ fn nav_item(ui: &mut egui::Ui, st: &mut St, id: u64, name: &str, color: Option<C
 impl NotesApp {
     pub(crate) fn title_bar(&mut self, ui: &mut egui::Ui) {
         let desk = ui.visuals().panel_fill;
-        egui::Panel::top("title").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 10 })).show(ui, |ui| {
+        // touch screens: every point of height goes to the page
+        let my = if self.st.touch_ui { 5 } else { 10 };
+        egui::Panel::top("title").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: my, bottom: my })).show(ui, |ui| {
             // Narrow windows (and phones): the tabs get their own row, then buttons shrink to icons.
             let full = ui.available_width();
             // Measured, not guessed: one row with labels if everything fits (the Record button
@@ -201,6 +206,8 @@ impl NotesApp {
             let rec_w = tw(if self.st.recorder.is_some() { "●  00:00  ■" } else if compact { "●" } else { tr("●  Record") }, 14.0) + pad;
             ui.horizontal(|ui| {
                 ui.set_min_height(34.0);
+                // phones: the buttons' touch padding alone would push Record under the logo
+                if full < 480.0 { ui.spacing_mut().button_padding.x = 6.0; ui.spacing_mut().item_spacing.x = 4.0; }
                 let v = ui.visuals().clone();
                 let acc = accent(ui);
                 if ui.add(egui::Button::new(RichText::new("☰").size(17.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Show or hide notebooks").clicked() { self.st.p.show_nav ^= true; self.st.dirty = true; }
@@ -221,7 +228,7 @@ impl NotesApp {
                     self.tabs(ui);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.spacing_mut().item_spacing.x = if full < 480.0 { 2.0 } else { 6.0 };
                     if ui.add(egui::Button::new(RichText::new("⚙").size(16.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Settings").clicked() { self.st.show_settings ^= true; self.st.settings_tab = 0; }
                     if ui.add(egui::Button::new(RichText::new("?").size(16.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Help").clicked() { self.st.show_help ^= true; }
                     let ai_on = self.st.p.show_ai;
@@ -229,30 +236,35 @@ impl NotesApp {
                         .fill(if ai_on { accent_base() } else { v.extreme_bg_color }).stroke(EStroke::new(1.0, if ai_on { accent_base() } else { v.widgets.noninteractive.bg_stroke.color }))
                         .corner_radius(17).min_size(Vec2::new(0.0, 34.0));
                     if ui.add(b).tip("Show or hide the AI assistant").clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
-                    // room left for undo, redo and Record
-                    let w = (ui.available_width() - rec_w - 2.0 * 34.0 - 30.0).clamp(90.0, 300.0);
-                    // The pill, icon and key hint are drawn here; only the typing area is a text box,
-                    // vertically centred between them so nothing overlaps.
-                    let (pill, pill_resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
-                    let id = egui::Id::unique("search");
-                    let focused = ui.memory(|m| m.has_focus(id));
-                    ui.painter().rect_filled(pill, 17.0, v.extreme_bg_color);
-                    ui.painter().rect_stroke(pill, 17.0, if focused { EStroke::new(1.5, acc) } else { v.widgets.noninteractive.bg_stroke }, egui::StrokeKind::Inside);
-                    ui.painter().text(Pos2::new(pill.left() + 16.0, pill.center().y - 1.0), Align2::CENTER_CENTER, "🔍", FontId::proportional(13.0), v.weak_text_color());
-                    let key_w = if self.st.search.is_empty() && !focused && w > 170.0 && !self.st.touch_ui {
-                        let g = ui.painter().layout_no_wrap(tr("Ctrl F").into(), FontId::proportional(11.0), v.weak_text_color());
-                        let key = Rect::from_center_size(Pos2::new(pill.right() - 14.0 - g.size().x / 2.0 - 5.0, pill.center().y), g.size() + Vec2::new(10.0, 4.0));
-                        ui.painter().rect_filled(key, 5.0, v.widgets.inactive.weak_bg_fill);
-                        ui.painter().galley(key.center() - g.size() / 2.0, g, v.weak_text_color());
-                        key.width() + 10.0
-                    } else { 0.0 };
-                    // (+2: the font's line box sits a little above the visual middle of the letters)
-                    let field = Rect::from_min_max(Pos2::new(pill.left() + 30.0, pill.top() + 2.0), Pos2::new(pill.right() - 14.0 - key_w, pill.bottom() + 2.0));
-                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(Layout::left_to_right(Align::Center)));
-                    let r = child.add(egui::TextEdit::singleline(&mut self.st.search).id(id).hint_text(tr("Search everything")).frame(egui::Frame::NONE)
-                        .margin(egui::Margin::symmetric(4, 0)).desired_width(field.width()).font(FontId::proportional(14.0)));
-                    if pill_resp.clicked() { r.request_focus(); }
-                    want_focus(&mut self.st, &r);
+                    // phones: no room for a search box; the 🔍 opens the page finder, which also searches page text
+                    if full < 480.0 {
+                        if ui.add(egui::Button::new(RichText::new("🔍").size(15.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Find a page (Ctrl+K)").clicked() { self.st.switcher = Some((String::new(), 0)); }
+                    } else {
+                        // room left for undo, redo and Record
+                        let w = (ui.available_width() - rec_w - 2.0 * 34.0 - 30.0).clamp(90.0, 300.0);
+                        // The pill, icon and key hint are drawn here; only the typing area is a text box,
+                        // vertically centred between them so nothing overlaps.
+                        let (pill, pill_resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
+                        let id = egui::Id::unique("search");
+                        let focused = ui.memory(|m| m.has_focus(id));
+                        ui.painter().rect_filled(pill, 17.0, v.extreme_bg_color);
+                        ui.painter().rect_stroke(pill, 17.0, if focused { EStroke::new(1.5, acc) } else { v.widgets.noninteractive.bg_stroke }, egui::StrokeKind::Inside);
+                        ui.painter().text(Pos2::new(pill.left() + 16.0, pill.center().y - 1.0), Align2::CENTER_CENTER, "🔍", FontId::proportional(13.0), v.weak_text_color());
+                        let key_w = if self.st.search.is_empty() && !focused && w > 170.0 && !self.st.touch_ui {
+                            let g = ui.painter().layout_no_wrap(tr("Ctrl F").into(), FontId::proportional(11.0), v.weak_text_color());
+                            let key = Rect::from_center_size(Pos2::new(pill.right() - 14.0 - g.size().x / 2.0 - 5.0, pill.center().y), g.size() + Vec2::new(10.0, 4.0));
+                            ui.painter().rect_filled(key, 5.0, v.widgets.inactive.weak_bg_fill);
+                            ui.painter().galley(key.center() - g.size() / 2.0, g, v.weak_text_color());
+                            key.width() + 10.0
+                        } else { 0.0 };
+                        // (+2: the font's line box sits a little above the visual middle of the letters)
+                        let field = Rect::from_min_max(Pos2::new(pill.left() + 30.0, pill.top() + 2.0), Pos2::new(pill.right() - 14.0 - key_w, pill.bottom() + 2.0));
+                        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(Layout::left_to_right(Align::Center)));
+                        let r = child.add(egui::TextEdit::singleline(&mut self.st.search).id(id).hint_text(tr("Search everything")).frame(egui::Frame::NONE)
+                            .margin(egui::Margin::symmetric(4, 0)).desired_width(field.width()).font(FontId::proportional(14.0)));
+                        if pill_resp.clicked() { r.request_focus(); }
+                        want_focus(&mut self.st, &r);
+                    }
                     if ui.add_enabled(!self.st.redo.is_empty(), egui::Button::new(RichText::new("↷").size(16.0)).frame_when_inactive(false)).tip("Redo (Ctrl+Y)").clicked() { self.undo(true); }
                     if ui.add_enabled(!self.st.undo.is_empty(), egui::Button::new(RichText::new("↶").size(16.0)).frame_when_inactive(false)).tip("Undo (Ctrl+Z)").clicked() { self.undo(false); }
                     ui.add_space(6.0);
@@ -325,8 +337,11 @@ impl NotesApp {
     pub(crate) fn ribbon(&mut self, ui: &mut egui::Ui) {
         if !self.st.p.ribbon_open || self.st.typing_kb { return; }
         let desk = ui.visuals().panel_fill;
-        egui::Panel::top("ribbon").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 12 })).show(ui, |ui| {
-            card(ui).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 4 }).show(ui, |ui| {
+        let touch = self.st.touch_ui;
+        egui::Panel::top("ribbon").show_separator_line(false).frame(egui::Frame::new().fill(desk).inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: if touch { 6 } else { 12 } })).show(ui, |ui| {
+            card(ui).inner_margin(egui::Margin { left: 10, right: 10, top: if touch { 3 } else { 6 }, bottom: if touch { 1 } else { 4 } }).show(ui, |ui| {
+                // touch screens: slightly smaller rows and no group captions (the buttons have labels)
+                if touch { ui.spacing_mut().interact_size.y = 30.0; }
                 ui.set_width(ui.available_width());
                 // each tab keeps its own sideways scroll; a solid bar shows when there's more to the right
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
@@ -888,11 +903,6 @@ impl NotesApp {
                 let words: usize = page.blocks.iter().map(|b| b.kind.summary().split_whitespace().count().max(match &b.kind { Kind::Text { text, .. } => text.split_whitespace().count(), _ => 0 })).sum();
                 let info = if page.kind == PageKind::Deck { tf!("{n} cards · {ready} ready to study", n = page.cards.len(), ready = page.deck().len()) } else { [(words, tr("{n} word"), tr("{n} words")), (page.blocks.len(), tr("{n} note"), tr("{n} notes")), (page.strokes.len(), tr("{n} ink stroke"), tr("{n} ink strokes"))]
                     .iter().map(|(n, one, many)| crate::i18n::fill(if *n == 1 { one } else { many }, &[("n", n)])).collect::<Vec<_>>().join(" · ") };
-                ui.label(RichText::new(info).size(11.5).weak());
-                if !self.st.status.is_empty() && self.st.status_age < 10.0 {
-                    ui.add_space(12.0);
-                    ui.label(RichText::new(&self.st.status).size(11.5).color(if self.st.status.starts_with('⚠') { Color32::from_rgb(220, 80, 60) } else { accent(ui) }));
-                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(RichText::new(tr(if self.st.dirty { "Saving…" } else { "✓ Saved" })).size(11.5).weak());
                     if let Some((v, url)) = self.st.update.clone() {
@@ -915,6 +925,15 @@ impl NotesApp {
                     if self.st.tool != Tool::Type {
                         ui.label(RichText::new(tr(match self.st.tool { Tool::Pen => "✏ Pen", Tool::Highlighter => "Highlighter", Tool::Eraser => "Eraser", Tool::Lasso => "Select ink", Tool::Shape(_) => "Shape", Tool::Type => "" })).size(11.5).weak());
                     }
+                    // what's left on the left: the page counts, and the latest message, shortened to fit (never under the items on the right)
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let msg = !self.st.status.is_empty() && self.st.status_age < 10.0;
+                        if !msg || ui.available_width() > 520.0 { ui.add(egui::Label::new(RichText::new(info).size(11.5).weak()).truncate()); }
+                        if msg {
+                            ui.add_space(12.0);
+                            ui.add(egui::Label::new(RichText::new(&self.st.status).size(11.5).color(if self.st.status.starts_with('⚠') { Color32::from_rgb(220, 80, 60) } else { accent(ui) })).truncate());
+                        }
+                    });
                 });
             });
         });

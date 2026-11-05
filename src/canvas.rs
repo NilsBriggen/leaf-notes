@@ -19,6 +19,8 @@ pub(crate) struct Capture {
     pub title: String,
     pub keep: (bool, bool, bool),
     pub view: Option<Rect>,
+    /// the page zoom before the capture, put back afterwards
+    pub scale: Option<f32>,
 }
 
 impl Capture {
@@ -33,13 +35,16 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
     let mut action = None;
     // The page is a sheet of paper lying on the desk.
     let edge = |shown: bool| if shown { 0 } else { 14 };
-    crate::card(ui).inner_margin(egui::Margin { left: 40, right: 12, top: 10, bottom: 0 })
+    let touch = st.touch_ui;
+    let ml: i8 = if st.narrow { 20 } else { 40 }; // header's left margin (phones: less)
+    crate::card(ui).inner_margin(egui::Margin { left: ml, right: 12, top: if touch { 8 } else { 10 }, bottom: 0 })
         .outer_margin(egui::Margin { left: edge(st.p.show_nav), right: edge(st.p.show_ai), top: 0, bottom: 6 }).show(ui, |ui| {
         let head_top = ui.cursor().top();
         // typing with the on-screen keyboard up: the page header steps aside so the note stays in view
         let head = !(st.typing_kb && page.kind == PageKind::Notes);
+        // touch screens skip the where-and-when line (the pages list shows it) to leave room for the paper
         // one small line: where the page lives, when it was made, and pages linking here
-        if head { ui.horizontal_wrapped(|ui| {
+        if head && (!touch || page.kind == PageKind::Locked) { ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2));
             if page.kind == PageKind::Locked { return; }
             ui.label(RichText::new(format!("·  {}", format_date(page.created, true))).size(11.0).weak());
@@ -59,8 +64,8 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         }
         if head { ui.horizontal(|ui| {
             let w = (ui.available_width() - 110.0).clamp(160.0, 680.0); // room for the star and ⋯ at any size
-            let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(24.0))
-                .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(RichText::new(tr("Untitled page")).font(rich::serif(24.0))).desired_width(w).margin(egui::Margin::ZERO));
+            let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(if touch { 20.0 } else { 24.0 }))
+                .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(RichText::new(tr("Untitled page")).font(rich::serif(if touch { 20.0 } else { 24.0 }))).desired_width(w).margin(egui::Margin::ZERO));
             if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
             if r.changed() { st.dirty = true; }
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && page.blocks.is_empty() {
@@ -120,10 +125,10 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         ui.add_space(6.0);
         // the paper starts here: a clear edge across the whole sheet, so it's obvious where writing works
         let (y, full) = (ui.cursor().top(), ui.max_rect());
-        ui.painter().hline((full.left() - 40.0)..=(full.right() + 12.0), y, EStroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
+        ui.painter().hline((full.left() - ml as f32)..=(full.right() + 12.0), y, EStroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
         ui.add_space(1.0);
         // pen down above that edge: say where ink goes instead of silently doing nothing
-        let head = Rect::from_x_y_ranges((full.left() - 40.0)..=(full.right() + 12.0), head_top..=y);
+        let head = Rect::from_x_y_ranges((full.left() - ml as f32)..=(full.right() + 12.0), head_top..=y);
         // (not when the press landed on a button, the title or a menu: those are using the pointer)
         if st.input != Input::Mouse && matches!(st.tool, Tool::Pen | Tool::Highlighter | Tool::Shape(_)) && !ui.ctx().egui_is_using_pointer() && ui.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| head.contains(p))) {
             st.say("The page title is up here. Ink goes on the paper below the line.");
@@ -131,7 +136,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         // The paper runs edge to edge across the card (only the header keeps its margins),
         // stopping just short of the rounded bottom corners.
         let r = ui.available_rect_before_wrap();
-        let mut sheet = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(Pos2::new(r.left() - 40.0, r.top()), Pos2::new(r.right() + 12.0, r.bottom() - 10.0))));
+        let mut sheet = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(Pos2::new(r.left() - ml as f32, r.top()), Pos2::new(r.right() + 12.0, r.bottom() - 10.0))));
         ui.advance_cursor_after_rect(r);
         let ui = &mut sheet;
         // A zoomable, pannable canvas: pinch or Ctrl+scroll zooms, scrolling or dragging empty paper pans.

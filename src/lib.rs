@@ -387,6 +387,18 @@ fn setup_fonts(ctx: &egui::Context) {
 }
 
 /// Card surfaces (page, page list, toolbar, assistant) float on a softly tinted desk.
+/// Where an exported file can be found, for messages: the share menu's copy on Android, the file itself elsewhere.
+fn where_saved(path: &std::path::Path) -> String {
+    if cfg!(target_os = "android") { "Downloads/Leaf Notes".into() } else { path.display().to_string() }
+}
+
+/// A file was just exported: on Android it sits in the app's private folder, so open the share menu for it.
+fn shared(path: &std::path::Path) {
+    #[cfg(target_os = "android")]
+    droid::share(path);
+    let _ = path;
+}
+
 fn card(ui: &egui::Ui) -> egui::Frame {
     let v = ui.visuals();
     egui::Frame::new().fill(v.extreme_bg_color).corner_radius(14).stroke(v.widgets.noninteractive.bg_stroke)
@@ -966,11 +978,11 @@ impl NotesApp {
         {
             let dir = data_dir().join("exports");
             let r = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(&name), md));
-            self.st.say(match r { Ok(_) => format!("Exported to {}", dir.join(&name).display()), Err(e) => format!("⚠ Export failed: {e}") });
+            match r { Ok(_) => droid::share(&dir.join(&name)), Err(e) => self.st.say(tf!("⚠ Export failed: {e}", e = e)) }
         }
     }
 
-    /// Where to save an exported file: ask on desktop, the app's exports folder on Android.
+    /// Where to save an exported file: ask on desktop; on Android a private folder, then the share menu (see `shared`).
     fn ask_save_path(&mut self, name: &str, ext: &str) -> Option<PathBuf> {
         #[cfg(not(target_os = "android"))]
         { rfd::FileDialog::new().set_file_name(name).add_filter(ext.to_uppercase(), &[ext]).save_file() }
@@ -989,7 +1001,7 @@ impl NotesApp {
         if !whole && export::printout_source(&page, &hf).is_some() {
             let Some(out) = self.ask_save_path(&file, "pdf") else { return };
             match export::export_printout(&page, &data_dir().join("files"), &hf, self.st.p.note_size, &out) {
-                Ok(n) => self.st.say(tf!("Exported the printout with your notes on {n} page(s) to {out}", n = n, out = out.display())),
+                Ok(n) => { shared(&out); self.st.say(tf!("Exported the printout with your notes on {n} page(s) to {out}", n = n, out = where_saved(&out))) }
                 Err(e) => self.st.say(format!("⚠ {e}")),
             }
             return;
@@ -1004,7 +1016,7 @@ impl NotesApp {
         (self.st.p.show_nav, self.st.p.show_ai, self.st.p.ribbon_open) = (false, false, false);
         self.st.editing = None;
         self.st.selected.clear();
-        self.st.capture = Some(canvas::Capture { page: page.id, content: content.expand(16.0), k: 0, tiles: vec![], wait: 0, rx: None, path, title, keep, view: self.st.views.get(&page.id).copied() });
+        self.st.capture = Some(canvas::Capture { page: page.id, content: content.expand(16.0), k: 0, tiles: vec![], wait: 0, rx: None, path, title, keep, view: self.st.views.get(&page.id).copied(), scale: self.st.scales.get(&page.id).copied() });
         self.st.say("Exporting the page as PDF…");
     }
 
@@ -1113,6 +1125,7 @@ impl NotesApp {
         if let Some(c) = self.st.capture.take() {
             (self.st.p.show_nav, self.st.p.show_ai, self.st.p.ribbon_open) = c.keep;
             if let Some(v) = c.view { self.st.views.insert(c.page, v); }
+            match c.scale { Some(s) => { self.st.scales.insert(c.page, s); } None => { self.st.scales.remove(&c.page); } }
             if !msg.is_empty() { self.st.say(msg); }
         }
     }
@@ -1280,7 +1293,7 @@ impl eframe::App for NotesApp {
             self.st.p.show_nav = !narrow;
             if narrow { self.st.p.show_ai = false; }
         }
-        let touch = matches!(self.st.input, Input::Finger | Input::Pen);
+        let touch = cfg!(target_os = "android") || matches!(self.st.input, Input::Finger | Input::Pen); // (Android: from the very first frame)
         if touch != self.st.touch_ui {
             self.st.touch_ui = touch;
             ctx.all_styles_mut(|s| {
@@ -1337,6 +1350,7 @@ impl eframe::App for NotesApp {
             let c = self.st.capture.take().unwrap_or_else(|| unreachable!("checked above"));
             (self.st.p.show_nav, self.st.p.show_ai, self.st.p.ribbon_open) = c.keep;
             if let Some(v) = c.view { self.st.views.insert(c.page, v); }
+            match c.scale { Some(s) => { self.st.scales.insert(c.page, s); } None => { self.st.scales.remove(&c.page); } }
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let w = c.tiles.iter().map(|t| t.width()).max().unwrap_or(1);
@@ -1344,7 +1358,7 @@ impl eframe::App for NotesApp {
                 let mut all = image::RgbImage::from_pixel(w, h.max(1), image::Rgb([255, 255, 255]));
                 let mut y = 0;
                 for t in &c.tiles { image::imageops::overlay(&mut all, &image::DynamicImage::ImageRgba8(t.clone()).to_rgb8(), 0, y as i64); y += t.height(); }
-                let r = export::write_image_pdf(&c.title, &all, &c.path).map(|n| format!("Exported {n} PDF page(s) to {}", c.path.display()));
+                let r = export::write_image_pdf(&c.title, &all, &c.path).map(|n| { shared(&c.path); tf!("Exported {n} PDF page(s) to {out}", n = n, out = where_saved(&c.path)) });
                 let _ = tx.send(r);
             });
             self.st.ai_rx.push((Job::Note, rx));

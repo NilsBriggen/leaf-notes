@@ -241,6 +241,8 @@ impl NotesApp {
                                 if ui.button(tr("Save a backup…")).clicked() {
                                     if let Some(path) = rfd::FileDialog::new().set_file_name("leaf-notes-backup.json").save_file() { backup_to = Some(path); }
                                 }
+                                #[cfg(target_os = "android")]
+                                if ui.button(tr("Save a backup…")).clicked() { let d = data_dir().join("exports"); let _ = std::fs::create_dir_all(&d); backup_to = Some(d.join("leaf-notes-backup.json")); }
                             });
                             row(ui, "Restore a backup", "Adds the notebooks from a backup file as extra notebooks. Nothing you have now is replaced.", |ui| {
                                 let _ = &ui;
@@ -280,7 +282,8 @@ impl NotesApp {
         if let Some(path) = backup_to {
             // locked sections stay sealed in backups too
             let r = serde_json::to_vec_pretty(&self.sealed().unwrap_or_else(|| self.store.clone())).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
-            self.st.say(match r { Ok(_) => tf!("Backup saved to {path}", path = path.display()), Err(e) => tf!("⚠ Backup failed: {e}", e = e) });
+            if r.is_ok() { crate::shared(&path); }
+            self.st.say(match r { Ok(_) => tf!("Backup saved to {path}", path = crate::where_saved(&path)), Err(e) => tf!("⚠ Backup failed: {e}", e = e) });
         }
         if !import.is_empty() { self.import_markdown(import); }
         if serde_json::to_string(&self.st.p).unwrap_or_default() != before { apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
