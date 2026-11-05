@@ -29,6 +29,43 @@ pub(crate) fn focus_ring(ui: &egui::Ui, r: &egui::Response, rect: Rect, radius: 
     if r.has_focus() { ui.painter().rect_stroke(rect.expand(2.0), radius + 2.0, EStroke::new(2.0, accent(ui)), egui::StrokeKind::Outside); }
 }
 
+/// A two-or-more-way switch drawn as one pill (like the tabs): returns the option clicked.
+pub(crate) fn segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: usize) -> Option<usize> {
+    let font = FontId::proportional(13.0);
+    let w = options.iter().map(|(l, _)| ui.painter().layout_no_wrap(tr(l).to_string(), font.clone(), Color32::WHITE).size().x).fold(0.0, f32::max) + 22.0;
+    let h = ui.spacing().interact_size.y.max(26.0);
+    let (track, _) = ui.allocate_exact_size(Vec2::new(w * options.len() as f32 + 6.0, h), Sense::hover());
+    let v = ui.visuals().clone();
+    ui.painter().rect_filled(track, h / 2.0, if v.dark_mode { Color32::from_rgb(30, 36, 37) } else { Color32::from_rgb(222, 229, 226) });
+    let mut picked = None;
+    for (i, (label, tip)) in options.iter().enumerate() {
+        let r = Rect::from_min_size(track.min + Vec2::new(3.0 + i as f32 * w, 3.0), Vec2::new(w, h - 6.0));
+        let resp = ui.interact(r, ui.scope_id().with(("seg", label)), Sense::click());
+        focus_ring(ui, &resp, r, (h - 6.0) / 2.0);
+        let label = tr(label).to_string();
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, i == selected, &label));
+        if i == selected {
+            ui.painter().add(egui::Shape::rect_filled(r.translate(Vec2::new(0.0, 1.0)), (h - 6.0) / 2.0, Color32::from_black_alpha(18)));
+            ui.painter().rect_filled(r, (h - 6.0) / 2.0, v.extreme_bg_color);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(r, (h - 6.0) / 2.0, v.widgets.hovered.weak_bg_fill);
+        }
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, &label, font.clone(), if i == selected { accent(ui) } else { v.text_color() });
+        if resp.tip(*tip).clicked() { picked = Some(i); }
+    }
+    picked
+}
+
+/// A small caption, then a slider that ends exactly `width` from where the row starts.
+fn labelled_slider(ui: &mut egui::Ui, caption: &str, width: f32, value: &mut f32, range: std::ops::RangeInclusive<f32>, tip: &str) {
+    ui.horizontal(|ui| {
+        let start = ui.cursor().left();
+        ui.label(RichText::new(tr(caption)).size(11.5).weak());
+        ui.spacing_mut().slider_width = (width - (ui.cursor().left() - start)).max(40.0);
+        ui.add(egui::Slider::new(value, range).show_value(false)).tip(tip);
+    });
+}
+
 /// Small square ribbon button used for text formatting.
 fn sbtn(ui: &mut egui::Ui, text: RichText, tip: &str, selected: bool) -> egui::Response {
     let b = egui::Button::new(text).min_size(Vec2::new(28.0, 22.0)).selected(selected).frame_when_inactive(false);
@@ -515,18 +552,14 @@ impl NotesApp {
             group(ui, "Eraser settings", |ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
-                    ui.horizontal(|ui| {
-                        let p = &mut self.st.p;
-                        if ui.selectable_label(p.erase_partial, tr("Part of a stroke")).tip("Erases only where you rub, like a real eraser").clicked() { p.erase_partial = true; }
-                        if ui.selectable_label(!p.erase_partial, tr("Whole stroke")).tip("Erases every stroke it touches, in one go").clicked() { p.erase_partial = false; }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(tr("Size")).size(11.5).weak());
-                        ui.spacing_mut().slider_width = 110.0;
-                        ui.add(egui::Slider::new(&mut self.st.p.eraser_size, 3.0..=40.0).show_value(false)).tip("How big the eraser is");
-                    });
+                    let start = ui.cursor().left();
+                    let opts = [("Part of a stroke", "Erases only where you rub, like a real eraser"), ("Whole stroke", "Erases every stroke it touches, in one go")];
+                    if let Some(i) = segmented(ui, &opts, usize::from(!self.st.p.erase_partial)) { self.st.p.erase_partial = i == 0; }
+                    let w = ui.min_rect().right() - start;
+                    labelled_slider(ui, "Size", w, &mut self.st.p.eraser_size, 3.0..=40.0, "How big the eraser is");
                 });
                 // the eraser at its real size
+                ui.add_space(4.0);
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
                 ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
                 ui.painter().circle_stroke(r.center(), self.st.p.eraser_size.min(24.0), EStroke::new(1.2, ui.visuals().text_color()));
@@ -541,11 +574,7 @@ impl NotesApp {
                         let mut c = self.st.p.hl_color;
                         if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Any colour for the highlighter").changed() { self.st.p.hl_color = [c[0], c[1], c[2], c[3].min(160)]; }
                     });
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(tr("Size")).size(11.5).weak());
-                        ui.spacing_mut().slider_width = 110.0;
-                        ui.add(egui::Slider::new(&mut self.st.p.hl_width, 6.0..=40.0).show_value(false)).tip("How thick the highlighter is");
-                    });
+                    labelled_slider(ui, "Size", 150.0, &mut self.st.p.hl_width, 6.0..=40.0, "How thick the highlighter is");
                 });
                 let (r, _) = ui.allocate_exact_size(Vec2::new(70.0, 52.0), Sense::hover());
                 ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
