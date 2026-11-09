@@ -6,6 +6,14 @@ Each release on GitHub shows its section from this file. Downloads are on the [r
 
 A big round of fixes for safety and reliability, and many smaller improvements.
 
+**New since the first release candidate**
+- The Draw toolbar keeps one height whatever is in hand: switching to the eraser with a pen's button no longer makes the page jump.
+- Google Drive sign-in on Android finishes once you're back in Leaf Notes (it failed with "No address associated with hostname"). If the browser can't get back to the app, paste its address into Settings.
+- Phones: page titles wrap, the page list uses the screen's width, Settings controls sit under their text, Ctrl+K stays above the keyboard, and the toolbar fits the screen.
+- Names that don't fit end in "…"; dark ink and highlighted words are readable in dark mode; all windows look alike.
+- Fixed: the eraser at low zoom erasing strokes it never touched; undo after nudging a note or adding a table row; Ctrl+Z while studying; Ctrl+K opening the wrong page; sync stopping after closing Settings with Esc; pages deleted before locking a section staying readable; memory growing with long PDFs.
+- Android: the camera works on Android 8 and 9, a photo survives the app being stopped, and sharing big files no longer freezes the app.
+
 **Your notes are safer**
 - Closing the app while a locked section was open could overwrite that section with its lock screen. Fixed.
 - Reopening the welcome tour from Help and choosing "Start with an empty notebook" no longer removes your notebooks (and on a first start the sample goes to Recently deleted).
