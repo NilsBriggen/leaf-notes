@@ -284,7 +284,7 @@ impl NotesApp {
         if let Some(f) = restore { self.restore_backup(&f); }
         if let Some(path) = backup_to {
             // locked sections stay sealed in backups too
-            let r = serde_json::to_vec_pretty(&self.sealed().unwrap_or_else(|| self.store.clone())).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
+            let r = serde_json::to_vec_pretty(&self.sealed().unwrap_or_else(|| self.store.clone())).map_err(|e| e.to_string()).and_then(|b| crate::storage::write_atomic(&path, &b).map_err(|e| e.to_string()));
             if r.is_ok() { crate::shared(&path); }
             self.st.say(match r { Ok(_) => tf!("Backup saved to {path}", path = crate::where_saved(&path)), Err(e) => tf!("⚠ Backup failed: {e}", e = e) });
         }

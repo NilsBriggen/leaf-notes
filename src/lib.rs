@@ -304,6 +304,9 @@ struct St {
     unlock_err: String,
     /// The welcome tour's current step.
     tour: Option<u8>,
+    /// Held while this window owns the data folder (see `instance_lock`).
+    #[allow(dead_code)]
+    instance: Option<std::fs::File>,
     /// The tour is the first-start one (only then may it offer to replace the sample notes).
     tour_fresh: bool,
     show_news: bool,
@@ -516,12 +519,30 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
     ctx.set_visuals(v);
 }
 
+/// Lock the data folder for this window. Err: another window has it. Ok(None): locks don't work
+/// here (an unusual file system), so go on without one.
+fn instance_lock() -> Result<Option<std::fs::File>, ()> {
+    let dir = data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let Ok(f) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".lock")) else { return Ok(None) };
+    match f.try_lock() {
+        Ok(()) => Ok(Some(f)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(()),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The marker of a recording in progress (".part": never synced).
+fn rec_marker(id: u64) -> PathBuf { data_dir().join("files").join(format!("{id}.rec.part")) }
+
 static HIGH_CONTRAST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl NotesApp {
     pub fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
         setup_fonts(&cc.egui_ctx);
         let persist = screenshot.is_none();
+        // one window at a time saves into the data folder: a second one would delete the first one's new pages
+        let instance = if persist { instance_lock() } else { Ok(None) };
         // a library that can't be read is never saved over: the app runs without saving and says why
         let (store, load_msg, store_ok) = if !persist { (sample(), None, false) } else {
             match storage::load(&data_dir()) {
@@ -531,6 +552,7 @@ impl NotesApp {
                 Err(e) => (sample(), Some(tf!("⚠ Your notes couldn't be read ({e}). Nothing will be saved until this is fixed, so your files stay untouched.", e = e)), false),
             }
         };
+        let (load_msg, store_ok) = if instance.is_err() { (Some(tr("⚠ Leaf Notes is already open in another window. This window shows your notes but doesn't save them.").to_string()), false) } else { (load_msg, store_ok) };
         let mut ai: ai::AiSettings = if persist { load(SETTINGS_FILE).unwrap_or_default() } else { ai::AiSettings::default() };
         let fresh_install = persist && !data_dir().join(PREFS_FILE).exists() && !data_dir().join(storage::LIBRARY).exists();
         let p: Prefs = if persist { load(PREFS_FILE).unwrap_or_default() } else { Prefs::default() };
@@ -557,14 +579,14 @@ impl NotesApp {
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
             status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, tour_fresh: false, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
-            sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
+            instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
             #[cfg(target_os = "android")] android: None, #[cfg(target_os = "android")] keyboard_shown: false };
         app.clamp();
         app.st.dirty = app.st.persist; // a first save moves secrets from older settings files into the keyring
         if let Some(m) = load_msg { app.st.say(m); app.st.status_age = -50.0; } // stays up for a minute
-        if app.st.persist { app.greet(fresh_install); welcome::install_crash_hook(); app.st.crash = welcome::crash_reports().into_iter().next(); }
+        if app.st.persist { app.recover_recordings(); app.greet(fresh_install); welcome::install_crash_hook(); app.st.crash = welcome::crash_reports().into_iter().next(); }
         if app.st.persist && app.st.p.check_updates { app.st.update_rx = Some(updates::check(welcome::VERSION)); }
         if !persist {
             // A representative moment for the preview picture: a formatted note targeted, the AI pane mid-conversation.
@@ -658,7 +680,7 @@ impl NotesApp {
         if let Some(i) = self.store.notebooks.iter().position(|n| n.id == id) {
             let mut n = self.store.notebooks.remove(i);
             for s in &mut n.sections { self.close_for_bin(s); }
-            binned.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n) });
+            binned.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n), at: Some(i) });
         }
         let mut found = None;
         for (a, n) in self.store.notebooks.iter().enumerate() {
@@ -672,19 +694,19 @@ impl NotesApp {
                 let mut s = self.store.notebooks[a].sections.remove(i);
                 self.close_for_bin(&mut s);
                 let n = &self.store.notebooks[a];
-                binned.push(Trashed { label: format!("Section “{}” from {}", s.name, n.name), deleted: now, item: TrashItem::Section { notebook: n.id, section: s } });
+                binned.push(Trashed { label: format!("Section “{}” from {}", s.name, n.name), deleted: now, item: TrashItem::Section { notebook: n.id, section: s }, at: Some(i) });
             }
             Some((a, b, Some(i))) => {
                 let p = self.store.notebooks[a].sections[b].pages.remove(i);
                 let (n, s) = (&self.store.notebooks[a], &self.store.notebooks[a].sections[b]);
                 let (nid, nname) = (n.id, n.name.clone());
                 if s.lock.is_none() {
-                    binned.push(Trashed { label: format!("Page “{}” from {} › {}", p.title, nname, s.name), deleted: now, item: TrashItem::Page { notebook: nid, section: s.id, page: p } });
+                    binned.push(Trashed { label: format!("Page “{}” from {} › {}", p.title, nname, s.name), deleted: now, item: TrashItem::Page { notebook: nid, section: s.id, page: p }, at: Some(i) });
                 } else {
                     // a page of an opened locked section waits in the bin encrypted, as a one-page locked section (same password)
                     let from = s.clone_meta();
                     match self.sealed_page_for_bin(&from, p) {
-                        Ok(section) => binned.push(Trashed { label: format!("A page from {} › {} (locked)", nname, from.name), deleted: now, item: TrashItem::Section { notebook: nid, section } }),
+                        Ok(section) => binned.push(Trashed { label: format!("A page from {} › {} (locked)", nname, from.name), deleted: now, item: TrashItem::Section { notebook: nid, section }, at: None }),
                         Err(p) => { self.store.notebooks[a].sections[b].pages.insert(i, p); self.st.say("Couldn't delete this page."); return; }
                     }
                 }
@@ -701,28 +723,44 @@ impl NotesApp {
     fn restore(&mut self, i: usize) {
         let t = self.store.trash.remove(i);
         let (nb, sec) = (self.nb, self.sec);
+        // back where it was when that place still exists, else at the end
+        fn put<T>(v: &mut Vec<T>, at: Option<usize>, x: T) { let i = at.unwrap_or(usize::MAX).min(v.len()); v.insert(i, x); }
         match t.item {
-            TrashItem::Notebook(n) => self.store.notebooks.push(n),
+            TrashItem::Notebook(n) => put(&mut self.store.notebooks, t.at, n),
             TrashItem::Section { notebook, section } => {
-                match self.store.notebooks.iter_mut().find(|n| n.id == notebook) { Some(n) => n.sections.push(section), None => self.store.notebooks[nb].sections.push(section) }
+                match self.store.notebooks.iter_mut().find(|n| n.id == notebook) { Some(n) => put(&mut n.sections, t.at, section), None => self.store.notebooks[nb].sections.push(section) }
             }
             TrashItem::Page { notebook, section, page } => {
                 // never next to a closed locked section's placeholder: saving would drop it
                 let here_ok = !self.store.notebooks[nb].sections[sec].sealed();
                 let s = self.store.notebooks.iter_mut().filter(|n| n.id == notebook).flat_map(|n| n.sections.iter_mut()).find(|s| s.id == section && !s.sealed());
                 match s {
-                    Some(s) => s.pages.push(page),
+                    Some(s) => put(&mut s.pages, t.at, page),
                     None if here_ok => self.store.notebooks[nb].sections[sec].pages.push(page),
                     None => {
-                        self.store.trash.insert(i, Trashed { label: t.label, deleted: t.deleted, item: TrashItem::Page { notebook, section, page } });
+                        self.store.trash.insert(i, Trashed { label: t.label, deleted: t.deleted, item: TrashItem::Page { notebook, section, page }, at: t.at });
                         self.st.say("Unlock this section first.");
                         return;
                     }
                 }
             }
         }
+        sync::dedupe(&mut self.store); // a page deleted here but kept on another device can come back twice
         self.st.dirty = true;
         self.st.say(tf!("Restored {label}", label = t.label));
+    }
+
+    /// Delete things in Recently deleted for good, with the earlier versions kept of their pages.
+    pub(crate) fn purge(&mut self, gone: Vec<Trashed>) {
+        if self.st.persist {
+            let pages = gone.iter().flat_map(|t| match &t.item {
+                TrashItem::Page { page, .. } => vec![page.id],
+                TrashItem::Section { section, .. } => section.pages.iter().map(|p| p.id).collect(),
+                TrashItem::Notebook(n) => n.sections.iter().flat_map(|s| &s.pages).map(|p| p.id).collect(),
+            });
+            for id in pages { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{id}.jsonl"))); }
+        }
+        self.st.dirty = true;
     }
 
     fn duplicate_page(&mut self, nb: usize, sec: usize, pg: usize) {
@@ -897,7 +935,7 @@ impl NotesApp {
                     let mut extra = String::new();
                     for name in names.lines() {
                         if let Some(n) = name.strip_prefix('…') { extra = format!(" (first 60 of {n} pages)"); continue; }
-                        let (w, h) = image::image_dimensions(data_dir().join("files").join(name)).unwrap_or((800, 1000));
+                        let (w, h) = image::image_dimensions(files_path(name)).unwrap_or((800, 1000));
                         let width = 640.0;
                         let y = { let heights = std::mem::take(&mut self.st.heights); let y = self.find_page(page).map_or(8.0, |p| p.blocks.iter().map(|b| b.pos[1] + heights.get(&b.id).copied().unwrap_or(40.0) + 18.0).fold(8.0, f32::max)); self.st.heights = heights; y };
                         let b = block(24.0, y, width, Kind::Image { file: name.to_string() });
@@ -959,7 +997,9 @@ impl NotesApp {
     /// Put a file on the page: pictures as pictures; for printouts, PDF pages as pictures you can
     /// write on (plus the original attached) and Markdown/text as notes; anything else attached.
     fn insert_file(&mut self, path: &std::path::Path, how: Ins) {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bin").to_lowercase();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        // stored as "<id>.<ext>": an extension that isn't short and plain would keep the file from syncing
+        let ext = if (1..=8).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) { ext } else { "bin".into() };
         if how == Ins::Printout && matches!(ext.as_str(), "md" | "markdown" | "txt") {
             match std::fs::read_to_string(path) {
                 Ok(t) => { self.insert_markdown(&t); self.st.say("Printed the text onto the page."); }
@@ -1051,10 +1091,10 @@ impl NotesApp {
     fn export_page(&mut self) {
         let page = self.page();
         let md = page.plain_text();
-        let name = format!("{}.md", if page.title.trim().is_empty() { "Untitled page" } else { page.title.as_str() }.replace(['/', '\\', ':'], "-"));
+        let name = format!("{}.md", if page.title.trim().is_empty() { "Untitled page" } else { page.title.as_str() }.replace(['/', '\\', ':', '?', '*', '"', '<', '>', '|'], "-"));
         #[cfg(not(target_os = "android"))]
         if let Some(p) = rfd::FileDialog::new().set_file_name(&name).add_filter("Markdown", &["md"]).save_file() {
-            match std::fs::write(&p, md) { Ok(_) => self.st.say(tf!("Exported to {p}", p = p.display())), Err(e) => self.st.say(tf!("⚠ Export failed: {e}", e = e)) }
+            match storage::write_atomic(&p, md.as_bytes()) { Ok(_) => self.st.say(tf!("Exported to {p}", p = p.display())), Err(e) => self.st.say(tf!("⚠ Export failed: {e}", e = e)) }
         }
         #[cfg(target_os = "android")]
         {
@@ -1079,7 +1119,7 @@ impl NotesApp {
         let hf = move |id: u64| heights.get(&id).copied();
         let page = self.page().clone();
         let title = if page.title.trim().is_empty() { "Untitled page".to_string() } else { page.title.clone() };
-        let file = format!("{}.pdf", title.replace(['/', '\\', ':'], "-"));
+        let file = format!("{}.pdf", title.replace(['/', '\\', ':', '?', '*', '"', '<', '>', '|'], "-"));
         if !whole && export::printout_source(&page, &hf).is_some() {
             let Some(out) = self.ask_save_path(&file, "pdf") else { return };
             match export::export_printout(&page, &data_dir().join("files"), &hf, self.st.p.note_size, &out) {
@@ -1172,7 +1212,7 @@ impl NotesApp {
         let Some((sent, _)) = self.st.sync_rx.take() else { return };
         match r {
             Ok(sync::Outcome::AskFirst { pages }) => self.st.sync_ask = Some(pages),
-            Ok(sync::Outcome::Synced { store, down, base, .. }) => {
+            Ok(sync::Outcome::Synced { store, down, base, problem, .. }) => {
                 // compare and merge in the sealed form; opened locked sections are opened again after
                 let current = self.sealed().unwrap_or_else(|| self.store.clone());
                 let meanwhile = !sync::same(&sent, &current);
@@ -1193,6 +1233,7 @@ impl NotesApp {
                         // the agreed state only once these notes are on this device's disk
                         if self.st.dirty { self.save_now(); self.st.sync_pending = meanwhile; }
                         if !self.st.dirty && self.st.persist { if let Err(e) = base.commit(&data_dir()) { self.st.sync_err = e; } }
+                        if let Some(p) = problem { self.st.say(format!("⚠ {p}")); }
                     }
                     Err(e) => { self.st.sync_err = e; self.st.sync_pending = true; }
                 }
@@ -1219,7 +1260,9 @@ impl NotesApp {
     fn toggle_record(&mut self) {
         if let Some((rec, pid, id, start)) = self.st.recorder.take() {
             let file = rec.path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-            match rec.stop() {
+            let r = rec.stop();
+            let _ = std::fs::remove_file(rec_marker(id));
+            match r {
                 Ok(secs) => {
                     let rec = Recording { id, file, start, secs };
                     match self.find_page(pid) {
@@ -1246,9 +1289,37 @@ impl NotesApp {
         let dir = data_dir().join("files");
         let _ = std::fs::create_dir_all(&dir);
         match audio::Recorder::start(&dir.join(format!("{id}.wav"))) {
-            Ok(r) => { let pid = self.page().id; self.st.recorder = Some((r, pid, id, now_f())); self.st.say("Recording — everything you write now is linked to this moment."); }
+            Ok(r) => {
+                let (pid, start) = (self.page().id, now_f());
+                // if the app stops before the recording does, the next start finds it through this
+                let _ = storage::write_atomic(&rec_marker(id), serde_json::json!({ "page": pid, "start": start }).to_string().as_bytes());
+                self.st.recorder = Some((r, pid, id, start));
+                self.st.say("Recording — everything you write now is linked to this moment.");
+            }
             Err(e) => self.st.say(format!("⚠ {e}")),
         }
+    }
+
+    /// Recordings that were still going when the app last stopped: finished and put back on their page.
+    fn recover_recordings(&mut self) {
+        let dir = data_dir().join("files");
+        let mut found = 0;
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(id) = name.strip_suffix(".rec.part").and_then(|n| n.parse::<u64>().ok()) else { continue };
+            let m: serde_json::Value = std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+            let (pid, start) = (m["page"].as_u64().unwrap_or(0), m["start"].as_f64().unwrap_or(0.0));
+            if let Some(secs) = audio::finish_unfinished(&dir.join(format!("{id}.wav"))) {
+                let known = self.store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).any(|p| p.recordings.iter().any(|r| r.id == id));
+                if !known && secs > 0.0 {
+                    let rec = Recording { id, file: format!("{id}.wav"), start, secs };
+                    match self.find_page(pid) { Some(p) => p.recordings.push(rec), None => self.page().recordings.push(rec) }
+                    found += 1;
+                }
+            }
+            let _ = std::fs::remove_file(e.path());
+        }
+        if found > 0 { self.st.dirty = true; self.st.say(tf!("Recovered {n} unfinished recording(s).", n = found)); }
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
@@ -1472,6 +1543,9 @@ impl eframe::App for NotesApp {
         if let Some(id) = self.st.transcribe_req.take() { self.start_transcribe(id); }
         if self.st.capture.as_ref().is_some_and(|c| c.page != self.store.notebooks[nb].sections[sec].pages[pg].id) { self.cancel_capture("PDF export cancelled because the page changed."); }
         if std::mem::take(&mut self.st.rec_toggle) { self.toggle_record(); }
+        if let Some(e) = self.st.recorder.as_ref().and_then(|(r, ..)| r.error.lock().ok().and_then(|mut g| g.take())) {
+            self.st.say(tf!("⚠ The microphone reported a problem ({e}). The recording may have gaps.", e = e));
+        }
         if let Some(since) = self.st.mic_wait {
             // the system dialog answers asynchronously: start as soon as it's allowed
             if audio::mic_granted() { self.st.mic_wait = None; self.toggle_record(); }

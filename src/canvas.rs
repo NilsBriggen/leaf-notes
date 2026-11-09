@@ -823,8 +823,8 @@ fn block_menu(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction) {
     let textual = matches!(b.kind, Kind::Text { .. } | Kind::Math { .. } | Kind::Code { .. } | Kind::Checklist { .. });
     if ui.button(tr("⧉  Duplicate")).clicked() { *act = BlockAction::Duplicate; ui.close(); }
     match &b.kind {
-        Kind::Image { file } => { if ui.button(tr("↗  Open picture")).clicked() { open_path(&data_dir().join("files").join(file)); ui.close(); } }
-        Kind::File { file, .. } => { if ui.button(tr("↗  Open file")).clicked() { open_path(&data_dir().join("files").join(file)); ui.close(); } }
+        Kind::Image { file } => { if ui.button(tr("↗  Open picture")).clicked() { open_path(&files_path(file)); ui.close(); } }
+        Kind::File { file, .. } => { if ui.button(tr("↗  Open file")).clicked() { open_path(&files_path(file)); ui.close(); } }
         Kind::Link { url, .. } => { if ui.button(tr("⎘  Copy address")).clicked() { ui.ctx().copy_text(url.clone()); ui.close(); } }
         Kind::Math { src } => { if ui.button(tr("⎘  Copy LaTeX")).clicked() { ui.ctx().copy_text(src.clone()); ui.close(); } }
         Kind::Table { .. } => { if ui.button(tr("⎘  Copy as text")).clicked() { ui.ctx().copy_text(b.kind.summary()); ui.close(); } }
@@ -998,7 +998,7 @@ fn current_recording(page: &Page, st: &St) -> Option<usize> {
 fn ensure_player(page: &Page, st: &mut St, i: usize) -> bool {
     let rec = &page.recordings[i];
     if st.player.as_ref().is_some_and(|p| p.id == rec.id) { return true; }
-    match crate::audio::Player::open(&data_dir().join("files").join(&rec.file), rec.id) {
+    match crate::audio::Player::open(&files_path(&rec.file), rec.id) {
         Ok(p) => { p.set_speed(st.speed); st.player = Some(p); true }
         Err(e) => { st.say(tf!("⚠ Can't play the recording: {e}", e = e)); false }
     }
@@ -1404,7 +1404,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
         }
         Kind::Image { file } => {
             let tex = st.textures.entry(file.clone()).or_insert_with(|| {
-                let mut img = image::open(data_dir().join("files").join(&*file)).ok()?;
+                let mut img = image::ImageReader::open(files_path(file)).ok()?.with_guessed_format().ok()?.decode().ok()?;
                 // graphics chips (especially phones) can't show huge pictures; 4096 px is safe everywhere
                 if img.width().max(img.height()) > 4096 { img = img.resize(4096, 4096, image::imageops::FilterType::Triangle); }
                 let img = img.to_rgba8();
@@ -1426,7 +1426,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("📄").size(24.0));
                     ui.vertical(|ui| { ui.label(RichText::new(&*name).strong()); ui.label(RichText::new(tf!("{x} KB", x = format!("{:.1}", *size as f64 / 1024.0))).small().weak()); });
-                    if ui.button(tr("Open")).clicked() { open_path(&data_dir().join("files").join(&*file)); }
+                    if ui.button(tr("Open")).clicked() { open_path(&files_path(file)); }
                 });
             });
         }

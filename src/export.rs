@@ -16,6 +16,7 @@ pub fn printout_source(page: &Page, heights: &dyn Fn(u64) -> Option<f32>) -> Opt
         let Some((stem, n)) = file.strip_suffix(".png").and_then(|f| f.rsplit_once("-page")) else { continue };
         let Ok(n) = n.parse::<u32>() else { continue };
         let pdf = format!("{stem}.pdf");
+        if !safe_name(&pdf) { continue; }
         if found.as_ref().is_some_and(|f| f.0 != pdf) { continue; } // only the first printed PDF
         let h = heights(b.id).unwrap_or(b.width * 1.294);
         found.get_or_insert_with(|| (pdf, vec![])).1.push((n, Rect::from_min_size(Pos2::new(b.pos[0], b.pos[1]), Vec2::new(b.width, h))));
@@ -147,7 +148,9 @@ pub fn export_printout(page: &Page, files: &Path, heights: &dyn Fn(u64) -> Optio
         list.push(Object::Reference(tail));
         doc.get_object_mut(pid).and_then(Object::as_dict_mut).map_err(|e| e.to_string())?.set("Contents", list);
     }
-    doc.save(out).map_err(|e| format!("Couldn't write the PDF ({e})"))?;
+    let mut bytes = vec![];
+    doc.save_to(&mut bytes).map_err(|e| format!("Couldn't write the PDF ({e})"))?;
+    crate::storage::write_atomic(out, &bytes).map_err(|e| format!("Couldn't write the PDF ({e})"))?;
     Ok(annotated)
 }
 
@@ -206,7 +209,9 @@ pub fn write_image_pdf(title: &str, img: &image::RgbImage, out: &Path) -> Result
     doc.objects.insert(pages_id, Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => count }));
     let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     doc.trailer.set("Root", catalog);
-    doc.save(out).map_err(|e| format!("Couldn't write the PDF ({e})"))?;
+    let mut bytes = vec![];
+    doc.save_to(&mut bytes).map_err(|e| format!("Couldn't write the PDF ({e})"))?;
+    crate::storage::write_atomic(out, &bytes).map_err(|e| format!("Couldn't write the PDF ({e})"))?;
     Ok(n)
 }
 

@@ -16,6 +16,9 @@ use std::time::Duration;
 pub const SYNC_FILE: &str = "sync.json";
 const BASE_FILE: &str = "sync-base.json";
 const NOTES: &str = "notes.json";
+/// Version of the shared file. Older apps read it into their own types and drop fields they don't
+/// know, so bump this when a new field must survive a sync through an older device (they'll then
+/// ask to be updated); a field that's only a hint (`#[serde(default)]`, harmless when dropped) needn't.
 const FORMAT: u64 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Debug)]
@@ -53,7 +56,7 @@ pub enum First { Merge, UseShared }
 
 pub enum Outcome {
     /// Done: `store` is now on both sides. Commit `base` once `store` is saved on this device.
-    Synced { store: Store, up: usize, down: usize, base: PendingBase },
+    Synced { store: Store, up: usize, down: usize, base: PendingBase, problem: Option<String> },
     /// First sync here and both sides have notes: ask the person how to join (pages in the shared copy).
     AskFirst { pages: usize },
 }
@@ -87,6 +90,10 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
     let remote = Remote::new(s, quick)?;
     let base: Option<Base> = std::fs::read(home.join(BASE_FILE)).ok().and_then(|b| serde_json::from_slice::<Base>(&b).ok()).filter(|b| b.target == s.target());
     let files = home.join("files");
+    // files that wouldn't go up or down this round: tried once, reported, and the notes still sync
+    let mut failed: Vec<(String, String)> = vec![];
+    // sent in an earlier try of this round: not sent again when another device wrote in between
+    let mut sent: Vec<String> = vec![];
     // Several tries: if another device writes in between, fetch its version and merge again.
     for _ in 0..4 {
         let known = base.as_ref().map(|b| b.tag.as_str()).filter(|t| !t.is_empty());
@@ -110,11 +117,14 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
         let mut have: Vec<String> = shared.as_ref().map(|(_, f)| f.clone()).unwrap_or_default();
         let (mut up, mut down) = (0, 0);
         for f in list_files(&files) {
-            if !have.contains(&f) { remote.put_file(&f, &files.join(&f))?; have.push(f); up += 1; }
+            if have.contains(&f) || failed.iter().any(|(n, _)| *n == f) { continue; }
+            if sent.contains(&f) { have.push(f); continue; }
+            match remote.put_file(&f, &files.join(&f)) { Ok(()) => { sent.push(f.clone()); have.push(f); up += 1; } Err(e) => failed.push((f, e)) }
         }
         // on the way out only send: missing files come down next time
         for f in have.iter().filter(|_| !quick) {
-            if safe_name(f) && !files.join(f).exists() && remote.get_file(f, &files.join(f))? { down += 1; }
+            if !safe_name(f) || files.join(f).exists() || failed.iter().any(|(n, _)| n == f) { continue; }
+            match remote.get_file(f, &files.join(f)) { Ok(true) => down += 1, Ok(false) => {} Err(e) => failed.push((f.clone(), e)) }
         }
         let same = shared.as_ref().is_some_and(|(sh, f)| f.len() == have.len() && canon(sh) == canon(&merged));
         let tag = if same { tag.unwrap_or_default() } else {
@@ -122,7 +132,8 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
             match remote.put_notes(&bytes, tag.as_deref())? { Put::Done(t) => t, Put::Changed => continue }
         };
         let b = serde_json::to_vec(&Base { target: s.target(), tag, files: have, store: merged.clone() }).map_err(|e| e.to_string())?;
-        return Ok(Outcome::Synced { store: merged, up, down, base: PendingBase(b) });
+        let problem = failed.first().map(|(f, e)| tf!("{n} file(s) couldn't be synced this time (first: {f}: {e}).", n = failed.len(), f = f, e = e));
+        return Ok(Outcome::Synced { store: merged, up, down, base: PendingBase(b), problem });
     }
     Err(crate::tr("Another device kept syncing at the same moment — trying again shortly.").into())
 }
@@ -139,10 +150,6 @@ fn has_notes(s: &Store) -> bool {
     s.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).any(|p| !p.blocks.is_empty() || !p.strokes.is_empty() || p.cards.iter().any(|c| !c.front.is_empty()) || !p.title.trim().is_empty() && p.title != "Untitled page")
 }
 
-/// Attachment names come from other devices: only plain names, never paths.
-fn safe_name(n: &str) -> bool {
-    !n.is_empty() && n.len() < 200 && !n.starts_with('.') && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-}
 
 fn list_files(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
@@ -179,6 +186,8 @@ fn mv(b: &Value, l: &Value, r: &Value, strict: bool) -> Result<Value, ()> {
     if l == r || r == b { return Ok(l.clone()); }
     if l == b { return Ok(r.clone()); }
     match (l, r) {
+        // a flashcard's progress (box and due date) is one value: changed on both sides, this device's wins whole
+        (Value::Object(lo), Value::Object(_)) if lo.len() == 2 && lo.contains_key("bx") && lo.contains_key("due") => Ok(l.clone()),
         (Value::Object(lo), Value::Object(ro)) => {
             let empty = Map::new();
             let bo = b.as_object().unwrap_or(&empty);
@@ -278,7 +287,9 @@ fn conflict_copy(v: &Value) -> Value {
 }
 
 /// A page moved on one device and edited on another ends up in two places: give the second its own id.
-fn dedupe(s: &mut Store) {
+/// Give every notebook, section and page its own id (the first keeps it). Copies can share ids:
+/// a restored page, a restored backup, a conflict copy of a locked section once it's opened.
+pub(crate) fn dedupe(s: &mut Store) {
     let mut seen = std::collections::HashSet::new();
     for n in &mut s.notebooks {
         if !seen.insert(n.id) { n.id = new_id(); }
@@ -286,7 +297,9 @@ fn dedupe(s: &mut Store) {
             if !seen.insert(sec.id) { sec.id = new_id(); }
             let sid = sec.id;
             // a locked section's placeholder page shares the section's id on purpose
-            for p in &mut sec.pages { if !(p.kind == PageKind::Locked && p.id == sid) && !seen.insert(p.id) { p.id = new_id(); } }
+            for p in &mut sec.pages {
+                if p.kind == PageKind::Locked { p.id = sid; } else if !seen.insert(p.id) { p.id = new_id(); }
+            }
         }
     }
 }
@@ -443,7 +456,7 @@ impl Remote {
             Remote::Folder(d) => {
                 let to = d.join("files").join(name);
                 if to.exists() { return Ok(()); }
-                let tmp = to.with_extension("part");
+                let tmp = PathBuf::from(format!("{}.part", to.display())); // "1.png" and "1.wav" never share one
                 std::fs::copy(from, &tmp).and_then(|_| std::fs::rename(&tmp, &to)).map_err(|e| tf!("Couldn't copy {name}: {e}", name = name, e = e))
             }
             Remote::Drive { files, .. } => {
@@ -462,7 +475,7 @@ impl Remote {
     /// Download into place via a temporary file; false if the shared copy doesn't have it (yet).
     fn get_file(&self, name: &str, to: &Path) -> Result<bool, String> {
         if let Some(dir) = to.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
-        let tmp = to.with_extension("part");
+        let tmp = PathBuf::from(format!("{}.part", to.display())); // "1.png" and "1.wav" never share one
         let r = match self {
             Remote::Folder(d) => {
                 let from = d.join("files").join(name);
@@ -627,7 +640,8 @@ pub fn google_finish(s: SignIn) -> Result<(String, String), String> {
         let msg = if ok { "Signed in. You can close this tab and go back to Leaf Notes." } else { "Sign-in didn't finish. Go back to Leaf Notes and try again." };
         let page = format!("<!doctype html><meta charset=utf-8><title>Leaf Notes</title><body style=\"font:18px sans-serif;margin:15vh auto;max-width:30em;text-align:center\"><h2>Leaf Notes</h2><p>{msg}</p>");
         let _ = conn.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len()).as_bytes());
-        if q.get("state") != Some(&s.state) { return Err(crate::tr("Sign-in didn't match this request — try again.").into()); }
+        // not our sign-in (another page or program calling this port): keep waiting for the real one
+        if q.get("state") != Some(&s.state) { continue; }
         match q.get("code") { Some(c) => break c.clone(), None => return Err(if q.get("error").map(String::as_str) == Some("access_denied") { crate::tr("Sign-in was cancelled.").into() } else { crate::tr("Google didn't sign you in — try again.").into() }) }
     };
     let mut resp = agent(false).post(TOKEN_URL).send_form([("client_id", GOOGLE_ID), ("client_secret", GOOGLE_SECRET), ("code", code.as_str()), ("code_verifier", s.verifier.as_str()), ("redirect_uri", s.redirect.as_str()), ("grant_type", "authorization_code")])
@@ -711,8 +725,8 @@ mod tests {
         assert!(titles(&merge(&m, &l3, &r3).unwrap()).contains(&crate::tr("Week 3 — Sampling").to_string()));
         // both sides added to Recently deleted: both kept
         let (mut l4, mut r4) = (m.clone(), m.clone());
-        l4.trash.push(Trashed { label: "a".into(), deleted: 1, item: TrashItem::Notebook(l4.notebooks[1].clone()) });
-        r4.trash.push(Trashed { label: "b".into(), deleted: 2, item: TrashItem::Notebook(r4.notebooks[1].clone()) });
+        l4.trash.push(Trashed { label: "a".into(), deleted: 1, item: TrashItem::Notebook(l4.notebooks[1].clone()), at: None });
+        r4.trash.push(Trashed { label: "b".into(), deleted: 2, item: TrashItem::Notebook(r4.notebooks[1].clone()), at: None });
         assert_eq!(merge(&m, &l4, &r4).unwrap().trash.len(), 2);
         // a locked section changed on both devices: both encrypted versions are kept
         let mut b5 = m.clone();
@@ -766,6 +780,15 @@ mod tests {
         std::fs::write(shared.join("LeafNotes/notes.json"), b"{broken").unwrap();
         assert!(run(&cfg, &a, &sa3, None, false).is_err());
         assert_eq!(std::fs::read(shared.join("LeafNotes/notes.json")).unwrap(), b"{broken");
+        // copies get their own ids, and a locked section's placeholder keeps its section's id
+        let mut twice = sa3.clone();
+        let mut copy = twice.notebooks[0].clone();
+        copy.sections[0].lock = Some(Lock { salt: "s".into(), nonce: "n".into(), data: "d".into() });
+        copy.sections[0].pages = vec![copy.sections[0].placeholder()];
+        twice.notebooks.push(copy);
+        dedupe(&mut twice);
+        let sec = &twice.notebooks[2].sections[0];
+        assert!(sec.id != twice.notebooks[0].sections[0].id && sec.pages[0].id == sec.id);
         // plain http only to the home network, judged by the parsed host
         assert!(home_host("192.168.1.5:8080/dav") && home_host("10.0.0.2") && home_host("localhost/x") && home_host("nas.local") && home_host("[::1]:80"));
         assert!(!home_host("10.evil.com") && !home_host("127.0.0.1@evil.com") && !home_host("192.168.example.org") && !home_host("8.8.8.8") && !home_host("evil.com/x.local"));

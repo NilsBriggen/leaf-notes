@@ -58,17 +58,16 @@ impl NotesApp {
     pub(crate) fn restore_backup(&mut self, path: &std::path::Path) {
         let parsed = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<Store>(&b).map_err(|e| e.to_string()));
         let backup = match parsed { Ok(s) => s, Err(e) => { self.st.say(tf!("⚠ That file isn't a Leaf Notes backup ({e}).", e = e)); return; } };
-        let mut ids: std::collections::HashSet<u64> = self.store.notebooks.iter().flat_map(|n| std::iter::once(n.id).chain(n.sections.iter().flat_map(|s| std::iter::once(s.id).chain(s.pages.iter().map(|p| p.id))))).collect();
-        let mut fresh = |id: &mut u64| { if !ids.insert(*id) { *id = new_id(); ids.insert(*id); } };
         let names: Vec<String> = self.store.notebooks.iter().map(|n| n.name.clone()).collect();
         let mut added = 0;
         for mut n in backup.notebooks {
-            fresh(&mut n.id);
-            for s in &mut n.sections { fresh(&mut s.id); for p in &mut s.pages { fresh(&mut p.id); } }
             if names.contains(&n.name) { n.name = tf!("{name} (restored)", name = n.name); }
             self.store.notebooks.push(n);
             added += 1;
         }
+        // the backup's own copies get fresh ids (what's here keeps its own), and its Recently deleted comes along
+        crate::sync::dedupe(&mut self.store);
+        self.store.trash.extend(backup.trash);
         for (k, v) in backup.study { self.store.study.entry(k).or_insert(v); }
         self.st.dirty = true;
         self.st.say(tf!("Restored {n} notebook(s) from the backup.", n = added));
@@ -78,6 +77,8 @@ impl NotesApp {
     pub(crate) fn import_markdown(&mut self, paths: Vec<std::path::PathBuf>) {
         let width = self.st.p.note_width;
         let read = |p: &std::path::Path| -> Option<Page> {
+            // a notes file, not a book: huge text would stall the app
+            if std::fs::metadata(p).ok()?.len() > 5_000_000 { return None; }
             let md = std::fs::read_to_string(p).ok()?;
             let title = p.file_stem()?.to_string_lossy().to_string();
             Some(page_from_markdown(&title, &md, width))
@@ -152,7 +153,7 @@ impl NotesApp {
             Some(1) => {
                 if let Some(cur) = self.find_page(orig).cloned() {
                     self.st.snap(&cur);
-                    if let Some(p) = self.find_page(orig) { *p = Page { id: orig, title: cur.title.clone(), other_of: None, ..b.clone() }; }
+                    if let Some(p) = self.find_page(orig) { *p = Page { id: orig, title: cur.title.clone(), level: cur.level, other_of: None, ..b.clone() }; }
                 }
                 self.delete(copy);
                 if let Some((x, y, z)) = self.locate(orig) { self.go_to(x, y, z); }

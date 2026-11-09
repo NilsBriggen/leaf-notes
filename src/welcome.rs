@@ -141,7 +141,7 @@ impl NotesApp {
         if empty_start {
             // the sample goes to Recently deleted rather than away for good
             let now = now_secs();
-            for n in std::mem::take(&mut self.store.notebooks) { self.store.trash.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n) }); }
+            for n in std::mem::take(&mut self.store.notebooks) { self.store.trash.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n), at: None }); }
             self.store.notebooks = vec![Notebook { id: new_id(), name: tr("My Notebook").into(), color: PALETTE[0], sections: vec![Section { id: new_id(), name: tr("Quick Notes").into(), color: PALETTE[1], pages: vec![Page::new(tr("First page"))], lock: None }] }];
             (self.nb, self.sec, self.pg) = (0, 0, 0);
             self.st.dirty = true;
@@ -213,7 +213,12 @@ pub(crate) fn install_crash_hook() {
         std::panic::set_hook(Box::new(move |info| {
             // background jobs (reading handwriting, PDFs …) catch their own failures: only the app itself counts
             if UI.get() == Some(&std::thread::current().id()) {
-                let text = format!("Leaf Notes {VERSION} · {} {}\n\n{info}\n\n{}", std::env::consts::OS, std::env::consts::ARCH, std::backtrace::Backtrace::force_capture());
+                // where it happened, never what was being worked on: quoted text (a note's words in a
+                // "byte index … of `…`" message) is cut out, and the home folder's name with it
+                let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
+                let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+                let trace = std::backtrace::Backtrace::force_capture().to_string();
+                let text = without_home(&format!("Leaf Notes {VERSION} · {} {}\n\npanicked at {at}: {}\n\n{trace}", std::env::consts::OS, std::env::consts::ARCH, redact(&msg)));
                 let _ = std::fs::write(dir.join(format!("crash-{}.txt", now_secs())), text);
             }
             previous(info);
@@ -241,7 +246,8 @@ impl NotesApp {
             ui.label(RichText::new(tr("Leaf Notes closed unexpectedly")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
             ui.label(tr("Your notes were saved up to a few seconds before. A short report of what went wrong can help fix it; it contains no notes, only where in the program it happened. You'll see it before it's sent."));
             ui.add_space(6.0);
-            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| { ui.label(RichText::new(text.lines().take(14).collect::<Vec<_>>().join("\n")).monospace().size(11.0).weak()); });
+            // exactly what would be sent
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| { ui.label(RichText::new(report_part(&text)).monospace().size(11.0).weak()); });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent_base())).clicked() { send = true; }
@@ -249,7 +255,7 @@ impl NotesApp {
             });
         });
         if send {
-            let body: String = format!("What were you doing when it happened?\n\n\n```\n{}\n```", text.chars().take(5000).collect::<String>());
+            let body: String = format!("What were you doing when it happened?\n\n\n```\n{}\n```", report_part(&text));
             ctx.open_url(egui::OpenUrl::new_tab(format!("{ISSUES}?title={}&body={}", enc("Crash report"), enc(&body))));
         }
         if send || delete {
@@ -257,6 +263,28 @@ impl NotesApp {
             self.st.crash = None;
         }
     }
+}
+
+/// The part of a report that's sent: short enough for a web address (each character can take 3).
+fn report_part(text: &str) -> String { text.chars().take(2000).collect() }
+
+/// A panic message without the text it quotes, on one line.
+fn redact(msg: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    for c in msg.lines().next().unwrap_or("").chars() {
+        match quote {
+            Some(q) if c == q => { quote = None; out.push('…'); out.push(c); }
+            Some(_) => {}
+            None => { out.push(c); if matches!(c, '`' | '"') { quote = Some(c); } }
+        }
+    }
+    out.chars().take(300).collect()
+}
+
+fn without_home(s: &str) -> String {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+    if home.len() > 1 { s.replace(&home, "~") } else { s.to_string() }
 }
 
 fn enc(s: &str) -> String { s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect() }
@@ -275,6 +303,9 @@ mod tests {
         assert_eq!(reports.len(), 1);
         let text = std::fs::read_to_string(&reports[0]).unwrap();
         assert!(text.contains("test crash") && text.contains(super::VERSION));
+        // a note's words in the message never reach the report
+        let r = super::redact("byte index 3 is not a char boundary of `my secret note`\nmore \"also secret\"");
+        assert!(!r.contains("secret") && r.contains("byte index 3"), "{r}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

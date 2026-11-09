@@ -859,4 +859,11 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("{name} (deleted page)", "{name} (gelöschte Seite)", "{name} (page supprimée)"),
     ("Couldn't delete this page.", "Diese Seite konnte nicht gelöscht werden.", "Impossible de supprimer cette page."),
     ("Pictures, PDFs and recordings on these pages are not encrypted.", "Bilder, PDFs und Aufnahmen auf diesen Seiten werden nicht verschlüsselt.", "Les images, PDF et enregistrements de ces pages ne sont pas chiffrés."),
+    ("⚠ Leaf Notes is already open in another window. This window shows your notes but doesn't save them.", "⚠ Leaf Notes ist bereits in einem anderen Fenster geöffnet. Dieses Fenster zeigt deine Notizen, speichert sie aber nicht.", "⚠ Leaf Notes est déjà ouvert dans une autre fenêtre. Cette fenêtre affiche vos notes mais ne les enregistre pas."),
+    ("Recovered {n} unfinished recording(s).", "{n} unvollständige Aufnahme(n) wiederhergestellt.", "{n} enregistrement(s) inachevé(s) récupéré(s)."),
+    ("⚠ The microphone reported a problem ({e}). The recording may have gaps.", "⚠ Das Mikrofon meldet ein Problem ({e}). Die Aufnahme kann Lücken haben.", "⚠ Le micro signale un problème ({e}). L'enregistrement peut comporter des trous."),
+    ("{n} file(s) couldn't be synced this time (first: {f}: {e}).", "{n} Datei(en) konnten diesmal nicht synchronisiert werden (zuerst: {f}: {e}).", "{n} fichier(s) n'ont pas pu être synchronisés cette fois (premier : {f} : {e})."),
+    ("Everything here will be deleted for good. This can't be undone.", "Alles hier wird endgültig gelöscht. Das lässt sich nicht rückgängig machen.", "Tout ici sera supprimé définitivement. Impossible d'annuler."),
+    ("Delete all for good", "Alles endgültig löschen", "Tout supprimer définitivement"),
+    ("⚠ A locked section couldn't be encrypted, so its latest changes aren't saved yet.", "⚠ Ein gesperrter Abschnitt konnte nicht verschlüsselt werden, daher sind seine letzten Änderungen noch nicht gespeichert.", "⚠ Une section verrouillée n'a pas pu être chiffrée : ses dernières modifications ne sont pas encore enregistrées."),
 ];

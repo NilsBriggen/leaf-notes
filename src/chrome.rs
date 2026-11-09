@@ -1538,10 +1538,26 @@ impl NotesApp {
                         ui.separator();
                     }
                 });
-                if !self.store.trash.is_empty() && ui.button(tr("Empty the bin")).clicked() { purge = Some(usize::MAX); }
+                // emptying the bin can't be undone: a second, clearly worded click
+                let sure_id = egui::Id::unique("empty-bin-sure");
+                let sure = ui.data(|d| d.get_temp::<bool>(sure_id)).unwrap_or(false);
+                if !self.store.trash.is_empty() {
+                    if !sure { if ui.button(tr("Empty the bin")).clicked() { ui.data_mut(|d| d.insert_temp(sure_id, true)); } }
+                    else {
+                        ui.label(RichText::new(tr("Everything here will be deleted for good. This can't be undone.")).color(Color32::from_rgb(200, 60, 50)));
+                        ui.horizontal(|ui| {
+                            if ui.button(RichText::new(tr("Delete all for good")).color(Color32::from_rgb(200, 60, 50))).clicked() { purge = Some(usize::MAX); ui.data_mut(|d| d.remove::<bool>(sure_id)); }
+                            if ui.button(tr("Cancel")).clicked() { ui.data_mut(|d| d.remove::<bool>(sure_id)); }
+                        });
+                    }
+                }
             });
             if let Some(i) = restore { self.restore(i); }
-            match purge { Some(usize::MAX) => { self.store.trash.clear(); self.st.dirty = true; } Some(i) => { self.store.trash.remove(i); self.st.dirty = true; } None => {} }
+            match purge {
+                Some(usize::MAX) => { let gone = std::mem::take(&mut self.store.trash); self.purge(gone); }
+                Some(i) => { let gone = self.store.trash.remove(i); self.purge(vec![gone]); }
+                None => {}
+            }
             if !open { self.st.show_trash = false; }
         }
         if self.st.show_shortcuts {

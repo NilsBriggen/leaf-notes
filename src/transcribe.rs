@@ -8,7 +8,7 @@ impl NotesApp {
         if !self.st.ai.ready() { self.st.say("Add your AI key first — it stays on this device."); return; }
         let page = self.page();
         let Some(rec) = page.recordings.iter().find(|r| r.id == rec_id).cloned() else { return };
-        let (pid, path, ai) = (page.id, data_dir().join("files").join(&rec.file), self.st.ai.clone());
+        let (pid, path, ai) = (page.id, files_path(&rec.file), self.st.ai.clone());
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let r = audio::load_wav(&path).and_then(|samples| ai::transcribe(&ai, &samples, audio::RATE));

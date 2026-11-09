@@ -74,7 +74,7 @@ impl Index {
             std::thread::spawn(move || {
                 let text = std::panic::catch_unwind(|| {
                     let mut out = crate::hw::recognize_text(&strokes);
-                    for f in pdfs { out.push('\n'); out.push_str(&pdf_text(&files.join(f))); }
+                    for f in pdfs.iter().filter(|f| safe_name(f)) { out.push('\n'); out.push_str(&pdf_text(&files.join(f))); }
                     out
                 }).unwrap_or_default();
                 let _ = tx.send(text);

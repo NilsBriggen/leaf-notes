@@ -77,7 +77,29 @@ mod android {
 pub struct Recorder {
     stream: Option<cpal::Stream>,
     writer: Option<std::thread::JoinHandle<Result<u64, String>>>,
+    /// The finished file; while recording it is `<path>.part`, which sync leaves alone.
     pub path: PathBuf,
+    /// The microphone's last error, for the window to show.
+    pub error: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+/// Where a recording is written while it's going on.
+pub fn part_path(path: &Path) -> PathBuf { path.with_extension("wav.part") }
+
+/// Finish a recording that was still going when the app stopped (crash, battery, the system
+/// closing it): write its real length into the header and give it its final name. Its length in seconds.
+pub fn finish_unfinished(path: &Path) -> Option<f32> {
+    let part = part_path(path);
+    if part.exists() {
+        let len = std::fs::metadata(&part).ok()?.len();
+        if len < 44 { return None; }
+        let mut f = std::fs::OpenOptions::new().write(true).open(&part).ok()?;
+        f.write_all(&wav_header((len - 44) / 2)).ok()?;
+        drop(f);
+        std::fs::rename(&part, path).ok()?;
+    }
+    let len = std::fs::metadata(path).ok()?.len();
+    Some(len.saturating_sub(44) as f32 / 2.0 / RATE as f32)
 }
 
 /// A whole 16-bit mono WAV file in memory.
@@ -129,13 +151,13 @@ impl Downmix {
     }
 }
 
-fn input_stream<T: SizedSample>(dev: &cpal::Device, cfg: cpal::StreamConfig, tx: Sender<Vec<i16>>) -> Result<cpal::Stream, String> where f32: FromSample<T> {
+fn input_stream<T: SizedSample>(dev: &cpal::Device, cfg: cpal::StreamConfig, tx: Sender<Vec<i16>>, error: Arc<std::sync::Mutex<Option<String>>>) -> Result<cpal::Stream, String> where f32: FromSample<T> {
     let mut dm = Downmix { channels: cfg.channels as usize, step: cfg.sample_rate as f64 / RATE as f64, phase: 0.0, sum: 0.0, count: 0 };
     dev.build_input_stream(cfg, move |data: &[T], _: &cpal::InputCallbackInfo| {
         let mut out = Vec::with_capacity(data.len() / 2);
         dm.feed(data, &mut out);
         let _ = tx.send(out);
-    }, |e| eprintln!("microphone error: {e}"), None).map_err(|e| e.to_string())
+    }, move |e| { if let Ok(mut g) = error.lock() { *g = Some(e.to_string()); } }, None).map_err(|e| e.to_string())
 }
 
 impl Recorder {
@@ -145,7 +167,7 @@ impl Recorder {
         let dev = host.default_input_device().ok_or("No microphone found.")?;
         let sup = dev.default_input_config().map_err(|e| tf!("The microphone can't be opened ({e}). Check that no other app is using it, and that microphone access is allowed in your system's privacy settings.", e = e))?;
         let (tx, rx) = channel::<Vec<i16>>();
-        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        let mut file = std::fs::File::create(part_path(path)).map_err(|e| e.to_string())?;
         file.write_all(&wav_header(0)).map_err(|e| e.to_string())?;
         // the writer keeps going until the stream (and with it the sender) is dropped
         let writer = std::thread::spawn(move || -> Result<u64, String> {
@@ -161,21 +183,23 @@ impl Recorder {
             Ok(n)
         });
         let cfg: cpal::StreamConfig = sup.clone().into();
+        let error = Arc::new(std::sync::Mutex::new(None));
         let stream = match sup.sample_format() {
-            SampleFormat::F32 => input_stream::<f32>(&dev, cfg, tx),
-            SampleFormat::I16 => input_stream::<i16>(&dev, cfg, tx),
-            SampleFormat::U16 => input_stream::<u16>(&dev, cfg, tx),
-            SampleFormat::I32 => input_stream::<i32>(&dev, cfg, tx),
+            SampleFormat::F32 => input_stream::<f32>(&dev, cfg, tx, error.clone()),
+            SampleFormat::I16 => input_stream::<i16>(&dev, cfg, tx, error.clone()),
+            SampleFormat::U16 => input_stream::<u16>(&dev, cfg, tx, error.clone()),
+            SampleFormat::I32 => input_stream::<i32>(&dev, cfg, tx, error.clone()),
             f => Err(tf!("Unsupported microphone format {f}", f = format!("{:?}", f))),
         }?;
         stream.play().map_err(|e| e.to_string())?;
-        Ok(Recorder { stream: Some(stream), writer: Some(writer), path: path.to_path_buf() })
+        Ok(Recorder { stream: Some(stream), writer: Some(writer), path: path.to_path_buf(), error })
     }
 
     /// Stop and finish the file; returns its length in seconds.
     pub fn stop(mut self) -> Result<f32, String> {
         drop(self.stream.take());
         let n = self.writer.take().ok_or("already stopped")?.join().map_err(|_| "the recording writer crashed".to_string())??;
+        std::fs::rename(part_path(&self.path), &self.path).map_err(|e| e.to_string())?;
         Ok(n as f32 / RATE as f32)
     }
 }
@@ -251,6 +275,18 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finishes_a_recording_cut_off_by_a_crash() {
+        let p = std::env::temp_dir().join(format!("ln-rec-{}.wav", crate::model::new_id()));
+        // what a crash leaves: the ".part" file, its header still saying "no samples"
+        let mut bytes = wav_header(0);
+        bytes.resize(44 + 2 * RATE as usize * 3, 0);
+        std::fs::write(part_path(&p), bytes).unwrap();
+        let secs = finish_unfinished(&p).unwrap();
+        assert!((secs - 3.0).abs() < 0.01 && p.exists() && !part_path(&p).exists());
+        assert_eq!(std::fs::read(&p).unwrap()[..44], wav_header(RATE as u64 * 3)[..]);
+        let _ = std::fs::remove_file(p);
+    }
     /// Opens the speaker with one second of silence (not run by default: needs a sound device).
     #[test]
     #[ignore]

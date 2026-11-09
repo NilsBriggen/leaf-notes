@@ -29,11 +29,14 @@ pub fn load(name: &str, value: &mut String) {
     // Android: the settings file holds the secret encrypted by the key store
     #[cfg(target_os = "android")]
     if let Some(sealed) = value.strip_prefix("aks:") { *value = crate::droid::unprotect(sealed).unwrap_or_default(); }
-    if broken() { return; }
+    // each name is tried even after one failed: a keyring that was locked or slow for the first
+    // shouldn't make the others look signed out
     #[cfg(not(target_os = "android"))]
     match keyring::Entry::new("Leaf Notes", name).and_then(|e| e.get_password()) {
-        Ok(v) => { remember(name, &v); if value.is_empty() { *value = v; } }
+        Ok(v) => { BROKEN.store(false, std::sync::atomic::Ordering::Relaxed); remember(name, &v); if value.is_empty() { *value = v; } }
         Err(keyring::Error::NoEntry) => remember(name, ""),
+        // locked, or the unlock prompt was dismissed: not "no keyring", so later saves still try it
+        Err(keyring::Error::NoStorageAccess(_)) => {}
         Err(_) => fail(),
     }
     #[cfg(target_os = "android")]

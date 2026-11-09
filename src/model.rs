@@ -4,7 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn new_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(1);
+    // the time plus some randomness: two devices started at the same moment still count from different places (and stay below 2^53)
+    let mut r = [0u8; 4];
+    let _ = getrandom::fill(&mut r);
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(1) + u32::from_le_bytes(r) as u64;
     let _ = NEXT.compare_exchange(0, seed, Ordering::SeqCst, Ordering::SeqCst);
     NEXT.fetch_add(1, Ordering::SeqCst)
 }
@@ -34,7 +37,11 @@ pub fn now_f() -> f64 { std::time::SystemTime::now().duration_since(std::time::U
 
 /// Deleted things wait here so a mistaken delete can be restored.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Trashed { pub label: String, pub deleted: u64, pub item: TrashItem }
+pub struct Trashed {
+    pub label: String, pub deleted: u64, pub item: TrashItem,
+    /// Where it was (its place among its siblings), so a restore puts it back there.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub at: Option<usize>,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum TrashItem { Page { notebook: u64, section: u64, page: Page }, Section { notebook: u64, section: Section }, Notebook(Notebook) }
@@ -220,7 +227,9 @@ pub fn blocks_from_markdown(md: &str) -> Vec<Kind> {
             i += 1;
             while i < lines.len() && !lines[i].trim().starts_with("```") { code.push(lines[i]); i += 1; }
             out.push(Kind::Code { lang: if lang.is_empty() { "text".into() } else { lang.trim().into() }, code: code.join("\n") });
-        } else if l.starts_with("$$") || l.starts_with("\\[") {
+        } else if (l.starts_with("$$") || l.starts_with("\\["))
+            // only when it ends within a few lines: an unclosed $$ stays text instead of swallowing the rest
+            && std::iter::once(&l[2..]).chain(lines.iter().skip(i + 1).take(30).map(|x| x.trim())).any(|x| x.ends_with("$$") || x.ends_with("\\]")) {
             flush(&mut text, &mut out);
             let mut src = l.to_string();
             while !(src.len() > 2 && (src.ends_with("$$") || src.ends_with("\\]"))) && i + 1 < lines.len() { i += 1; src += "\n"; src += lines[i].trim(); }
@@ -566,6 +575,17 @@ pub fn sample() -> Store {
     Store { notebooks: vec![study, personal], trash: vec![], study: Default::default() }
 }
 
+/// Attachment names come from other devices: only plain names, never paths.
+pub fn safe_name(n: &str) -> bool {
+    !n.is_empty() && n.len() < 200 && !n.starts_with('.') && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+}
+
+/// An attachment in the files folder. Names that aren't plain (`../x`, from a synced note) never
+/// leave the folder: they name a file that doesn't exist.
+pub fn files_path(name: &str) -> PathBuf {
+    data_dir().join("files").join(if safe_name(name) { name } else { "invalid-name" })
+}
+
 pub fn data_dir() -> PathBuf {
     // a different folder on request (portable use, tests)
     if let Some(d) = std::env::var_os("LEAFNOTES_DATA").filter(|d| !d.is_empty()) { return PathBuf::from(d); }
@@ -634,6 +654,14 @@ pub fn rasterize(strokes: &[&Stroke]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_unclosed_equation_stays_text() {
+        let k = blocks_from_markdown("$$ x^2\nline two\nline three");
+        assert!(!k.iter().any(|b| matches!(b, Kind::Math { .. })), "nothing swallowed");
+        let k = blocks_from_markdown("$$\nx^2\n$$\nafter");
+        assert!(matches!(&k[0], Kind::Math { src } if src == "x^2"));
+        assert!(!files_path("../../etc/passwd").to_string_lossy().contains("etc"));
+    }
     #[test]
     fn scratch_out() {
         let line = |id, pts: Vec<[f32; 3]>| Stroke { id, points: pts, color: [0, 0, 0, 255], width: 2.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 };

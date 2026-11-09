@@ -28,7 +28,12 @@ impl NotesApp {
                         Some((ch, l)) if *ch == h => l.clone(),
                         _ => match vault::seal(key, &lock.salt, &s.pages) {
                             Ok(l) => { self.st.seal_cache.insert(s.id, (h, l.clone())); l }
-                            Err(_) => lock.clone(), // keep the last sealed version rather than write plain text
+                            Err(_) => {
+                                // keep the last sealed version rather than write plain text, say so, and try again at the next save
+                                self.st.say("⚠ A locked section couldn't be encrypted, so its latest changes aren't saved yet.");
+                                self.st.dirty = true;
+                                lock.clone()
+                            }
                         },
                     };
                     s.lock = Some(sealed);
@@ -120,6 +125,7 @@ impl NotesApp {
     }
 
     fn after_lock_change(&mut self) {
+        crate::sync::dedupe(&mut self.store); // an opened conflict copy shares its pages' ids with the original
         self.st.selected.clear();
         self.st.editing = None;
         self.st.undo.clear(); // undo snapshots could hold pages of a section that is now closed
