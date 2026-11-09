@@ -176,6 +176,20 @@ mod clickthrough {
     }
 
     #[test]
+    fn tour_from_help_never_replaces_the_notes() {
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = Harness::new();
+        let before = h.app.store.notebooks.len();
+        h.click("?");
+        h.click("Show the welcome tour");
+        h.run(vec![]); // the tour's modal shows a frame later
+        for _ in 0..10 { if h.nodes.values().any(|(l, _)| l == "Next") { h.click("Next"); } }
+        assert!(!h.nodes.values().any(|(l, _)| l == "Start with an empty notebook"), "only offered on the first start");
+        h.click("Done");
+        assert!(h.app.st.tour.is_none() && h.app.store.notebooks.len() == before);
+    }
+
+    #[test]
     fn two_finger_tap_undoes() {
         let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = Harness::new();

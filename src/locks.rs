@@ -63,7 +63,8 @@ impl NotesApp {
         s.lock = Some(lock);
         s.pages = vec![s.placeholder()];
         // earlier plain-text versions of these pages shouldn't outlive the lock
-        if self.st.persist { for p in ids { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{p}.jsonl"))); } }
+        if self.st.persist { for p in &ids { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{p}.jsonl"))); } }
+        self.st.index.forget(&ids, self.st.persist);
         self.st.keys.remove(&id);
         self.after_lock_change();
         Ok(())
@@ -78,6 +79,26 @@ impl NotesApp {
         if let Some(s) = self.section_mut(id) { s.pages = if pages.is_empty() { vec![Page::new("")] } else { pages }; }
         self.after_lock_change();
         Ok(())
+    }
+
+    /// A locked section on its way to Recently deleted: sealed now, so the bin never holds its pages in plain text.
+    pub(crate) fn close_for_bin(&mut self, s: &mut Section) {
+        let Some(lock) = &s.lock else { return };
+        if let Some(key) = self.st.keys.remove(&s.id) {
+            // if sealing fails, the last sealed version stays: never plain text
+            if let Ok(l) = vault::seal(&key, &lock.salt, &s.pages) { s.lock = Some(l); }
+            self.st.seal_cache.remove(&s.id);
+        }
+        s.pages = vec![s.placeholder()];
+    }
+
+    /// A page deleted from an opened locked section, as a one-page locked section with the same password.
+    pub(crate) fn sealed_page_for_bin(&mut self, from: &Section, page: Page) -> Result<Section, Page> {
+        let (Some(lock), Some(key)) = (&from.lock, self.st.keys.get(&from.id)) else { return Err(page) };
+        let Ok(l) = vault::seal(key, &lock.salt, std::slice::from_ref(&page)) else { return Err(page) };
+        let mut s = Section { id: new_id(), name: tf!("{name} (deleted page)", name = from.name), color: from.color, pages: vec![], lock: Some(l) };
+        s.pages = vec![s.placeholder()];
+        Ok(s)
     }
 
     /// Close an opened locked section again.
@@ -122,6 +143,7 @@ impl NotesApp {
             ui.add_space(6.0);
             ui.label(tr("Its pages are encrypted with this password. You'll need it to open them, also on your other devices."));
             ui.label(RichText::new(tr("If you forget the password, these pages can't be recovered. Nobody can reset it.")).color(Color32::from_rgb(200, 60, 50)));
+            ui.label(RichText::new(tr("Pictures, PDFs and recordings on these pages are not encrypted.")).weak());
             ui.add_space(8.0);
             ui.add(egui::TextEdit::singleline(&mut lp.pw).password(true).hint_text(tr("Password")).desired_width(f32::INFINITY));
             let r = ui.add(egui::TextEdit::singleline(&mut lp.again).password(true).hint_text(tr("The same password again")).desired_width(f32::INFINITY));
@@ -178,5 +200,49 @@ mod tests {
         assert_eq!(app.store.notebooks[0].sections[0].pages[0].title, "Changed");
         app.remove_lock(sec.id);
         assert!(app.store.notebooks[0].sections[0].lock.is_none() && app.sealed().is_none());
+    }
+
+    #[test]
+    fn deleting_from_an_opened_locked_section_keeps_it_encrypted() {
+        let mut app = crate::safety::tests::app();
+        let sec = app.store.notebooks[0].sections[0].clone();
+        let (page, secret) = (sec.pages[0].id, sec.pages[0].title.clone());
+        app.lock_section(sec.id, "hunter22").unwrap();
+        app.unlock_section(sec.id, "hunter22").unwrap();
+        // one page: to the bin as a one-page locked section, never in plain text
+        app.delete(page);
+        assert!(!serde_json::to_string(&app.store.trash).unwrap().contains(&secret), "the bin holds it encrypted");
+        let crate::TrashItem::Section { section, .. } = &app.store.trash.last().unwrap().item else { panic!("kept as a locked section") };
+        assert!(section.sealed());
+        let (bin_id, lock) = (section.id, section.lock.clone().unwrap());
+        assert_eq!(crate::vault::open(&crate::vault::key("hunter22", &lock.salt).unwrap(), &lock).unwrap()[0].id, page, "same password opens it");
+        // restored, it opens with the same password
+        let i = app.store.trash.len() - 1;
+        app.restore(i);
+        app.unlock_section(bin_id, "hunter22").unwrap();
+        // the whole opened section: sealed on its way to the bin
+        let other = app.store.notebooks[0].sections[0].pages.iter().map(|p| p.title.clone()).find(|t| !t.is_empty()).unwrap_or_default();
+        app.delete(sec.id);
+        let bin = serde_json::to_string(&app.store.trash).unwrap();
+        assert!(other.is_empty() || !bin.contains(&other));
+        let crate::TrashItem::Section { section, .. } = &app.store.trash.last().unwrap().item else { panic!() };
+        assert!(section.sealed());
+    }
+
+    #[test]
+    fn closed_locked_sections_take_no_pages() {
+        let mut app = crate::safety::tests::app();
+        let target = app.store.notebooks[0].sections[0].id;
+        let page = app.store.notebooks[0].sections[1].pages[0].id;
+        app.delete(page);
+        app.lock_section(target, "hunter22").unwrap();
+        (app.nb, app.sec, app.pg) = (0, 0, 0);
+        // a page from Recently deleted can't land next to the placeholder (saving would drop it)
+        let n = app.store.trash.len();
+        if let crate::TrashItem::Page { section, .. } = &mut app.store.trash[n - 1].item { *section = target; }
+        app.restore(n - 1);
+        assert_eq!(app.store.trash.len(), n, "stays in the bin");
+        assert!(app.store.notebooks[0].sections[0].sealed() && app.store.notebooks[0].sections[0].pages.len() == 1);
+        assert!(!app.new_page(None));
     }
 }

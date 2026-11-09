@@ -1218,7 +1218,8 @@ impl NotesApp {
     }
 
     fn page_list(&mut self, ui: &mut egui::Ui) {
-        let targets: Vec<(u64, String)> = self.store.notebooks.iter().flat_map(|n| n.sections.iter().map(move |s| (s.id, format!("{} › {}", n.name, s.name)))).collect();
+        // a closed locked section can't take pages (saving would drop them next to its placeholder)
+        let targets: Vec<(u64, String)> = self.store.notebooks.iter().flat_map(|n| n.sections.iter().filter(|s| !s.sealed()).map(move |s| (s.id, format!("{} › {}", n.name, s.name)))).collect();
         let (nb, sec) = (self.nb, self.sec);
         let mut clicked = None;
         let mut act: Option<(usize, u8)> = None; // 1 indent, 2 up, 3 down, 4 duplicate, 5 copy
@@ -1235,6 +1236,7 @@ impl NotesApp {
                 let sub = Some(if preview.chars().count() > 48 { format!("{}…", preview.chars().take(48).collect::<String>()) } else { preview });
                 let r = nav_item(ui, &mut self.st, p.id, title, None, i == self.pg, p.level, sub);
                 if r.clicked() { clicked = Some(i); }
+                if p.kind == PageKind::Locked { continue; } // the placeholder of a closed locked section has nothing to rename, move or delete
                 r.context_menu(|ui| {
                     if ui.button(tr("Rename")).clicked() { self.st.rename = Some((p.id, title.to_string())); ui.close(); }
                     if ui.button(tr("Duplicate")).clicked() { act = Some((i, 4)); ui.close(); }

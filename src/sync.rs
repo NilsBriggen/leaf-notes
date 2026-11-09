@@ -52,10 +52,34 @@ struct Base { target: String, tag: String, #[serde(default)] files: Vec<String>,
 pub enum First { Merge, UseShared }
 
 pub enum Outcome {
-    /// Done: `store` is now on both sides.
-    Synced { store: Store, up: usize, down: usize },
+    /// Done: `store` is now on both sides. Commit `base` once `store` is saved on this device.
+    Synced { store: Store, up: usize, down: usize, base: PendingBase },
     /// First sync here and both sides have notes: ask the person how to join (pages in the shared copy).
     AskFirst { pages: usize },
+}
+
+/// Whether the host part of `rest` (an address after "http://") is on the home network: localhost,
+/// a private or loopback IP address, or a .local name. Parsed, so "10.evil.com" or "127.x@evil.com" don't count.
+fn home_host(rest: &str) -> bool {
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if auth.contains('@') { return false; }
+    let host = if auth.starts_with('[') { auth.split(']').next().unwrap_or("").trim_start_matches('[') } else { auth.rsplit_once(':').map_or(auth, |(h, _)| h) };
+    let host = host.to_ascii_lowercase();
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => host == "localhost" || (host.ends_with(".local") && host.len() > 6),
+    }
+}
+
+/// The new agreed state, written only after the notes it describes are saved here: if the app
+/// stopped in between, a base ahead of the saved notes would make the next sync undo other devices' edits.
+pub struct PendingBase(Vec<u8>);
+
+impl PendingBase {
+    pub fn commit(&self, home: &Path) -> Result<(), String> {
+        write_atomic(&home.join(BASE_FILE), &self.0).map_err(|e| tf!("Couldn't save the sync state: {e}", e = e))
+    }
 }
 
 /// One sync round. `home` is this device's data folder. `quick` uses short timeouts (when closing the app).
@@ -88,7 +112,8 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
         for f in list_files(&files) {
             if !have.contains(&f) { remote.put_file(&f, &files.join(&f))?; have.push(f); up += 1; }
         }
-        for f in &have {
+        // on the way out only send: missing files come down next time
+        for f in have.iter().filter(|_| !quick) {
             if safe_name(f) && !files.join(f).exists() && remote.get_file(f, &files.join(f))? { down += 1; }
         }
         let same = shared.as_ref().is_some_and(|(sh, f)| f.len() == have.len() && canon(sh) == canon(&merged));
@@ -97,8 +122,7 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
             match remote.put_notes(&bytes, tag.as_deref())? { Put::Done(t) => t, Put::Changed => continue }
         };
         let b = serde_json::to_vec(&Base { target: s.target(), tag, files: have, store: merged.clone() }).map_err(|e| e.to_string())?;
-        write_atomic(&home.join(BASE_FILE), &b).map_err(|e| tf!("Couldn't save the sync state: {e}", e = e))?;
-        return Ok(Outcome::Synced { store: merged, up, down });
+        return Ok(Outcome::Synced { store: merged, up, down, base: PendingBase(b) });
     }
     Err(crate::tr("Another device kept syncing at the same moment — trying again shortly.").into())
 }
@@ -309,7 +333,7 @@ impl Remote {
             Via::WebDav => {
                 use base64::Engine;
                 let url = s.url.trim().trim_end_matches('/');
-                let lan = ["http://localhost", "http://127.", "http://192.168.", "http://10."].iter().any(|p| url.starts_with(p)) || url.split('/').nth(2).is_some_and(|h| h.split(':').next().unwrap_or("").ends_with(".local"));
+                let lan = url.strip_prefix("http://").is_some_and(home_host);
                 // the password travels with every request, so only over an encrypted connection (or the home network)
                 if !url.starts_with("https://") && !(url.starts_with("http://") && lan) { return Err(crate::tr("The server address must start with https://").into()); }
                 let agent = agent(quick);
@@ -705,6 +729,13 @@ mod tests {
         assert_eq!((secs[0].lock.as_ref().unwrap().data.as_str(), secs[1].lock.as_ref().unwrap().data.as_str()), ("here", "there"));
     }
 
+    /// A sync round whose result is saved at once (as the app does), so its base is committed.
+    fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, quick: bool) -> Result<Outcome, String> {
+        let r = super::run(s, home, local, first, quick);
+        if let Ok(Outcome::Synced { base, .. }) = &r { base.commit(home).unwrap(); }
+        r
+    }
+
     #[test]
     fn syncs_two_devices_through_a_folder() {
         let shared = tmp("shared");
@@ -735,6 +766,9 @@ mod tests {
         std::fs::write(shared.join("LeafNotes/notes.json"), b"{broken").unwrap();
         assert!(run(&cfg, &a, &sa3, None, false).is_err());
         assert_eq!(std::fs::read(shared.join("LeafNotes/notes.json")).unwrap(), b"{broken");
+        // plain http only to the home network, judged by the parsed host
+        assert!(home_host("192.168.1.5:8080/dav") && home_host("10.0.0.2") && home_host("localhost/x") && home_host("nas.local") && home_host("[::1]:80"));
+        assert!(!home_host("10.evil.com") && !home_host("127.0.0.1@evil.com") && !home_host("192.168.example.org") && !home_host("8.8.8.8") && !home_host("evil.com/x.local"));
         // names from other devices can't escape the files folder
         assert!(!safe_name("../x") && !safe_name("a/b") && !safe_name(".hidden") && safe_name("123.png"));
         assert_eq!((dec("4%2F0Ab%3D+x"), dec("bad%2"), enc("a b/'")), ("4/0Ab= x".to_string(), "bad%2".to_string(), "a%20b%2F%27".to_string()));

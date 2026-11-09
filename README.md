@@ -81,7 +81,7 @@ For Google Drive, the Google Cloud project also needs the **Google Drive API** t
 - `files/`: pictures, PDFs and recordings
 - `search-index.json`: text read from handwriting and PDFs, for search (rebuilt when missing)
 
-Every file is written safely (a temporary file, then a rename), and a damaged file costs one page, never everything. Older versions stored everything in `notebooks.json`; it is split up on the first start and kept as `notebooks.json.before-split`. Settings ▸ Your data saves and restores backups. Locked sections are stored, synced and backed up only in encrypted form.
+Every file is written safely (a temporary file, then a rename), and a damaged file costs one page, never everything. Older versions stored everything in `notebooks.json`; it is split up on the first start and kept as `notebooks.json.before-split`. Settings ▸ Your data saves and restores backups. The pages of locked sections are stored, synced and backed up only in encrypted form; pictures, PDFs and recordings on them are not encrypted.
 
 Your AI key, WebDAV password and Google sign-in are kept in the system keyring: Windows Credential Manager, or the Secret Service on Linux (GNOME Keyring, KWallet). The settings files keep an empty field. On Android they are encrypted with a key held by Android's key store. If no keyring is running on Linux, they stay in the app's own folder.
 

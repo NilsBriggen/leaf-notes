@@ -315,7 +315,9 @@ impl NotesApp {
             Some(first) => {
                 if first == sync::First::UseShared {
                     let path = data_dir().join(format!("before-sync-{}.json", now_secs()));
-                    match serde_json::to_vec(&self.store).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
+                    // sealed: an opened locked section never reaches this file in plain text
+                    let notes = self.sealed().unwrap_or_else(|| self.store.clone());
+                    match serde_json::to_vec(&notes).map_err(|e| e.to_string()).and_then(|b| crate::storage::write_atomic(&path, &b).map_err(|e| e.to_string())) {
                         Ok(()) => self.st.say(tf!("This device's notes were saved to {path}", path = path.display())),
                         Err(e) => { self.st.say(tf!("⚠ Couldn't back up this device's notes ({e}), so nothing was replaced.", e = e)); return; }
                     }

@@ -53,7 +53,7 @@ const CHANGES: &[(&str, &[&str])] = &[
 impl NotesApp {
     /// Decide what to show at start: the tour on a new install, What's new after an update.
     pub(crate) fn greet(&mut self, fresh_install: bool) {
-        if fresh_install { self.st.tour = Some(0); }
+        if fresh_install { self.st.tour = Some(0); self.st.tour_fresh = true; }
         else if self.st.p.seen_version != VERSION && CHANGES.iter().any(|(v, _)| *v == VERSION) { self.st.show_news = true; }
         if self.st.p.seen_version != VERSION { self.st.p.seen_version = VERSION.into(); self.st.dirty = true; }
     }
@@ -112,12 +112,15 @@ impl NotesApp {
                 }
                 _ => {
                     big(ui, "Ready");
-                    text(ui, "There's a sample notebook to look around in. Keep it, or start with an empty one.");
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
-                        if ui.button(tr("Start with an empty notebook")).clicked() { empty_start = true; close = true; }
-                    });
+                    // only on the first start: seen again from Help, the notes are the person's own
+                    if self.st.tour_fresh {
+                        text(ui, "There's a sample notebook to look around in. Keep it, or start with an empty one.");
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
+                            if ui.button(tr("Start with an empty notebook")).clicked() { empty_start = true; close = true; }
+                        });
+                    } else if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
                     text(ui, "You can see this tour again from Help (?, top right).");
                 }
             }});
@@ -136,11 +139,15 @@ impl NotesApp {
             });
         });
         if empty_start {
+            // the sample goes to Recently deleted rather than away for good
+            let now = now_secs();
+            for n in std::mem::take(&mut self.store.notebooks) { self.store.trash.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n) }); }
             self.store.notebooks = vec![Notebook { id: new_id(), name: tr("My Notebook").into(), color: PALETTE[0], sections: vec![Section { id: new_id(), name: tr("Quick Notes").into(), color: PALETTE[1], pages: vec![Page::new(tr("First page"))], lock: None }] }];
             (self.nb, self.sec, self.pg) = (0, 0, 0);
             self.st.dirty = true;
         }
         self.st.tour = if close { None } else { Some(step) };
+        if close { self.st.tour_fresh = false; }
     }
 
     pub(crate) fn news_window(&mut self, ctx: &egui::Context) {

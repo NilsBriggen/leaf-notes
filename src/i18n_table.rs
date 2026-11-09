@@ -855,4 +855,8 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("The highlighter has a size and can take any colour.", "Der Textmarker hat eine Größe und kann jede Farbe haben.", "Le surligneur a une taille et peut prendre n'importe quelle couleur."),
     ("Pens can be removed with a visible button; recording speed is picked from a menu.", "Stifte lassen sich über eine sichtbare Schaltfläche entfernen; die Wiedergabegeschwindigkeit wählst du aus einem Menü.", "Les stylos se retirent avec un bouton visible ; la vitesse de lecture se choisit dans un menu."),
     ("A ⌃ button hides the toolbar, and View ▸ Dark mode stays on even when the theme followed the system.", "Eine ⌃-Schaltfläche blendet die Werkzeugleiste aus, und Ansicht ▸ Dunkelmodus bleibt an, auch wenn das Design dem System folgte.", "Un bouton ⌃ masque la barre d'outils, et Affichage ▸ Mode sombre reste actif même si le thème suivait le système."),
+    // 0.3.2
+    ("{name} (deleted page)", "{name} (gelöschte Seite)", "{name} (page supprimée)"),
+    ("Couldn't delete this page.", "Diese Seite konnte nicht gelöscht werden.", "Impossible de supprimer cette page."),
+    ("Pictures, PDFs and recordings on these pages are not encrypted.", "Bilder, PDFs und Aufnahmen auf diesen Seiten werden nicht verschlüsselt.", "Les images, PDF et enregistrements de ces pages ne sont pas chiffrés."),
 ];

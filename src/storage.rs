@@ -34,7 +34,12 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // a unique name: two writers (this app, a sync folder) never share a temporary file
     let tmp = path.with_extension(format!("{}.tmp", crate::new_id()));
     let done = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        // notes and settings (which hold secrets where there's no keyring) are for this user only
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let mut f = o.open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
@@ -53,25 +58,36 @@ fn stub(p: &Page) -> Page {
     Page { id: p.id, title: p.title.clone(), created: p.created, level: p.level, paper: p.paper, blocks: vec![], strokes: vec![], recordings: vec![], kind: p.kind, cards: vec![], other_of: p.other_of }
 }
 
-/// Load the notes. An unreadable library falls back to its backup; if both are unreadable this is
-/// an error, so the caller never starts over on top of real notes.
+/// Load the notes. An unreadable or missing library falls back to its backup, then to the page
+/// files themselves; if a library exists but nothing can be read this is an error, so the caller
+/// never starts over on top of real notes.
 pub fn load(dir: &Path) -> Result<Loaded, String> {
     let lib = dir.join(LIBRARY);
-    if lib.exists() {
-        let mut store: Store = match read_json(&lib).or_else(|| read_json(&dir.join(format!("{LIBRARY}.backup")))) {
+    let backup = dir.join(format!("{LIBRARY}.backup"));
+    if lib.exists() || backup.exists() {
+        let mut store: Store = match read_json(&lib).or_else(|| read_json(&backup)) {
             Some(s) => s,
-            // An empty file holds nothing to protect (older versions could leave one after a sudden
-            // power-off): bring back the pages themselves, or start fresh if there are none.
-            None if std::fs::metadata(&lib).is_ok_and(|m| m.len() == 0) => return Ok(recover_pages(dir).map_or(Loaded::Fresh, |s| Loaded::Store(s, vec![]))),
+            // A missing or empty file holds nothing to protect (older versions could leave an empty one
+            // after a sudden power-off): bring back the pages themselves, or start fresh if there are none.
+            None if std::fs::metadata(&lib).map_or(true, |m| m.len() == 0) => return Ok(recover_pages(dir, &Default::default()).map_or(Loaded::Fresh, |s| Loaded::Store(s, vec![]))),
             None => return Err(format!("{} is damaged and has no readable backup.", lib.display())),
         };
         let mut damaged = vec![];
         for p in store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).flat_map(|s| s.pages.iter_mut()) {
-            match read_json::<Page>(&page_path(dir, p.id)) {
+            let path = page_path(dir, p.id);
+            match read_json::<Page>(&path) {
                 Some(full) if full.id == p.id => *p = Page { title: p.title.clone(), level: p.level, ..full },
-                _ => damaged.push(p.title.clone()),
+                _ => {
+                    // keep the damaged bytes for repair by hand; the empty page saved in their place must not overwrite them
+                    if path.exists() { let _ = std::fs::rename(&path, path.with_extension("json.damaged")); }
+                    damaged.push(p.title.clone());
+                }
             }
         }
+        // page files the library doesn't list (it came from the backup, or lost them): gathered, never deleted
+        let mut known: std::collections::HashSet<u64> = store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).map(|p| p.id).collect();
+        known.extend(trashed_page_ids(&store));
+        if let Some(found) = recover_pages(dir, &known) { store.notebooks.extend(found.notebooks); }
         return Ok(Loaded::Store(store, damaged));
     }
     let old = dir.join(OLD_STORE);
@@ -80,12 +96,23 @@ pub fn load(dir: &Path) -> Result<Loaded, String> {
             .ok_or_else(|| format!("{} is damaged and has no readable backup.", old.display()))?;
         return Ok(Loaded::Store(store, vec![]));
     }
-    Ok(Loaded::Fresh)
+    Ok(recover_pages(dir, &Default::default()).map_or(Loaded::Fresh, |s| Loaded::Store(s, vec![])))
 }
 
-/// Every readable page file, gathered into one notebook (when the list of notebooks is lost).
-fn recover_pages(dir: &Path) -> Option<Store> {
-    let mut pages: Vec<Page> = std::fs::read_dir(dir.join("pages")).ok()?.flatten().filter_map(|e| read_json::<Page>(&e.path())).collect();
+/// Pages waiting in Recently deleted (their content is in the library, so their old files may go).
+fn trashed_page_ids(store: &Store) -> Vec<u64> {
+    store.trash.iter().flat_map(|t| match &t.item {
+        TrashItem::Page { page, .. } => vec![page.id],
+        TrashItem::Section { section, .. } => section.pages.iter().map(|p| p.id).collect(),
+        TrashItem::Notebook(n) => n.sections.iter().flat_map(|s| &s.pages).map(|p| p.id).collect(),
+    }).collect()
+}
+
+/// Every readable page file not in `known`, gathered into one notebook (when the list of notebooks lost them).
+fn recover_pages(dir: &Path, known: &std::collections::HashSet<u64>) -> Option<Store> {
+    let mut pages: Vec<Page> = std::fs::read_dir(dir.join("pages")).ok()?.flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| read_json::<Page>(&e.path())).filter(|p| !known.contains(&p.id)).collect();
     if pages.is_empty() { return None; }
     pages.sort_by_key(|p| p.created);
     let section = Section { id: new_id(), name: crate::i18n::tr("Recovered pages").into(), color: crate::model::PALETTE[1], pages, lock: None };
@@ -105,8 +132,9 @@ pub struct Saver {
 impl Saver {
     pub fn save(&mut self, dir: &Path, store: &Store) -> std::io::Result<()> {
         std::fs::create_dir_all(dir.join("pages"))?;
-        if !self.started {
+        if !self.started && read_json::<Store>(&dir.join(LIBRARY)).is_some() {
             // once per session: keep the library from before, so a bad session can be rolled back by hand
+            // (only a readable one: a damaged library must never replace the good backup)
             let _ = std::fs::copy(dir.join(LIBRARY), dir.join(format!("{LIBRARY}.backup")));
         }
         let now = now_secs();
@@ -137,10 +165,12 @@ impl Saver {
             // the old single file has been split up: keep it next to the new files as a backup
             let old = dir.join(OLD_STORE);
             if old.exists() { let _ = std::fs::rename(&old, dir.join(format!("{OLD_STORE}.before-split"))); }
-            // page files of pages that no longer exist (deleted pages live on in the library's Recently deleted)
+            // page files of deleted pages (they live on in the library's Recently deleted). Any other
+            // unknown page file is left alone: loading gathers those into Recovered pages.
+            let trashed: std::collections::HashSet<u64> = trashed_page_ids(store).into_iter().collect();
             for e in std::fs::read_dir(dir.join("pages")).into_iter().flatten().flatten() {
                 let id = e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).and_then(|n| n.parse::<u64>().ok());
-                if id.is_some_and(|id| !seen.contains(&id)) { let _ = std::fs::remove_file(e.path()); }
+                if id.is_some_and(|id| !seen.contains(&id) && trashed.contains(&id)) { let _ = std::fs::remove_file(e.path()); }
             }
         } else {
             for id in self.written.keys().filter(|id| !seen.contains(id)).copied().collect::<Vec<_>>() {
@@ -171,8 +201,8 @@ pub fn history(dir: &Path, id: u64) -> Vec<(u64, Page)> {
     v
 }
 
-impl Notebook { fn clone_meta(&self) -> Notebook { Notebook { id: self.id, name: self.name.clone(), color: self.color, sections: vec![] } } }
-impl Section { fn clone_meta(&self) -> Section { Section { id: self.id, name: self.name.clone(), color: self.color, pages: vec![], lock: self.lock.clone() } } }
+impl Notebook { pub(crate) fn clone_meta(&self) -> Notebook { Notebook { id: self.id, name: self.name.clone(), color: self.color, sections: vec![] } } }
+impl Section { pub(crate) fn clone_meta(&self) -> Section { Section { id: self.id, name: self.name.clone(), color: self.color, pages: vec![], lock: self.lock.clone() } } }
 
 #[cfg(test)]
 mod tests {
@@ -238,6 +268,37 @@ mod tests {
         saver.save(&dir, &store2).unwrap();
         assert!(!other.exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_lost_or_damaged_library_never_costs_pages() {
+        // the library is gone, its backup too: the page files come back instead of a fresh start that deletes them
+        let d = tmp();
+        let store = sample();
+        Saver::default().save(&d, &store).unwrap();
+        std::fs::remove_file(d.join(LIBRARY)).unwrap();
+        let _ = std::fs::remove_file(d.join(format!("{LIBRARY}.backup")));
+        let Ok(Loaded::Store(s, _)) = load(&d) else { panic!("pages not recovered") };
+        assert_eq!(titles(&s).len(), titles(&store).len());
+        // the library is gone but its backup isn't: the backup is used, and a page made after it is kept
+        let d = tmp();
+        let mut store = sample();
+        let mut saver = Saver::default();
+        saver.save(&d, &store).unwrap();
+        Saver::default().save(&d, &store).unwrap(); // a second session: the backup exists now
+        store.notebooks[0].sections[0].pages.push(Page::new("Made after the backup"));
+        saver.save(&d, &store).unwrap();
+        std::fs::write(d.join(LIBRARY), b"{broken").unwrap();
+        let Ok(Loaded::Store(s, _)) = load(&d) else { panic!() };
+        assert!(titles(&s).contains(&"Made after the backup".into()), "orphan page gathered");
+        // the next session's first save neither overwrites the good backup nor deletes the page
+        Saver::default().save(&d, &s).unwrap();
+        assert!(read_json::<Store>(&d.join(format!("{LIBRARY}.backup"))).is_some());
+        let Ok(Loaded::Store(again, _)) = load(&d) else { panic!() };
+        assert_eq!(titles(&again).iter().filter(|t| *t == "Made after the backup").count(), 1);
+        #[cfg(unix)]
+        { use std::os::unix::fs::PermissionsExt; assert_eq!(std::fs::metadata(d.join(LIBRARY)).unwrap().permissions().mode() & 0o777, 0o600); }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn same(a: &Store, b: &Store) -> bool { serde_json::to_string(a).unwrap() == serde_json::to_string(b).unwrap() }

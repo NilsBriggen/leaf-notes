@@ -304,6 +304,8 @@ struct St {
     unlock_err: String,
     /// The welcome tour's current step.
     tour: Option<u8>,
+    /// The tour is the first-start one (only then may it offer to replace the sample notes).
+    tour_fresh: bool,
     show_news: bool,
     show_help: bool,
     /// Android's status and navigation bars (top, bottom, left, right) in points, and when they were last asked for.
@@ -554,7 +556,7 @@ impl NotesApp {
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
-            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
+            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, tour_fresh: false, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
             sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
@@ -652,22 +654,44 @@ impl NotesApp {
     /// Move a notebook, section or page to Recently deleted.
     fn delete(&mut self, id: u64) {
         let now = now_secs();
+        let mut binned = vec![];
         if let Some(i) = self.store.notebooks.iter().position(|n| n.id == id) {
-            let n = self.store.notebooks.remove(i);
-            self.store.trash.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n) });
+            let mut n = self.store.notebooks.remove(i);
+            for s in &mut n.sections { self.close_for_bin(s); }
+            binned.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n) });
         }
-        for n in &mut self.store.notebooks {
-            if let Some(i) = n.sections.iter().position(|s| s.id == id) {
-                let s = n.sections.remove(i);
-                self.store.trash.push(Trashed { label: format!("Section “{}” from {}", s.name, n.name), deleted: now, item: TrashItem::Section { notebook: n.id, section: s } });
+        let mut found = None;
+        for (a, n) in self.store.notebooks.iter().enumerate() {
+            if let Some(i) = n.sections.iter().position(|s| s.id == id) { found = Some((a, i, None)); }
+            for (b, s) in n.sections.iter().enumerate() {
+                if let Some(i) = s.pages.iter().position(|p| p.id == id && p.kind != PageKind::Locked) { found = Some((a, b, Some(i))); }
             }
-            for s in &mut n.sections {
-                if let Some(i) = s.pages.iter().position(|p| p.id == id) {
-                    let p = s.pages.remove(i);
-                    self.store.trash.push(Trashed { label: format!("Page “{}” from {} › {}", p.title, n.name, s.name), deleted: now, item: TrashItem::Page { notebook: n.id, section: s.id, page: p } });
+        }
+        match found {
+            Some((a, i, None)) => {
+                let mut s = self.store.notebooks[a].sections.remove(i);
+                self.close_for_bin(&mut s);
+                let n = &self.store.notebooks[a];
+                binned.push(Trashed { label: format!("Section “{}” from {}", s.name, n.name), deleted: now, item: TrashItem::Section { notebook: n.id, section: s } });
+            }
+            Some((a, b, Some(i))) => {
+                let p = self.store.notebooks[a].sections[b].pages.remove(i);
+                let (n, s) = (&self.store.notebooks[a], &self.store.notebooks[a].sections[b]);
+                let (nid, nname) = (n.id, n.name.clone());
+                if s.lock.is_none() {
+                    binned.push(Trashed { label: format!("Page “{}” from {} › {}", p.title, nname, s.name), deleted: now, item: TrashItem::Page { notebook: nid, section: s.id, page: p } });
+                } else {
+                    // a page of an opened locked section waits in the bin encrypted, as a one-page locked section (same password)
+                    let from = s.clone_meta();
+                    match self.sealed_page_for_bin(&from, p) {
+                        Ok(section) => binned.push(Trashed { label: format!("A page from {} › {} (locked)", nname, from.name), deleted: now, item: TrashItem::Section { notebook: nid, section } }),
+                        Err(p) => { self.store.notebooks[a].sections[b].pages.insert(i, p); self.st.say("Couldn't delete this page."); return; }
+                    }
                 }
             }
+            None => {}
         }
+        self.store.trash.extend(binned);
         self.st.dirty = true;
         self.st.selected.clear();
         self.st.say("Moved to Recently deleted — restore it from the notebook menu.");
@@ -683,8 +707,18 @@ impl NotesApp {
                 match self.store.notebooks.iter_mut().find(|n| n.id == notebook) { Some(n) => n.sections.push(section), None => self.store.notebooks[nb].sections.push(section) }
             }
             TrashItem::Page { notebook, section, page } => {
-                let s = self.store.notebooks.iter_mut().filter(|n| n.id == notebook).flat_map(|n| n.sections.iter_mut()).find(|s| s.id == section);
-                match s { Some(s) => s.pages.push(page), None => self.store.notebooks[nb].sections[sec].pages.push(page) }
+                // never next to a closed locked section's placeholder: saving would drop it
+                let here_ok = !self.store.notebooks[nb].sections[sec].sealed();
+                let s = self.store.notebooks.iter_mut().filter(|n| n.id == notebook).flat_map(|n| n.sections.iter_mut()).find(|s| s.id == section && !s.sealed());
+                match s {
+                    Some(s) => s.pages.push(page),
+                    None if here_ok => self.store.notebooks[nb].sections[sec].pages.push(page),
+                    None => {
+                        self.store.trash.insert(i, Trashed { label: t.label, deleted: t.deleted, item: TrashItem::Page { notebook, section, page } });
+                        self.st.say("Unlock this section first.");
+                        return;
+                    }
+                }
             }
         }
         self.st.dirty = true;
@@ -1001,8 +1035,8 @@ impl NotesApp {
     }
 
     /// A new empty page on the chosen background (or the one from Settings).
-    fn new_page(&mut self, paper: Option<Paper>) {
-        if !self.section_open_for_writing() { return; }
+    fn new_page(&mut self, paper: Option<Paper>) -> bool {
+        if !self.section_open_for_writing() { return false; }
         let p = Page { paper: paper.unwrap_or(self.st.p.new_paper), ..Page::new("") };
         let sec = self.section();
         sec.pages.push(p);
@@ -1011,6 +1045,7 @@ impl NotesApp {
         self.go_to(nb, s, at);
         self.st.focus_id = Some(egui::Id::unique("page-title"));
         self.st.tool = Tool::Type;
+        true
     }
 
     fn export_page(&mut self) {
@@ -1109,7 +1144,7 @@ impl NotesApp {
 
     /// A dated, empty lecture page, optionally recording straight away.
     fn start_lecture(&mut self, record: bool) {
-        self.new_page(None);
+        if !self.new_page(None) { return; }
         let d = chrome::format_date(now_secs(), false);
         let short = d.rsplit_once(',').map_or(d.clone(), |(a, _)| a.to_string()); // drop the year
         self.page().title = format!("Lecture · {short}");
@@ -1137,7 +1172,7 @@ impl NotesApp {
         let Some((sent, _)) = self.st.sync_rx.take() else { return };
         match r {
             Ok(sync::Outcome::AskFirst { pages }) => self.st.sync_ask = Some(pages),
-            Ok(sync::Outcome::Synced { store, down, .. }) => {
+            Ok(sync::Outcome::Synced { store, down, base, .. }) => {
                 // compare and merge in the sealed form; opened locked sections are opened again after
                 let current = self.sealed().unwrap_or_else(|| self.store.clone());
                 let meanwhile = !sync::same(&sent, &current);
@@ -1155,6 +1190,9 @@ impl NotesApp {
                         self.st.sync_pending = meanwhile;
                         self.st.sync_ok = now_secs();
                         self.st.sync_err.clear();
+                        // the agreed state only once these notes are on this device's disk
+                        if self.st.dirty { self.save_now(); self.st.sync_pending = meanwhile; }
+                        if !self.st.dirty && self.st.persist { if let Err(e) = base.commit(&data_dir()) { self.st.sync_err = e; } }
                     }
                     Err(e) => { self.st.sync_err = e; self.st.sync_pending = true; }
                 }
@@ -1580,12 +1618,20 @@ impl eframe::App for NotesApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if self.st.recorder.is_some() { self.toggle_record(); }
         if self.st.capture.is_some() { self.cancel_capture(""); } // put the panels back before saving settings
-        // send the last changes on the way out (short timeouts, so closing never hangs for long)
-        if self.st.persist && self.st.sync.on() && self.st.sync_rx.is_none() && self.st.sync_ask.is_none() && (self.st.sync_pending || self.st.dirty) {
-            let sealed = self.sealed();
-            if let Ok(sync::Outcome::Synced { store, .. }) = sync::run(&self.st.sync, &data_dir(), sealed.as_ref().unwrap_or(&self.store), None, true) { self.store = store; }
-        }
+        let unsynced = self.st.sync_pending || self.st.dirty;
+        // save first: a slow or killed exit sync must never cost the last edits
         self.save_now();
+        self.st.index.flush(self.st.persist);
+        // send the last changes on the way out (short timeouts, so closing never hangs for long)
+        if self.st.persist && self.st.sync.on() && self.st.sync_rx.is_none() && self.st.sync_ask.is_none() && unsynced {
+            let sealed = self.sealed();
+            if let Ok(sync::Outcome::Synced { store, base, .. }) = sync::run(&self.st.sync, &data_dir(), sealed.as_ref().unwrap_or(&self.store), None, true) {
+                // the synced notes are sealed: open the opened locked sections again, or saving would seal their placeholder over them
+                self.store = self.reopen(store);
+                self.save_now();
+                if !self.st.dirty { let _ = base.commit(&data_dir()); }
+            }
+        }
     }
 
     /// The desk colour shows between the cards.

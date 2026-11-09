@@ -93,6 +93,19 @@ impl Index {
     }
 
     pub fn busy(&self) -> bool { self.job.is_some() }
+
+    /// Drop these pages and write the file at once (their section was just locked).
+    pub fn forget(&mut self, ids: &[u64], persist: bool) {
+        if self.job.as_ref().is_some_and(|(id, ..)| ids.contains(id)) { self.job = None; }
+        for id in ids { self.map.remove(id); }
+        self.dirty = true;
+        self.flush(persist);
+    }
+
+    /// Write what changed now (on the way out).
+    pub fn flush(&mut self, persist: bool) {
+        if persist && self.dirty { let _ = save(FILE, &self.map); self.dirty = false; }
+    }
 }
 
 /// Where `q` occurs in `hay` (both lower case), as a byte range, and whether it was an exact match.
