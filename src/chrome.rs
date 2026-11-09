@@ -90,7 +90,34 @@ fn group(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 
+/// A moment as the clock on this device's wall shows it (local time, not UTC).
 pub(crate) fn format_date(secs: u64, time: bool) -> String {
+    format_utc((secs as i64 + local_offset(secs)).max(0) as u64, time)
+}
+
+/// This device's offset from UTC in seconds at that moment (summer time included).
+fn local_offset(secs: u64) -> i64 {
+    #[cfg(unix)]
+    // SAFETY: localtime_r only writes the tm it is given
+    unsafe {
+        let t = secs as libc::time_t;
+        let mut tm: libc::tm = std::mem::zeroed();
+        if !libc::localtime_r(&t, &mut tm).is_null() { return tm.tm_gmtoff as i64; }
+    }
+    #[cfg(windows)]
+    // SAFETY: GetTimeZoneInformation only fills the struct it is given
+    unsafe {
+        use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+        let mut tz: TIME_ZONE_INFORMATION = std::mem::zeroed();
+        let r = GetTimeZoneInformation(&mut tz);
+        // shortcut: today's summer/winter time, also for other dates (Windows has no per-date call this simple)
+        if r != u32::MAX { return -((tz.Bias + if r == 2 { tz.DaylightBias } else { tz.StandardBias }) as i64) * 60; }
+    }
+    #[allow(unreachable_code)]
+    { let _ = secs; 0 }
+}
+
+fn format_utc(secs: u64, time: bool) -> String {
     let days = (secs / 86_400) as i64;
     let (y, m, d) = {
         // civil-from-days (Howard Hinnant)
@@ -117,7 +144,7 @@ pub(crate) fn format_date(secs: u64, time: bool) -> String {
 }
 
 /// A study session: the deck, what's left to go, and how it went.
-pub(crate) struct Study { pub title: String, pub cards: Vec<Card>, pub queue: Vec<usize>, pub total: usize, pub shown: bool, pub tally: [u32; 3] }
+pub(crate) struct Study { pub title: String, pub cards: Vec<Card>, pub queue: Vec<usize>, pub total: usize, pub shown: bool, pub tally: [u32; 3], pub missed: Vec<usize> }
 
 /// Section title inside the Settings window.
 /// "just now", "5 min ago", "3 h ago"…
@@ -737,7 +764,7 @@ impl NotesApp {
         let cards = self.due_cards();
         if cards.is_empty() { self.st.say("Nothing due today — nice! Cards come back here once you've studied them."); return; }
         let total = cards.len();
-        self.st.study = Some(Study { title: tr("Due today").into(), queue: (0..total).collect(), cards, total, shown: false, tally: [0; 3] });
+        self.st.study = Some(Study { title: tr("Due today").into(), queue: (0..total).collect(), cards, total, shown: false, tally: [0; 3], missed: vec![] });
     }
 
     /// Study the open deck: cards that are due or new first, then the rest.
@@ -750,7 +777,7 @@ impl NotesApp {
         let (mut due, mut later): (Vec<usize>, Vec<usize>) = (0..cards.len()).partition(|&i| self.store.study.get(&cards[i].key).is_none_or(|s| s.due <= now));
         due.append(&mut later);
         let total = due.len();
-        self.st.study = Some(Study { title, cards, queue: due, total, shown: false, tally: [0; 3] });
+        self.st.study = Some(Study { title, cards, queue: due, total, shown: false, tally: [0; 3], missed: vec![] });
     }
 
     /// First use of Record: say what the microphone is for, and ask.
@@ -815,8 +842,9 @@ impl NotesApp {
                         ui.add_space(14.0);
                         ui.horizontal(|ui| {
                             ui.add_space((ui.available_width() - 220.0).max(0.0) / 2.0);
-                            if ui.add(egui::Button::new(RichText::new(tr("Study again")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(110.0, 32.0))).clicked() {
-                                sd.queue = (0..sd.cards.len()).collect(); sd.total = sd.queue.len(); sd.tally = [0; 3]; sd.shown = false;
+                            // again: only the cards that were missed (rating all of them once more would push every card's next review out)
+                            if !sd.missed.is_empty() && ui.add(egui::Button::new(RichText::new(tf!("Practise the {n} missed", n = sd.missed.len())).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(110.0, 32.0))).clicked() {
+                                sd.queue = std::mem::take(&mut sd.missed); sd.total = sd.queue.len(); sd.tally = [0; 3]; sd.shown = false;
                             }
                             if ui.add(egui::Button::new(tr("Close")).min_size(Vec2::new(100.0, 32.0))).clicked() { close = true; }
                         });
@@ -856,7 +884,7 @@ impl NotesApp {
             let state = self.store.study.entry(key).or_default();
             sd.queue.remove(0);
             match k {
-                0 => { state.bx = 0; state.due = now_secs(); let at = sd.queue.len().min(3); sd.queue.insert(at, i); }
+                0 => { state.bx = 0; state.due = now_secs(); let at = sd.queue.len().min(3); sd.queue.insert(at, i); if !sd.missed.contains(&i) { sd.missed.push(i); } }
                 n => { state.bx = (state.bx + n as u8).min(5); state.due = now_secs() + STUDY_DAYS[state.bx as usize] * 86_400; }
             }
             sd.tally[k] += 1;
@@ -932,7 +960,7 @@ impl NotesApp {
     pub(crate) fn open_tasks(&self) -> Vec<((usize, usize, usize), String, u64, usize, String, bool)> {
         let mut out = vec![];
         for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
-            let title = if p.title.trim().is_empty() { "Untitled page".to_string() } else { p.title.clone() };
+            let title = if p.title.trim().is_empty() { tr("Untitled page").to_string() } else { p.title.clone() };
             for bl in &p.blocks {
                 match &bl.kind {
                     Kind::Checklist { items } => for (i, (d, t)) in items.iter().enumerate() { if !t.trim().is_empty() && !d { out.push(((a, b, c), title.clone(), bl.id, i, t.clone(), *d)); } },
@@ -1051,7 +1079,7 @@ impl NotesApp {
             // favourite pages, wherever they live
             let favs: Vec<(u64, String, (usize, usize, usize))> = self.st.p.favorites.iter().filter_map(|id| self.locate(*id).map(|at| {
                 let p = &self.store.notebooks[at.0].sections[at.1].pages[at.2];
-                (p.id, if p.title.trim().is_empty() { "Untitled page".to_string() } else { p.title.clone() }, at)
+                (p.id, if p.title.trim().is_empty() { tr("Untitled page").to_string() } else { p.title.clone() }, at)
             })).collect();
             if !favs.is_empty() {
                 ui.add_space(6.0);
@@ -1228,7 +1256,7 @@ impl NotesApp {
             let section = &self.store.notebooks[nb].sections[sec];
             let n = section.pages.len();
             for (i, p) in section.pages.iter().enumerate() {
-                let title = if p.title.trim().is_empty() { "Untitled page" } else { &p.title };
+                let title = if p.title.trim().is_empty() { tr("Untitled page") } else { &p.title };
                 // a one-line preview of the page, like the first line of a letter
                 let first = p.blocks.iter().filter(|b| matches!(&b.kind, Kind::Text { heading: 0, .. } | Kind::Checklist { .. })).min_by(|a, b| a.pos[1].total_cmp(&b.pos[1]));
                 let preview = first.map(|b| b.kind.summary().replace(['*', '=', '$', '`'], "")).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| format_date(p.created, false));
@@ -1276,7 +1304,7 @@ impl NotesApp {
 
     fn search_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(if self.st.tag_filter.is_some() && self.st.search.trim().is_empty() { "Tags" } else { "Search" }).size(15.0).strong());
+            ui.label(RichText::new(tr(if self.st.tag_filter.is_some() && self.st.search.trim().is_empty() { "Tags" } else { "Search" })).size(15.0).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.add(egui::Button::new("✕").frame_when_inactive(false)).tip("Close (Esc)").clicked() { self.st.search.clear(); self.st.tag_filter = None; }
             });
@@ -1337,7 +1365,7 @@ impl NotesApp {
                 let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
                 if r.hovered() { ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill); }
                 let painter = ui.painter_at(rect.shrink(4.0));
-                painter.text(rect.min + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, if title.is_empty() { "Untitled page" } else { title.as_str() }, FontId::proportional(14.0), ui.visuals().strong_text_color());
+                painter.text(rect.min + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, if title.is_empty() { tr("Untitled page") } else { title.as_str() }, FontId::proportional(14.0), ui.visuals().strong_text_color());
                 painter.text(rect.min + Vec2::new(8.0, 24.0), Align2::LEFT_TOP, path, FontId::proportional(10.5), acc);
                 // snippet around the match, with the match highlighted
                 let start = text.get(..at).unwrap_or("").char_indices().rev().nth(24).map_or(0, |(i, _)| i);
@@ -1460,7 +1488,7 @@ impl NotesApp {
         // (score, title, path, place)
         let mut hits: Vec<(f32, String, String, (usize, usize, usize))> = vec![];
         for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
-            let title = if p.title.trim().is_empty() { "Untitled page".to_string() } else { p.title.clone() };
+            let title = if p.title.trim().is_empty() { tr("Untitled page").to_string() } else { p.title.clone() };
             let path = format!("{} › {}", n.name, s.name);
             let score = if ql.is_empty() {
                 let r = self.st.p.recent.iter().position(|id| *id == p.id);
@@ -1567,8 +1595,9 @@ impl NotesApp {
                     for (k, what) in [("Ctrl+N", "New page"), ("Ctrl+F", "Search all notes"), ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                         ("Ctrl+B / Ctrl+I", "Bold / italic"), ("Ctrl+Shift+H", "Highlight"), ("Ctrl+M", "Inline math"), ("Ctrl+`", "Inline code"),
                         ("T  P  H  E  L", "Type, pen, highlighter, eraser, select ink"), ("Delete", "Delete selected ink"), ("Esc", "Clear selection and search"),
-                        ("Ctrl + / Ctrl −", "Zoom"), ("Two fingers", "Scroll while drawing (touch screens)"), ("Click empty paper", "Start a new note there"),
-                        ("- , 1. , [ ] , #", "Start a list, checkbox or heading while typing")] {
+                        ("Ctrl + / Ctrl −", "Make everything larger or smaller"), ("Ctrl+K", "Jump to a page"), ("Two fingers", "Scroll while drawing (touch screens)"), ("Click empty paper", "Start a new note there"),
+                        ("- , 1. , [ ] , #", "Start a list, checkbox or heading while typing"), ("/", "Insert menu while typing"), ("[[", "Link to another page while typing"),
+                        ("Space · 1 2 3", "Flashcards: show the answer, then rate it")] {
                         ui.label(RichText::new(tr(k)).monospace()); ui.label(tr(what)); ui.end_row();
                     }
                 });
@@ -1665,6 +1694,8 @@ mod tests {
         // dates are translated: wait for tests that switch the language, then use English
         let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::i18n::set("en");
-        assert_eq!(super::format_date(1_793_793_555, false), "Wednesday, November 4, 2026");
+        assert_eq!(super::format_utc(1_793_793_555, false), "Wednesday, November 4, 2026");
+        // local time: never more than 14 hours from UTC
+        assert!(super::local_offset(1_793_793_555).abs() <= 14 * 3600);
     }
 }

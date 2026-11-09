@@ -191,7 +191,8 @@ struct St {
     /// Fingers on the screen now (where each started), and the current touch gesture: when it began,
     /// most fingers at once, whether any moved (a quick two-finger tap undoes, three fingers redo).
     fingers: HashMap<u64, Pos2>,
-    gesture: (f64, usize, bool),
+    /// (began, most fingers, any moved, when the first finger lifted)
+    gesture: (f64, usize, bool, f64),
     /// Each page's zoom.
     scales: HashMap<u64, f32>,
     /// The tool to go back to after erasing with the stylus's eraser end or side button.
@@ -258,6 +259,9 @@ struct St {
     recordings_span: Option<(f64, f64)>,
     fade_after: Option<(f64, f64, f64)>,
     want_snap: bool,
+    /// Take an undo step from `press_page` (the page when the pointer went down) at the end of this frame.
+    snap_press: bool,
+    press_page: Option<Page>,
     heights: HashMap<u64, f32>,
     textures: HashMap<String, Option<TextureHandle>>,
     undo: Vec<(u64, Page)>,
@@ -516,6 +520,9 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
         v.window_stroke = EStroke::new(1.5, line);
         v.selection.stroke = EStroke::new(2.0, v.selection.stroke.color);
     }
+    // pin egui to this theme: otherwise a system dark/light switch flips egui to its other, unstyled
+    // look (the app follows the system itself when asked to)
+    ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
     ctx.set_visuals(v);
 }
 
@@ -574,7 +581,7 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false, 0.0), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, snap_press: false, press_page: None, heights: HashMap::new(),
             textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
@@ -664,6 +671,21 @@ impl NotesApp {
     }
 
     fn rename(&mut self, id: u64, name: String) {
+        // links to a renamed page follow it, rather than pointing at a page that's gone (and making a blank one when clicked)
+        let old = self.store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).find(|p| p.id == id).map(|p| p.title.clone());
+        if let Some(old) = old.filter(|o| !o.trim().is_empty() && o.trim() != name.trim()) {
+            let mut n = 0;
+            for p in self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).flat_map(|s| s.pages.iter_mut()) {
+                for b in &mut p.blocks {
+                    match &mut b.kind {
+                        Kind::Text { text, .. } => n += relink(text, &old, name.trim()),
+                        Kind::Checklist { items } => for (_, t) in items { n += relink(t, &old, name.trim()); },
+                        _ => {}
+                    }
+                }
+            }
+            if n > 0 { self.st.say(tf!("Updated {n} link(s) to this page.", n = n)); }
+        }
         for n in &mut self.store.notebooks {
             if n.id == id { n.name = name; return; }
             for s in &mut n.sections {
@@ -769,6 +791,7 @@ impl NotesApp {
         p.title = format!("{} (copy)", p.title);
         for b in &mut p.blocks { b.id = new_id(); }
         for s in &mut p.strokes { s.id = new_id(); }
+        for c in &mut p.cards { c.id = new_id(); } // the copy's cards get their own study progress
         self.store.notebooks[nb].sections[sec].pages.insert(pg + 1, p);
         self.go_to(nb, sec, pg + 1);
     }
@@ -786,13 +809,19 @@ impl NotesApp {
         sy.google_token = keys::store("google-token", &sy.google_token);
         // locked sections are written sealed only
         let sealed = self.sealed();
-        let r = self.st.saver.save(&data_dir(), sealed.as_ref().unwrap_or(&self.store)).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &self.st.p)).and_then(|_| save(sync::SYNC_FILE, &sy));
+        // during a whole-page PDF export the panels are hidden for the picture: saved as they really are
+        let mut prefs = self.st.p.clone();
+        if let Some(c) = &self.st.capture { (prefs.show_nav, prefs.show_ai, prefs.ribbon_open) = c.keep; }
+        let r = self.st.saver.save(&data_dir(), sealed.as_ref().unwrap_or(&self.store)).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &prefs)).and_then(|_| save(sync::SYNC_FILE, &sy));
         self.st.sync_pending = true;
         if let Err(e) = r { self.st.say(tf!("⚠ Could not save: {e}", e = e)); self.st.dirty = true; }
     }
 
     fn undo(&mut self, redo: bool) {
-        let popped = if redo { self.st.redo.pop() } else { self.st.undo.pop() };
+        // only the page in front: undoing changes on a page you can't see would look like nothing happened
+        let here = self.page().id;
+        let stack = if redo { &mut self.st.redo } else { &mut self.st.undo };
+        let popped = stack.iter().rposition(|(id, _)| *id == here).map(|i| stack.remove(i));
         let Some((id, old)) = popped else { self.st.say(if redo { "Nothing to redo." } else { "Nothing to undo." }); return };
         let Some(p) = self.find_page(id) else { return };
         let cur = std::mem::replace(p, old);
@@ -844,6 +873,12 @@ impl NotesApp {
 
     fn ink_convert(&mut self, math: bool) {
         let sel = self.st.selected.clone();
+        // all of a page's ink at once would turn drawings into text too: pick what to convert
+        if sel.is_empty() && self.page().strokes.iter().any(|s| !s.highlighter) {
+            self.st.tool = Tool::Lasso;
+            self.st.say("Circle the handwriting to convert with the lasso, then press the button again.");
+            return;
+        }
         let use_ai = self.st.p.ink_ai && self.st.ai.ready();
         let page = self.page();
         let strokes: Vec<&Stroke> = page.strokes.iter().filter(|s| !s.highlighter && (sel.is_empty() || sel.contains(&s.id))).collect();
@@ -858,7 +893,7 @@ impl NotesApp {
             let owned: Vec<Stroke> = strokes.iter().map(|s| (*s).clone()).collect();
             let (tx, rx) = channel();
             std::thread::spawn(move || {
-                let t = if math { hw::recognize_math(&owned) } else { hw::recognize_text(&owned) };
+                let t = std::panic::catch_unwind(|| if math { hw::recognize_math(&owned) } else { hw::recognize_text(&owned) }).unwrap_or_default();
                 let _ = tx.send(if t.trim().is_empty() { Err(tr("Couldn't read that handwriting — try writing a little larger and more separated.").into()) } else { Ok(t) });
             });
             self.st.ai_rx.push((Job::Ink { math, page: pid, strokes: ids, at, width }, rx));
@@ -884,7 +919,8 @@ impl NotesApp {
         self.st.ai_rx.retain_mut(|(job, rx)| match rx.try_recv() {
             Ok(r) => { done.push((std::mem::replace(job, Job::Chat), r)); false }
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
-            Err(_) => false,
+            // the job's thread ended without an answer (it crashed): say so instead of waiting forever
+            Err(_) => { done.push((std::mem::replace(job, Job::Chat), Err(tr("That stopped unexpectedly — please try again.").into()))); false }
         });
         if !self.st.ai_rx.is_empty() { ctx.request_repaint_after(std::time::Duration::from_millis(150)); }
         for (job, r) in done {
@@ -905,6 +941,8 @@ impl NotesApp {
                 (Job::Chat, Ok(t)) => self.st.ai_log.push((true, t)),
                 (Job::Ink { math, page, strokes, at, width }, Ok(t)) => {
                     let t = ai::clean(&t);
+                    // an empty answer must never cost the handwriting
+                    if t.trim().is_empty() { self.st.say("⚠ Nothing could be read there, so the handwriting stays as it is."); continue; }
                     let Some(p) = self.find_page(page) else { continue };
                     let snap = p.clone();
                     p.strokes.retain(|s| !strokes.contains(&s.id));
@@ -924,8 +962,8 @@ impl NotesApp {
                     self.st.say("Done. Undo restores the previous text.");
                 }
                 (Job::Equation { page }, Ok(t)) => {
-                    if self.page().id == page { self.insert(Kind::Math { src: ai::clean(&t) }); self.st.editing = None; }
-                    self.st.say("Equation added.");
+                    if self.page().id == page { self.insert(Kind::Math { src: ai::clean(&t) }); self.st.editing = None; self.st.say("Equation added."); }
+                    else { self.st.say("The equation is ready, but you moved to another page — ask again there."); }
                 }
                 (Job::Printout { page }, Ok(names)) => {
                     // stack the printed pages below everything else, at a readable width
@@ -1223,6 +1261,9 @@ impl NotesApp {
                             // stay on the open page wherever it is now
                             let open = self.store.notebooks.get(self.nb).and_then(|n| n.sections.get(self.sec)).and_then(|s| s.pages.get(self.pg)).map(|p| p.id);
                             self.store = self.reopen(m);
+                            // undo steps are whole pages from before the merge: they would undo the other device's changes
+                            self.st.undo.clear();
+                            self.st.redo.clear();
                             match open.and_then(|id| self.locate(id)) { Some((a, b, c)) => (self.nb, self.sec, self.pg) = (a, b, c), None => self.clamp() }
                             self.save_now();
                             self.st.say(if down > 0 { tf!("Synced changes from your other devices ({down} file(s)).", down = down) } else { "Synced changes from your other devices.".into() });
@@ -1338,13 +1379,20 @@ impl NotesApp {
             if !self.st.selected.is_empty() && (key(Key::Delete) || key(Key::Backspace)) { self.delete_selected_ink(); }
         }
         if cmd(Key::N) { self.new_page(None); }
-        if cmd(Key::F) { self.st.focus_id = Some(egui::Id::unique("search")); }
+        if cmd(Key::F) { if self.st.narrow { self.st.p.show_nav = true; } self.st.focus_id = Some(egui::Id::unique("search")); }
         if cmd(Key::K) || cmd(Key::P) { self.st.switcher = Some((String::new(), 0)); }
         // Android's Back: closes whatever is on top, one thing per press; with nothing open, leaves the app
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::BrowserBack)) { self.back(ctx); return; }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             if self.st.popup.take().is_some() || self.st.switcher.take().is_some() { return; }
             if self.st.capture.is_some() { self.cancel_capture("PDF export cancelled."); return; }
+            // Esc is taken here every frame, so the windows that say "Close (Esc)" are closed here too
+            let st = &mut self.st;
+            if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); return; }
+            if st.tour.take().is_some() { st.tour_fresh = false; return; }
+            if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some() || st.lock_prompt.take().is_some()
+                || std::mem::take(&mut st.show_settings) || std::mem::take(&mut st.show_help) || std::mem::take(&mut st.show_news)
+                || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) || std::mem::take(&mut st.mic_prompt) { return; }
             self.st.selected.clear();
             self.st.editing = None;
             self.st.search.clear();
@@ -1356,7 +1404,8 @@ impl NotesApp {
     fn back(&mut self, ctx: &egui::Context) {
         let st = &mut self.st;
         if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); }
-        else if st.popup.take().is_some() || st.switcher.take().is_some() || st.tour.take().is_some() {}
+        else if st.popup.take().is_some() || st.switcher.take().is_some() {}
+        else if st.tour.take().is_some() { st.tour_fresh = false; }
         else if st.capture.is_some() { self.cancel_capture("PDF export cancelled."); }
         else if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some() {}
         else if std::mem::take(&mut st.show_settings) || std::mem::take(&mut st.show_help) || std::mem::take(&mut st.show_news) || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) {}
@@ -1397,14 +1446,17 @@ impl eframe::App for NotesApp {
                         let (st, now) = (&mut self.st, i.time);
                         match phase {
                             egui::TouchPhase::Start => {
-                                if st.fingers.is_empty() { st.gesture = (now, 0, false); }
+                                if st.fingers.is_empty() { st.gesture = (now, 0, false, f64::MAX); }
                                 st.fingers.insert(id.0, *pos);
                                 st.gesture.1 = st.gesture.1.max(st.fingers.len());
                             }
-                            egui::TouchPhase::Move => if st.fingers.get(&id.0).is_some_and(|p| p.distance(*pos) > 24.0) { st.gesture.2 = true; },
+                            // a tap barely moves: a short pinch or scroll nudge isn't one
+                            egui::TouchPhase::Move => if st.fingers.get(&id.0).is_some_and(|p| p.distance(*pos) > 10.0) { st.gesture.2 = true; },
                             egui::TouchPhase::End | egui::TouchPhase::Cancel => {
                                 if *phase == egui::TouchPhase::Cancel { st.gesture.2 = true; }
-                                if st.fingers.remove(&id.0).is_some() && st.fingers.is_empty() && !st.gesture.2 && now - st.gesture.0 < 0.35 { tap = st.gesture.1; }
+                                st.gesture.3 = st.gesture.3.min(now);
+                                // all fingers lift together in a tap (a palm and a finger lifting apart don't count)
+                                if st.fingers.remove(&id.0).is_some() && st.fingers.is_empty() && !st.gesture.2 && now - st.gesture.0 < 0.35 && now - st.gesture.3 < 0.08 { tap = st.gesture.1; }
                             }
                         }
                         if *phase == egui::TouchPhase::Start { self.st.input = Input::Finger; if !self.st.p.pen_detect { self.st.p.pen_detect = true; self.st.dirty = true; } }
@@ -1425,6 +1477,8 @@ impl eframe::App for NotesApp {
                         }
                     }
                     egui::Event::PointerButton { pressed: true, .. } if !touched => self.st.input = Input::Mouse,
+                    // a lost window can swallow the fingers' "lifted": forget them, or taps would stop working
+                    egui::Event::WindowFocused(false) => self.st.fingers.clear(),
                     _ => {}
                 }
             }

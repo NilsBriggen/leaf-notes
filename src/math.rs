@@ -234,6 +234,10 @@ fn parse_row(src: &str) -> Node { Node::Row(Parser { s: src.chars().collect(), i
 /// Parse a LaTeX math expression. Top-level `\\` and `&` lay out as aligned lines.
 pub fn parse(src: &str) -> Node {
     let src = src.trim().trim_start_matches("$$").trim_end_matches("$$").trim_matches('$');
+    // the parser and layout recurse per level of nesting: absurdly deep input is shown as plain text
+    // rather than overflowing the stack (it's drawn every frame)
+    let deepest = src.chars().scan(0i32, |d, c| { *d += match c { '{' => 1, '}' => -1, _ => 0 }; Some(*d) }).max().unwrap_or(0);
+    if deepest > 64 || src.len() > 8000 || src.matches('\\').count() > 1500 { return Node::Sym(src.chars().take(2000).collect(), false); }
     let mut p = Parser { s: src.chars().collect(), i: 0 };
     let mut rows = vec![vec![]];
     loop {
@@ -501,6 +505,12 @@ mod tests {
         assert_eq!(items[4], Node::Sqrt(Box::new(Node::Row(vec![Node::Sym("α".into(), false)])), None));
         assert_eq!(parse(r"\mathbb{R}"), Node::Row(vec![Node::Sym("ℝ".into(), false)]));
         assert_eq!(parse(r"\sum"), Node::Row(vec![Node::Big("∑".into())]));
+    }
+    #[test]
+    fn deep_nesting_stays_plain() {
+        let deep = "{".repeat(5000) + "x" + &"}".repeat(5000);
+        assert!(matches!(parse(&deep), Node::Sym(..)));
+        assert!(matches!(parse(&"\\sqrt".repeat(3000)), Node::Sym(..)));
     }
     #[test]
     fn parses_structures() {

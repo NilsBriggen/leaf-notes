@@ -271,8 +271,20 @@ impl NotesApp {
                                 ui.hyperlink_to(tr("Terms"), "https://leafnotes.briggen.dev/terms");
                                 ui.hyperlink_to(tr("Privacy policy"), "https://leafnotes.briggen.dev/privacy");
                             });
-                            row(ui, "Reset settings", "Put every setting on this window back to how it started. Your notes are not touched.", |ui| {
-                                if ui.button(tr("Reset")).clicked() { let keep = (p.last, p.pens.clone()); *p = Prefs::default(); (p.last, p.pens) = keep; ctx.set_zoom_factor(1.0); }
+                            row(ui, "Reset settings", "Appearance, pen, writing and view settings go back to how they started. Your notes, pens, favourites, AI and sync settings stay.", |ui| {
+                                let sure_id = egui::Id::unique("reset-sure");
+                                if !ui.data(|d| d.get_temp::<bool>(sure_id)).unwrap_or(false) {
+                                    if ui.button(tr("Reset")).clicked() { ui.data_mut(|d| d.insert_temp(sure_id, true)); }
+                                } else {
+                                    if ui.button(RichText::new(tr("Yes, reset")).color(Color32::from_rgb(200, 60, 50))).clicked() {
+                                        // what's the person's own rather than a setting: kept
+                                        let keep = Prefs { last: p.last, pens: p.pens.clone(), favorites: p.favorites.clone(), recent: p.recent.clone(), mic_ok: p.mic_ok, pen_detect: p.pen_detect, seen_version: p.seen_version.clone(), ..Prefs::default() };
+                                        *p = keep;
+                                        ctx.set_zoom_factor(1.0);
+                                        ui.data_mut(|d| d.remove::<bool>(sure_id));
+                                    }
+                                    if ui.button(tr("Cancel")).clicked() { ui.data_mut(|d| d.remove::<bool>(sure_id)); }
+                                }
                             });
                         }
                     }

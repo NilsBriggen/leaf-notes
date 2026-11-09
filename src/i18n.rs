@@ -28,7 +28,8 @@ fn system() -> String {
         if n > 1 { return String::from_utf16_lossy(&buf[..(n - 1) as usize]).to_lowercase(); }
     }
     #[allow(unreachable_code)]
-    ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.is_empty() && v != "C" && v != "POSIX").unwrap_or_default().to_lowercase()
+    // "C", "C.UTF-8" and "POSIX" say nothing about the language: look further
+    ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.is_empty() && v != "C" && !v.starts_with("C.") && v != "POSIX").unwrap_or_default().to_lowercase()
 }
 
 /// The interface language in use: "en", "de" or "fr".
@@ -54,9 +55,18 @@ pub fn tr(en: &str) -> &str {
 
 /// Put values into a translated template: `{name}` becomes the value given for `name`.
 pub fn fill(template: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
-    let mut out = template.to_string();
-    for (k, v) in args { out = out.replace(&format!("{{{k}}}"), &v.to_string()); }
-    out
+    // one pass over the template: a value that itself contains "{name}" (a page title) stays as it is
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(a) = rest.find('{') {
+        out += &rest[..a];
+        let after = &rest[a + 1..];
+        match after.find('}').and_then(|z| args.iter().find(|(k, _)| *k == &after[..z]).map(|(_, v)| (z, v))) {
+            Some((z, v)) => { out += &v.to_string(); rest = &after[z + 1..]; }
+            None => { out.push('{'); rest = after; }
+        }
+    }
+    out + rest
 }
 
 /// `format!` for interface text: `tf!("{n} cards", n = count)` is translated first, then filled in.
@@ -80,6 +90,7 @@ pub(crate) mod tests {
         assert_eq!(crate::tf!("Review due ({due_all})", due_all = 3), "Fällige wiederholen (3)");
         set("en");
         assert_eq!(crate::tf!("Review due ({due_all})", due_all = 3), "Review due (3)");
+        assert_eq!(fill("{a} and {b}", &[("a", &"{b}"), ("b", &2)]), "{b} and 2", "a filled-in value isn't filled again");
         // every translation keeps the {placeholders} of its English text
         let ph = |s: &str| { let mut v: Vec<String> = s.split('{').skip(1).filter_map(|p| p.split_once('}').map(|x| x.0.to_string())).collect(); v.sort(); v };
         for (en, de, fr) in crate::i18n_table::TABLE { assert!(ph(en) == ph(de) && ph(en) == ph(fr), "placeholders differ: {en}"); }

@@ -2257,6 +2257,7 @@ dependencies = [
  "image",
  "jni",
  "keyring",
+ "libc",
  "lopdf",
  "ndk-context",
  "rfd",

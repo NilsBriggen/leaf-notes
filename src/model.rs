@@ -165,7 +165,12 @@ impl Page {
                 Kind::Text { text, heading } => { if *heading > 0 && *heading < 4 { out += &"#".repeat(*heading as usize + 1); out.push(' '); } out += text }
                 Kind::Math { src } => out += &format!("$${src}$$"),
                 Kind::Checklist { items } => for (d, t) in items { out += &format!("- [{}] {t}\n", if *d { "x" } else { " " }) },
-                Kind::Table { rows } => for r in rows { out += &format!("| {} |\n", r.join(" | ")) },
+                Kind::Table { rows } => for (i, r) in rows.iter().enumerate() {
+                    let cells: Vec<String> = r.iter().map(|c| c.replace('|', "\\|").replace('\n', " ")).collect();
+                    out += &format!("| {} |\n", cells.join(" | "));
+                    // Markdown needs the line under the header row to show a table at all
+                    if i == 0 { out += &format!("|{}\n", " --- |".repeat(r.len().max(1))); }
+                },
                 Kind::Code { lang, code } => out += &format!("```{lang}\n{code}\n```"),
                 Kind::Image { .. } => out += "[image]",
                 Kind::File { name, .. } => out += &format!("[file: {name}]"),
@@ -267,16 +272,50 @@ pub fn blocks_from_markdown(md: &str) -> Vec<Kind> {
     out
 }
 
+/// Extra points along the way, so no two in a row are more than `step` apart (a ruler line or a
+/// box is otherwise just its corners, and the eraser and lasso, which look at points, miss its middle).
+pub fn densify(pts: &[[f32; 3]], step: f32) -> Vec<[f32; 3]> {
+    let mut out = Vec::with_capacity(pts.len());
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let n = ((b[0] - a[0]).hypot(b[1] - a[1]) / step.max(0.5)).ceil().clamp(1.0, 10_000.0) as usize;
+        for k in 0..n { let t = k as f32 / n as f32; out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]); }
+    }
+    if let Some(l) = pts.last() { out.push(*l); }
+    out
+}
+
+/// Whether the stroke passes within `r` of `p` (anywhere along it, not only at its points).
+pub fn stroke_hit(s: &Stroke, p: [f32; 2], r: f32) -> bool {
+    let near = |a: &[f32; 3], b: &[f32; 3]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy).max(1e-6)).clamp(0.0, 1.0);
+        (a[0] + dx * t - p[0]).hypot(a[1] + dy * t - p[1]) < r
+    };
+    match s.points.as_slice() { [] => false, [a] => near(a, a), pts => pts.windows(2).any(|w| near(&w[0], &w[1])) }
+}
+
+/// Point `[[old]]` links (any letter case) at `new`. How many were changed.
+pub fn relink(text: &mut String, old: &str, new: &str) -> usize {
+    let (want, mut n, mut from) = (old.trim().to_lowercase(), 0, 0);
+    while let Some(a) = text[from..].find("[[").map(|i| from + i) {
+        let Some(z) = text[a + 2..].find("]]").map(|i| a + 2 + i) else { break };
+        if text[a + 2..z].trim().to_lowercase() == want { text.replace_range(a + 2..z, new); n += 1; from = a + 2 + new.len() + 2; } else { from = a + 2; }
+    }
+    n
+}
+
 /// Remove the parts of strokes within `r` of `p`, splitting strokes that are cut in the middle.
 pub fn erase_partial(strokes: &mut Vec<Stroke>, p: [f32; 2], r: f32) -> bool {
     let mut changed = false;
     let mut out = Vec::with_capacity(strokes.len());
     for s in strokes.drain(..) {
-        let hit = |q: &[f32; 3]| (q[0] - p[0]).hypot(q[1] - p[1]) < r + s.width * 0.5;
-        if !s.points.iter().any(hit) { out.push(s); continue; }
+        let reach = r + s.width * 0.5;
+        if !stroke_hit(&s, p, reach) { out.push(s); continue; }
         changed = true;
+        let hit = |q: &[f32; 3]| (q[0] - p[0]).hypot(q[1] - p[1]) < reach;
         let mut run: Vec<[f32; 3]> = vec![];
-        for q in &s.points {
+        for q in &densify(&s.points, (reach * 0.5).max(1.0)) {
             if hit(q) {
                 if run.len() > 1 { out.push(Stroke { id: new_id(), points: std::mem::take(&mut run), ..s.clone() }); }
                 run.clear();
@@ -414,7 +453,10 @@ pub fn scratched(pts: &[[f32; 3]], strokes: &[Stroke]) -> Vec<u64> {
     }
     if turns < 4 || path < 3.5 * w.max(h) || w.max(h) < 12.0 { return vec![]; }
     let inside = |p: &[f32; 3]| p[0] >= lo[0] - 4.0 && p[0] <= hi[0] + 4.0 && p[1] >= lo[1] - 4.0 && p[1] <= hi[1] + 4.0;
-    strokes.iter().filter(|s| !s.points.is_empty() && s.points.iter().filter(|p| inside(p)).count() * 10 >= s.points.len() * 6).map(|s| s.id).collect()
+    // the scribble must actually run over a stroke (not just near it, as a zigzag arrow or cursive next to it does)
+    let scribble = Stroke { id: 0, points: pts.to_vec(), color: [0; 4], width: 0.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 };
+    let covered = |s: &Stroke| s.points.iter().filter(|q| stroke_hit(&scribble, [q[0], q[1]], 6.0 + s.width)).count() * 10 >= s.points.len() * 5;
+    strokes.iter().filter(|s| !s.points.is_empty() && s.points.iter().filter(|p| inside(p)).count() * 10 >= s.points.len() * 6 && covered(s)).map(|s| s.id).collect()
 }
 
 /// Recognise a hand-drawn shape and return a perfect version: a straight line, a circle/ellipse,
@@ -626,7 +668,7 @@ pub fn rasterize(strokes: &[&Stroke]) -> Option<Vec<u8>> {
     let scale = (1024.0 / (x1 - x0 + 2.0 * m).max(y1 - y0 + 2.0 * m)).min(2.0);
     let (w, h) = (((x1 - x0 + 2.0 * m) * scale) as u32 + 1, ((y1 - y0 + 2.0 * m) * scale) as u32 + 1);
     let mut img = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
-    for s in strokes.iter().filter(|s| !s.highlighter) {
+    for s in strokes.iter().filter(|s| !s.highlighter && !s.points.is_empty()) {
         let r = (s.width * scale * 0.5).max(1.2);
         let map = |p: &[f32; 3]| ((p[0] - x0 + m) * scale, (p[1] - y0 + m) * scale);
         let mut stamp = |cx: f32, cy: f32| {
@@ -654,6 +696,22 @@ pub fn rasterize(strokes: &[&Stroke]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_eraser_finds_the_middle_of_a_ruler_line() {
+        let line = Stroke { id: 1, points: vec![[0.0, 0.0, 1.0], [200.0, 0.0, 1.0]], color: [0, 0, 0, 255], width: 2.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 };
+        assert!(stroke_hit(&line, [100.0, 3.0], 5.0) && !stroke_hit(&line, [100.0, 30.0], 5.0));
+        let mut v = vec![line];
+        assert!(erase_partial(&mut v, [100.0, 0.0], 5.0));
+        assert_eq!(v.len(), 2, "cut in two at the middle");
+        assert!(v.iter().all(|s| s.points.iter().all(|p| (p[0] - 100.0).abs() > 4.0)));
+        assert!(densify(&[[0.0, 0.0, 1.0], [60.0, 0.0, 1.0]], 6.0).len() >= 11);
+    }
+    #[test]
+    fn links_follow_a_renamed_page() {
+        let mut t = String::from("see [[Week 3]] and [[week 3]], not [[Week 30]] [[x");
+        assert_eq!(relink(&mut t, "Week 3", "Fourier"), 2);
+        assert_eq!(t, "see [[Fourier]] and [[Fourier]], not [[Week 30]] [[x");
+    }
     #[test]
     fn an_unclosed_equation_stays_text() {
         let k = blocks_from_markdown("$$ x^2\nline two\nline three");

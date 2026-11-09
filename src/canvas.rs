@@ -52,7 +52,7 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 ui.add_space(10.0);
                 ui.label(RichText::new(tr("↩ Linked from")).size(11.0).weak());
                 for (title, at) in backlinks {
-                    let t = if title.trim().is_empty() { "Untitled page" } else { title.as_str() };
+                    let t = if title.trim().is_empty() { tr("Untitled page") } else { title.as_str() };
                     if ui.add(egui::Button::new(RichText::new(t).size(11.0).color(accent(ui))).corner_radius(9).min_size(Vec2::new(0.0, 18.0))).clicked() { action = Some(PageAction::Go(at.0, at.1, at.2)); }
                 }
             }
@@ -318,20 +318,27 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         ui.painter().text(o + Vec2::new(28.0, 24.0), Align2::LEFT_TOP, tr("Click anywhere to type, or pick the pen to write."), FontId::proportional(14.0), ui.visuals().weak_text_color());
     }
     let later = playback_moment(page, st);
-    // Highlighter goes under the notes, like a real highlighter behind the words; pen ink goes on top.
-    for s in page.strokes.iter().filter(|s| s.highlighter) { paint_stroke(&ui.painter_at(rect), s, o); }
     let mut remove = None;
     let mut dup = None;
     let mut changed = false;
-    for b in page.blocks.iter_mut() {
-        match block_ui(ui, b, st, o) {
-            BlockAction::Delete => remove = Some(b.id),
-            BlockAction::Duplicate => dup = Some(b.id),
-            BlockAction::Changed => changed = true,
-            BlockAction::None => {}
+    // the page as it was when the pointer went down: moving, resizing, ticking or retagging a note
+    // changes it before the frame ends, so its undo step is taken from here
+    if ui.input(|i| i.pointer.any_pressed()) { st.press_page = Some(page.clone()); }
+    // pictures (and printed PDF pages) first, then the highlighter over them, then the other notes:
+    // a highlighter is on the paper, behind the words but on top of what's printed
+    for pictures in [true, false] {
+        if !pictures { for s in page.strokes.iter().filter(|s| s.highlighter) { paint_stroke(&ui.painter_at(rect), s, o); } }
+        for b in page.blocks.iter_mut().filter(|b| matches!(b.kind, Kind::Image { .. }) == pictures) {
+            match block_ui(ui, b, st, o) {
+                BlockAction::Delete => remove = Some(b.id),
+                BlockAction::Duplicate => dup = Some(b.id),
+                BlockAction::Changed => changed = true,
+                BlockAction::None => {}
+            }
         }
     }
     if st.want_snap { st.want_snap = false; st.snap(page); }
+    if std::mem::take(&mut st.snap_press) { match st.press_page.take() { Some(before) => st.snap(&before), None => st.snap(page) } }
     if let Some((after, kind)) = st.insert_below.take() {
         if let Some(b) = page.blocks.iter().find(|b| b.id == after) {
             let h = st.heights.get(&after).copied().unwrap_or(40.0);
@@ -463,7 +470,15 @@ fn selection_bounds(page: &Page, sel: &[u64]) -> Option<Rect> {
     (!pts.is_empty()).then(|| Rect::from_points(&pts))
 }
 
+/// How far a stroke reaches (its bounding box's longer side).
+fn stroke_extent(s: &Stroke) -> f32 {
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for p in &s.points { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+    (hi[0] - lo[0]).max(hi[1] - lo[1])
+}
+
 pub(crate) fn paint_stroke(painter: &egui::Painter, s: &Stroke, o: Pos2) {
+    if s.points.is_empty() { return; } // a damaged or odd stroke from another device draws nothing rather than crashing
     let col = c4(s.color);
     let pts: Vec<Pos2> = s.points.iter().map(|p| Pos2::new(o.x + p[0], o.y + p[1])).collect();
     let w0 = seg_width(s, s.points[0][2], 1.0, 0.0);
@@ -596,7 +611,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     st.current = Some(Stroke { id: new_id(), points: vec![[start.x, start.y, if st.p.pressure { st.frame_force.unwrap_or(0.8) } else { 0.85 }]],
                         color: if hl { st.p.hl_color } else { pen.color }, width: if hl { st.p.hl_width } else { pen.width }, highlighter: hl, pen: pen.kind, t: now_f() });
                 }
-                Tool::Eraser => st.snap(page),
+                Tool::Eraser => st.snapped = false, // the undo step is taken at the first stroke actually erased
                 Tool::Lasso => {
                     let sel = selection_bounds(page, &st.selected);
                     // a press on the selection's own buttons is theirs, not a new lasso
@@ -617,7 +632,8 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                 Tool::Pen | Tool::Highlighter => if let Some(s) = &mut st.current {
                     // Draw, then hold still: the rough shape snaps to a perfect one.
                     let now = ui.input(|i| i.time);
-                    if (p - st.still.0).length() > 3.0 / from_global.scaling.max(0.01) { st.still = (p, now); }
+                    // "still" means within 3 screen points, whatever the zoom
+                    if (p - st.still.0).length() > 3.0 * from_global.scaling { st.still = (p, now); }
                     if !st.snapped && !s.highlighter && now - st.still.1 > 0.55 && s.points.len() > 8 {
                         if let Some((pts, kind)) = snap_shape(&s.points) {
                             s.points = pts;
@@ -638,13 +654,19 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     }
                 },
                 Tool::Eraser => {
-                    let r = st.p.eraser_size;
-                    let hit = if st.p.erase_partial { erase_partial(&mut page.strokes, [p.x, p.y], r * 0.9) } else {
-                        let before = page.strokes.len();
-                        page.strokes.retain(|s| !s.points.iter().any(|q| (q[0] - p.x).hypot(q[1] - p.y) < r + 1.0 + s.width * 0.5));
-                        page.strokes.len() != before
-                    };
-                    if hit { st.dirty = true; }
+                    let (r, partial) = (st.p.eraser_size, st.p.erase_partial);
+                    // everything the eraser passed over since the last frame, not only where it is now
+                    let prev = p - resp.drag_delta() * from_global.scaling;
+                    let n = ((p - prev).length() / (r * 0.5).max(1.0)).ceil().clamp(1.0, 50.0) as usize;
+                    for k in 1..=n {
+                        let q = prev + (p - prev) * (k as f32 / n as f32);
+                        let reach = |s: &Stroke| if partial { r * 0.9 + s.width * 0.5 } else { r + 1.0 + s.width * 0.5 };
+                        if !page.strokes.iter().any(|s| stroke_hit(s, [q.x, q.y], reach(s))) { continue; }
+                        if !st.snapped { st.snap(page); st.snapped = true; }
+                        if partial { erase_partial(&mut page.strokes, [q.x, q.y], r * 0.9); }
+                        else { page.strokes.retain(|s| !stroke_hit(s, [q.x, q.y], reach(s))); }
+                        st.dirty = true;
+                    }
                 }
                 Tool::Lasso => if st.moving {
                     let d = resp.drag_delta();
@@ -667,13 +689,15 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
     if resp.drag_stopped() {
         match st.tool {
             Tool::Pen | Tool::Highlighter | Tool::Shape(_) => if let Some(mut s) = st.current.take() {
+                let mut straight = false;
                 if s.highlighter && st.p.straighten_hl && s.points.len() > 1 {
                     // Highlighter strokes that are nearly straight snap straight, like a ruler.
                     let (a, b) = (s.points[0], *s.points.last().unwrap());
                     let len = (b[0] - a[0]).hypot(b[1] - a[1]);
                     let off = s.points.iter().map(|q| ((b[1] - a[1]) * q[0] - (b[0] - a[0]) * q[1] + b[0] * a[1] - b[1] * a[0]).abs() / len.max(1.0)).fold(0.0, f32::max);
-                    if len > 40.0 && off < 6.0 { s.points = vec![a, b]; }
-                } else if !matches!(st.tool, Tool::Shape(_)) && !st.snapped && s.points.len() > 3 {
+                    if len > 40.0 && off < 6.0 { s.points = densify(&[a, b], 6.0); straight = true; }
+                }
+                if !straight && !matches!(st.tool, Tool::Shape(_)) && !st.snapped && s.points.len() > 3 {
                     // finish where the pen lifted, then smooth (more passes for a stronger stabilizer)
                     if let Some(end) = resp.interact_pointer_pos().or(ui.input(|i| i.pointer.latest_pos()).map(|q| from_global * q)) {
                         let e = end - o.to_vec2();
@@ -688,7 +712,12 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     st.snap(page);
                     page.strokes.retain(|k| !gone.contains(&k.id));
                     st.say(tf!("Scribbled out {n} stroke(s). Undo brings them back.", n = gone.len()));
-                } else if !s.points.is_empty() { st.snap(page); page.strokes.push(s); }
+                } else if !s.points.is_empty() && !(matches!(st.tool, Tool::Shape(_)) && stroke_extent(&s) < 3.0) {
+                    // shapes and snapped strokes are only their corners: points along them, for the eraser and lasso
+                    if matches!(st.tool, Tool::Shape(_)) || st.snapped { s.points = densify(&s.points, 6.0); }
+                    st.snap(page);
+                    page.strokes.push(s);
+                }
                 st.anchor = None;
             },
             Tool::Lasso => {
@@ -742,6 +771,7 @@ fn bar_icon(p: &egui::Painter, c: Pos2, icon: BarIcon, col: Color32) {
 
 fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockAction {
     let mut act = BlockAction::None;
+    let (tag0, kind0) = (b.tag, std::mem::discriminant(&b.kind));
     let h = st.heights.get(&b.id).copied().unwrap_or(40.0);
     let outer = Rect::from_min_size(o + Vec2::new(b.pos[0], b.pos[1]), Vec2::new(b.width, h));
     // a small floating toolbar above the note's top-right corner: move · resize · more · delete
@@ -772,9 +802,11 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
             resp.tip(tip)
         };
         let g = button(ui, 0, BarIcon::Grip, "grip", Sense::drag(), "Drag to move");
+        if g.drag_started() { st.snap_press = true; } // undo puts it back where it was
         if g.dragged() { let d = g.drag_delta(); b.pos[0] = (b.pos[0] + d.x).max(0.0); b.pos[1] = (b.pos[1] + d.y).max(0.0); act = BlockAction::Changed; }
         if g.hovered() || g.dragged() { ui.ctx().set_cursor_icon(if g.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab }); }
         let rz = button(ui, 1, BarIcon::Resize, "rz", Sense::drag(), "Drag to make wider or narrower");
+        if rz.drag_started() { st.snap_press = true; }
         if rz.dragged() { b.width = (b.width + rz.drag_delta().x).clamp(120.0, 1600.0); act = BlockAction::Changed; }
         if rz.hovered() || rz.dragged() { ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal); }
         let more = button(ui, 2, BarIcon::More, "more", Sense::click(), "More");
@@ -810,6 +842,7 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
         });
     });
     st.heights.insert(b.id, res.response.rect.height());
+    if b.tag != tag0 || std::mem::discriminant(&b.kind) != kind0 { st.snap_press = true; }
     if matches!(act, BlockAction::None) {
         if let Kind::Text { text, .. } = &b.kind {
             let fid = egui::Id::unique(("ed", b.id));
@@ -1252,7 +1285,8 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 let n = popup_items(&pp, &popup_query(&ctx, id, text, &pp), &st.page_titles).len();
                 if k(Key::ArrowDown) { st.popup.as_mut().unwrap().sel = (pp.sel + 1) % n.max(1); }
                 if k(Key::ArrowUp) { st.popup.as_mut().unwrap().sel = (pp.sel + n.max(1) - 1) % n.max(1); }
-                if (k(Key::Enter) || k(Key::Tab)) && n > 0 { choose = Some(pp.sel.min(n - 1)); }
+                // with nothing to pick, Enter and Tab stay the text's own (no swallowed keypress)
+                if n > 0 && (k(Key::Enter) || k(Key::Tab)) { choose = Some(pp.sel.min(n - 1)); }
             }
             if let Some(i) = choose { changed |= apply_popup(&ctx, id, b.id, text, i, st); }
             if st.editing == Some(b.id) || st.focus_id == Some(id) || has_focus {
@@ -1323,12 +1357,14 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
         Kind::Checklist { items } => {
             if st.focus_id == Some(id) { st.focus_id = Some(egui::Id::unique(("chk", b.id, items.len().saturating_sub(1)))); }
             let mut remove = None;
-            let mut new_item: Option<(usize, String)> = None;
+            let mut new_item: Option<(usize, Vec<String>)> = None;
             let n = items.len();
             ui.spacing_mut().item_spacing.y = 8.0;
             for (i, (done, t)) in items.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
-                    changed |= ui.checkbox(done, "").changed();
+                    if ui.checkbox(done, "").changed() { changed = true; st.snap_press = true; }
+                    // empty *before* this key: the Backspace that clears the last letter mustn't also remove the item
+                    let was_empty = t.is_empty();
                     // Multi-line so long items wrap; Enter still makes a new item.
                     let mut te = egui::TextEdit::multiline(t).id(egui::Id::unique(("chk", b.id, i))).frame(egui::Frame::NONE).desired_rows(1).desired_width(w - 40.0).hint_text(tr("To do…"));
                     if *done { te = te.text_color(ui.visuals().weak_text_color()); }
@@ -1336,14 +1372,21 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     focus(&r, st);
                     changed |= r.changed();
                     if let Some(nl) = t.find('\n') {
-                        let rest = t[nl + 1..].replace('\n', " ");
+                        // Enter makes a new item; pasted lines become one item each
+                        let rest: Vec<String> = t[nl + 1..].split('\n').map(String::from).collect();
                         t.truncate(nl);
                         new_item = Some((i, rest));
                     }
-                    if r.has_focus() && t.is_empty() && n > 1 && ui.input(|i| i.key_pressed(Key::Backspace)) { remove = Some(i); }
+                    if r.has_focus() && was_empty && n > 1 && ui.input(|i| i.key_pressed(Key::Backspace)) { remove = Some(i); }
                 });
             }
-            if let Some((i, rest)) = new_item { items.insert(i + 1, (false, rest)); st.focus_id = Some(egui::Id::unique(("chk", b.id, i + 1))); changed = true; }
+            if let Some((i, rest)) = new_item {
+                let k = rest.len();
+                let pasted = rest.into_iter().filter(|t| !t.trim().is_empty() || k == 1).map(|t| (false, t));
+                let k = { let before = items.len(); let tail = items.split_off(i + 1); items.extend(pasted); let k = items.len() - before; items.extend(tail); k };
+                st.focus_id = Some(egui::Id::unique(("chk", b.id, i + k.max(1))));
+                changed = true;
+            }
             if let Some(i) = remove { items.remove(i); st.focus_id = Some(egui::Id::unique(("chk", b.id, i.saturating_sub(1)))); changed = true; }
             let done = items.iter().filter(|i| i.0).count();
             ui.horizontal(|ui| {
@@ -1382,10 +1425,12 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             });
             if active {
                 ui.horizontal_wrapped(|ui| { // wraps inside narrow notes
+                    let before = (rows.len(), cols);
                     if ui.small_button(tr("+ row")).clicked() { rows.push(vec![String::new(); cols]); changed = true; }
                     if ui.small_button(tr("+ column")).clicked() { for r in rows.iter_mut() { r.push(String::new()); } changed = true; }
                     if rows.len() > 1 && ui.small_button(tr("− row")).clicked() { rows.pop(); changed = true; }
                     if cols > 1 && ui.small_button(tr("− column")).clicked() { for r in rows.iter_mut() { r.pop(); } changed = true; }
+                    if before != (rows.len(), rows.first().map_or(0, |r| r.len())) { st.snap_press = true; }
                 });
             }
         }
@@ -1403,14 +1448,24 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             });
         }
         Kind::Image { file } => {
-            let tex = st.textures.entry(file.clone()).or_insert_with(|| {
+            let load = || {
                 let mut img = image::ImageReader::open(files_path(file)).ok()?.with_guessed_format().ok()?.decode().ok()?;
                 // graphics chips (especially phones) can't show huge pictures; 4096 px is safe everywhere
                 if img.width().max(img.height()) > 4096 { img = img.resize(4096, 4096, image::imageops::FilterType::Triangle); }
                 let img = img.to_rgba8();
                 let ci = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
                 Some(ui.ctx().load_texture(file.clone(), ci, egui::TextureOptions::LINEAR))
-            });
+            };
+            let tex = match st.textures.get(file) {
+                Some(t) => t.clone(),
+                None => {
+                    let t = load();
+                    // a picture that isn't here yet (still syncing) is tried again; only an unreadable one is given up on
+                    if t.is_some() || files_path(file).exists() { st.textures.insert(file.clone(), t.clone()); }
+                    t
+                }
+            };
+            let tex = &tex;
             match tex {
                 Some(t) => {
                     let s = t.size_vec2();
@@ -1449,7 +1504,10 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("🔗").size(18.0));
                         ui.vertical(|ui| {
-                            ui.hyperlink_to(RichText::new(if title.is_empty() { url.as_str() } else { title.as_str() }).size(14.0), url.as_str());
+                            // only web and mail links open (a synced note could carry a file: or other scheme)
+                            let safe = ["https://", "http://", "mailto:"].iter().any(|p| url.to_ascii_lowercase().starts_with(p));
+                            if safe { ui.hyperlink_to(RichText::new(if title.is_empty() { url.as_str() } else { title.as_str() }).size(14.0), url.as_str()); }
+                            else { ui.label(RichText::new(if title.is_empty() { url.as_str() } else { title.as_str() }).size(14.0)); }
                             if !title.is_empty() { ui.label(RichText::new(url.as_str()).size(11.0).weak()); }
                         });
                     });

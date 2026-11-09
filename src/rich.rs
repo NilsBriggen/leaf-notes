@@ -65,7 +65,9 @@ pub fn pieces(line: &str) -> Vec<Piece> {
         if c == '$' {
             let (open, from) = if pair { (2, i + 2) } else { (1, i + 1) };
             let close: &[char] = if pair { &['$', '$'] } else { &['$'] };
-            if let Some(j) = find(from, close).filter(|&j| j > from && ch[from] != ' ') {
+            // like Pandoc: no space just inside either $, and no digit right after a single closing $,
+            // so "$5 and $6" stays money
+            if let Some(j) = find(from, close).filter(|&j| j > from && !ch[from].is_whitespace() && !ch[j - 1].is_whitespace() && !(open == 1 && ch.get(j + 1).is_some_and(|c| c.is_ascii_digit()))) {
                 flush!();
                 let m: String = close.iter().collect();
                 out.push(Piece::Marker(m.clone()));
@@ -264,7 +266,8 @@ pub fn toggle_prefix(text: &mut String, a: usize, b: usize, prefix: &str) -> (us
     let lines: Vec<&str> = old.split('\n').collect();
     let has = |l: &str| { let (k, p) = classify(l); (k != LineKind::Plain).then_some(p) };
     let numbered = prefix == "1. ";
-    let all = lines.iter().all(|l| match has(l) { Some(p) => l[..p].trim_start().starts_with(prefix.trim_end()) || (numbered && classify(l).0 == LineKind::Number), None => false });
+    // the same prefix exactly ("## " isn't "# ", "- [ ] " isn't "- "): another kind is switched, not removed
+    let all = lines.iter().all(|l| match has(l) { Some(p) => l[..p].trim() == prefix.trim() || (numbered && classify(l).0 == LineKind::Number), None => false });
     let new: Vec<String> = lines.iter().enumerate().map(|(i, l)| {
         let rest = has(l).map_or(*l, |p| &l[p..]);
         if all { rest.to_string() } else if numbered { format!("{}. {rest}", i + 1) } else { format!("{prefix}{rest}") }
@@ -328,6 +331,8 @@ mod tests {
         assert!(p.contains(&Piece::Text("d*e".into(), Style { code: true, ..Default::default() })));
         assert_eq!(p.last(), Some(&Piece::Text(" 2 * 3".into(), Style::default())));
         assert_eq!(pieces("costs $5 today"), vec![Piece::Text("costs $5 today".into(), Style::default())]);
+        assert!(!pieces("costs $5 and $6").iter().any(|p| matches!(p, Piece::Math(_))), "money isn't maths");
+        assert!(pieces("so $a+b$ holds").contains(&Piece::Math("a+b".into())));
         assert!(pieces("see [[Week 2]] too").contains(&Piece::Link("Week 2".into())));
         assert!(!pieces("a [b] c").iter().any(|p| matches!(p, Piece::Link(_))));
     }
@@ -345,6 +350,10 @@ mod tests {
         assert_eq!(l, "one\ntwo");
         toggle_prefix(&mut l, 0, 7, "1. ");
         assert_eq!(l, "1. one\n2. two");
+        // another kind of line is switched, not stripped
+        let mut h = String::from("## Title");
+        toggle_prefix(&mut h, 0, 2, "# ");
+        assert_eq!(h, "# Title");
         let mut c = String::from("- milk\n");
         assert_eq!(continue_list(&mut c, 7), Some(9));
         assert_eq!(c, "- milk\n- ");

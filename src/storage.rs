@@ -76,7 +76,10 @@ pub fn load(dir: &Path) -> Result<Loaded, String> {
         for p in store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).flat_map(|s| s.pages.iter_mut()) {
             let path = page_path(dir, p.id);
             match read_json::<Page>(&path) {
-                Some(full) if full.id == p.id => *p = Page { title: p.title.clone(), level: p.level, ..full },
+                Some(mut full) if full.id == p.id => {
+                    full.strokes.retain(|s| !s.points.is_empty()); // a stroke with no points is nothing to keep
+                    *p = Page { title: p.title.clone(), level: p.level, ..full }
+                }
                 _ => {
                     // keep the damaged bytes for repair by hand; the empty page saved in their place must not overwrite them
                     if path.exists() { let _ = std::fs::rename(&path, path.with_extension("json.damaged")); }

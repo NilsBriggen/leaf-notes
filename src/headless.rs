@@ -189,6 +189,32 @@ mod clickthrough {
         assert!(h.app.st.tour.is_none() && h.app.store.notebooks.len() == before);
     }
 
+    fn key(h: &mut Harness, key: egui::Key, modifiers: egui::Modifiers) {
+        h.run(vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]);
+        h.run(vec![egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers }]);
+    }
+
+    #[test]
+    fn undo_stays_on_the_page_in_front_and_esc_closes_windows() {
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = Harness::new();
+        let blocks = |h: &Harness, nb: usize, sec: usize, pg: usize| h.app.store.notebooks[nb].sections[sec].pages[pg].blocks.len();
+        h.click("Insert");
+        h.click("Checklist");
+        let (nb, sec, pg) = (h.app.nb, h.app.sec, h.app.pg);
+        let with_list = blocks(&h, nb, sec, pg);
+        h.app.st.editing = None;
+        // another page in front: Ctrl+Z there must not quietly undo the checklist here
+        h.click("Ideas");
+        key(&mut h, egui::Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(blocks(&h, nb, sec, pg), with_list);
+        // Esc closes Settings ("Close (Esc)")
+        h.click("⚙");
+        assert!(h.app.st.show_settings);
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.st.show_settings);
+    }
+
     #[test]
     fn two_finger_tap_undoes() {
         let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
