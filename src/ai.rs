@@ -27,7 +27,13 @@ impl Default for AiSettings {
 }
 
 impl AiSettings {
-    pub fn ready(&self) -> bool { !self.model.trim().is_empty() && (!self.api_key.trim().is_empty() || self.base_url.contains("localhost") || self.base_url.contains("127.0.0.1")) }
+    pub fn ready(&self) -> bool { !self.model.trim().is_empty() && (!self.api_key.trim().is_empty() || self.local()) }
+
+    /// A server on this computer or the home network (Ollama, LM Studio …): no key needed, and more patience.
+    pub fn local(&self) -> bool {
+        let u = self.base_url.trim();
+        u.strip_prefix("http://").or_else(|| u.strip_prefix("https://")).is_some_and(crate::sync::home_host)
+    }
 }
 
 /// Send one user turn (optional PNG image) and return the reply text.
@@ -36,7 +42,8 @@ pub fn ask(s: &AiSettings, system: &str, prompt: &str, png: Option<&[u8]>) -> Re
     let img = png.map(|b| base64::engine::general_purpose::STANDARD.encode(b));
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(120)))
+        // a model on this computer may first have to load: give it longer
+        .timeout_global(Some(Duration::from_secs(if s.local() { 300 } else { 120 })))
         .build()
         .into();
     let base = s.base_url.trim_end_matches('/');
@@ -58,18 +65,27 @@ pub fn ask(s: &AiSettings, system: &str, prompt: &str, png: Option<&[u8]>) -> Re
         Provider::Anthropic => req.header("x-api-key", s.api_key.trim()).header("anthropic-version", "2023-06-01"),
         Provider::OpenAiCompatible => req.header("authorization", format!("Bearer {}", s.api_key.trim())),
     };
-    let mut resp = req.send_json(&body).map_err(|e| format!("Could not reach {url}: {e}"))?;
+    let mut resp = req.send_json(&body).map_err(|e| crate::tf!("Couldn't reach the AI service at {url}. Is it running, and is this device online? ({e})", url = url, e = e))?;
     let status = resp.status();
-    let v: Value = resp.body_mut().read_json().map_err(|e| format!("Bad reply ({status}): {e}"))?;
+    let v: Value = resp.body_mut().read_json().map_err(|e| crate::tf!("The AI service sent an answer that couldn't be read ({status}: {e}).", status = status, e = e))?;
     if !status.is_success() {
-        let msg = v.pointer("/error/message").and_then(Value::as_str).unwrap_or("unknown error");
-        return Err(format!("AI error {status}: {msg}"));
+        let msg = v.pointer("/error/message").and_then(Value::as_str).unwrap_or("").to_string();
+        // what went wrong, in words that say what to do about it
+        let hint = match status.as_u16() {
+            401 | 403 => crate::tr("The AI service refused the key. Check it in Settings ▸ AI.").to_string(),
+            404 => crate::tf!("The AI service doesn't know the model “{model}”, or the address is wrong. Check Settings ▸ AI.", model = s.model),
+            429 => crate::tr("The AI service says there were too many requests, or the account has no credit left. Try again later.").to_string(),
+            _ => crate::tf!("The AI service answered with an error ({status}).", status = status),
+        };
+        return Err(if msg.is_empty() { hint } else { format!("{hint} ({msg})") });
     }
-    let text = match s.provider {
-        Provider::Anthropic => v["content"].as_array().map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("")),
-        Provider::OpenAiCompatible => v.pointer("/choices/0/message/content").and_then(Value::as_str).map(String::from),
+    let (text, cut) = match s.provider {
+        Provider::Anthropic => (v["content"].as_array().map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("")), v["stop_reason"] == "max_tokens"),
+        Provider::OpenAiCompatible => (v.pointer("/choices/0/message/content").and_then(Value::as_str).map(String::from), v.pointer("/choices/0/finish_reason").and_then(Value::as_str) == Some("length")),
     };
-    text.filter(|t| !t.is_empty()).ok_or_else(|| "The AI returned no text".into())
+    let text = text.filter(|t| !t.is_empty()).ok_or_else(|| crate::tr("The AI returned no text.").to_string())?;
+    // a cut-off answer looks complete otherwise
+    Ok(if cut { format!("{text}\n\n_{}_", crate::tr("(The answer was cut off here. Ask it to continue.)")) } else { text })
 }
 
 /// Remove code fences and $ delimiters a model may wrap around its answer.

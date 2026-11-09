@@ -54,6 +54,52 @@ impl NotesApp {
         if open { self.st.history = Some((id, versions, sel)); }
     }
 
+    /// What's in the backup the person picked, and whether to add it or replace everything with it.
+    pub(crate) fn restore_window(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.st.restore_ask.clone() else { return };
+        let parsed = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Store>(&b).ok());
+        let Some(backup) = parsed else { self.st.restore_ask = None; self.restore_backup(&path); return }; // says what's wrong
+        let pages: usize = backup.notebooks.iter().flat_map(|n| &n.sections).map(|s| s.pages.len()).sum();
+        let mut choice = None;
+        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
+        let m = egui::Modal::new(egui::Id::unique("restore-ask")).frame(frame).show(ctx, |ui| {
+            ui.set_width(crate::fit_w(ui.ctx(), 440.0));
+            ui.label(RichText::new(tr("Restore a backup")).font(rich::serif(20.0)));
+            ui.label(tf!("This backup has {n} notebook(s) with {p} page(s).", n = backup.notebooks.len(), p = pages));
+            ui.add_space(8.0);
+            if ui.button(tr("Add them as extra notebooks")).clicked() { choice = Some(1); }
+            if ui.button(tr("Replace everything with the backup")).tip("What's here now is saved to a file in the notes folder first").clicked() { choice = Some(2); }
+            if ui.button(tr("Cancel")).clicked() { choice = Some(0); }
+        });
+        if m.should_close() { choice = Some(0); }
+        match choice {
+            Some(1) => { self.st.restore_ask = None; self.restore_backup(&path); }
+            Some(2) => {
+                self.st.restore_ask = None;
+                // the notes as they are now, sealed, kept before anything is replaced
+                let keep = data_dir().join(format!("before-restore-{}.json", now_secs()));
+                let now = self.sealed().unwrap_or_else(|| self.store.clone());
+                match serde_json::to_vec(&now).map_err(|e| e.to_string()).and_then(|b| crate::storage::write_atomic(&keep, &b).map_err(|e| e.to_string())) {
+                    Err(e) => self.st.say(tf!("⚠ Couldn't save the current notes first ({e}), so nothing was replaced.", e = e)),
+                    Ok(()) => {
+                        self.store = backup;
+                        self.st.keys.clear();
+                        self.st.undo.clear();
+                        self.st.redo.clear();
+                        crate::sync::dedupe(&mut self.store);
+                        if self.store.notebooks.is_empty() { self.store = sample(); }
+                        self.clamp();
+                        self.st.full_save = true;
+                        self.st.dirty = true;
+                        self.st.say(tf!("Restored the backup. The notes from before are in {path}", path = keep.display()));
+                    }
+                }
+            }
+            Some(_) => self.st.restore_ask = None,
+            None => {}
+        }
+    }
+
     /// Add the notebooks of a backup file as extra notebooks; nothing that's there now is replaced.
     pub(crate) fn restore_backup(&mut self, path: &std::path::Path) {
         let parsed = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<Store>(&b).map_err(|e| e.to_string()));

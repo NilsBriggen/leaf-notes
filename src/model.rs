@@ -295,6 +295,21 @@ pub fn stroke_hit(s: &Stroke, p: [f32; 2], r: f32) -> bool {
     match s.points.as_slice() { [] => false, [a] => near(a, a), pts => pts.windows(2).any(|w| near(&w[0], &w[1])) }
 }
 
+/// Cards from pasted text: "front :: back", "front<Tab>back", or "Q: …" / "A: …" line pairs.
+pub fn cards_from_text(t: &str) -> Vec<(String, String)> {
+    let mut out = vec![];
+    let mut q: Option<String> = None;
+    for l in t.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(x) = l.strip_prefix("Q:").or_else(|| l.strip_prefix("q:")) { q = Some(x.trim().to_string()); continue; }
+        if let Some(x) = l.strip_prefix("A:").or_else(|| l.strip_prefix("a:")) { if let Some(f) = q.take() { out.push((f, x.trim().to_string())); } continue; }
+        if let Some((f, b)) = l.split_once("::").or_else(|| l.split_once('\t')) {
+            let (f, b) = (f.trim().trim_start_matches(['-', '*', ' ']), b.trim());
+            if !f.is_empty() && !b.is_empty() { out.push((f.to_string(), b.to_string())); }
+        }
+    }
+    out
+}
+
 /// Point `[[old]]` links (any letter case) at `new`. How many were changed.
 pub fn relink(text: &mut String, old: &str, new: &str) -> usize {
     let (want, mut n, mut from) = (old.trim().to_lowercase(), 0, 0);
@@ -416,7 +431,9 @@ pub fn flashcards(page: &Page) -> Vec<Card> {
                     if marks.len() >= 3 {
                         for k in (1..marks.len() - 1).step_by(2) {
                             let front: String = marks.iter().enumerate().map(|(j, m)| if j == k { "______".to_string() } else { m.to_string() }).collect();
-                            push_card(&mut cards, &front, marks[k]);
+                            // the answer side shows the whole sentence with the answer in bold, not the word alone
+                            let back: String = marks.iter().enumerate().map(|(j, m)| if j == k { format!("**{m}**") } else { m.to_string() }).collect();
+                            push_card(&mut cards, &front, &back);
                         }
                     }
                 }
@@ -459,6 +476,14 @@ pub fn scratched(pts: &[[f32; 3]], strokes: &[Stroke]) -> Vec<u64> {
     strokes.iter().filter(|s| !s.points.is_empty() && s.points.iter().filter(|p| inside(p)).count() * 10 >= s.points.len() * 6 && covered(s)).map(|s| s.id).collect()
 }
 
+/// The end of a line from `a` to `b`, made exactly level or upright when it's within 4° of that
+/// (underlines and axes drawn by hand come out slightly slanted; tablets have no Shift key).
+pub fn level(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let tilt = 4f32.to_radians().tan();
+    if dy.abs() <= dx.abs() * tilt { [b[0], a[1]] } else if dx.abs() <= dy.abs() * tilt { [a[0], b[1]] } else { b }
+}
+
 /// Recognise a hand-drawn shape and return a perfect version: a straight line, a circle/ellipse,
 /// a box, or a polygon (triangle, etc). None if it doesn't look like any of these.
 pub fn snap_shape(pts: &[[f32; 3]]) -> Option<(Vec<[f32; 3]>, &'static str)> {
@@ -475,7 +500,8 @@ pub fn snap_shape(pts: &[[f32; 3]]) -> Option<(Vec<[f32; 3]>, &'static str)> {
         // open: a straight line if nothing strays far from the chord
         let len = dist(a, b);
         let dev = pts.iter().map(|q| ((b[1] - a[1]) * q[0] - (b[0] - a[0]) * q[1] + b[0] * a[1] - b[1] * a[0]).abs() / len).fold(0.0, f32::max);
-        return (dev < 0.08 * len).then(|| (vec![flat((a[0], a[1])), flat((b[0], b[1]))], "line"));
+        let e = level([a[0], a[1]], [b[0], b[1]]);
+        return (dev < 0.08 * len).then(|| (vec![flat((a[0], a[1])), flat((e[0], e[1]))], "line"));
     }
     // closed: how round is it? (0 = perfect ellipse through the bounding box)
     let (cx, cy, rx, ry) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0, (w / 2.0).max(1.0), (h / 2.0).max(1.0));
@@ -705,6 +731,11 @@ mod tests {
         assert_eq!(v.len(), 2, "cut in two at the middle");
         assert!(v.iter().all(|s| s.points.iter().all(|p| (p[0] - 100.0).abs() > 4.0)));
         assert!(densify(&[[0.0, 0.0, 1.0], [60.0, 0.0, 1.0]], 6.0).len() >= 11);
+    }
+    #[test]
+    fn cards_from_pasted_text() {
+        let c = cards_from_text("- cell :: the unit of life\nATP\tenergy\nQ: 2+2?\nA: 4\njunk line");
+        assert_eq!(c, vec![("cell".into(), "the unit of life".into()), ("ATP".into(), "energy".into()), ("2+2?".into(), "4".into())]);
     }
     #[test]
     fn links_follow_a_renamed_page() {

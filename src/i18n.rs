@@ -95,4 +95,36 @@ pub(crate) mod tests {
         let ph = |s: &str| { let mut v: Vec<String> = s.split('{').skip(1).filter_map(|p| p.split_once('}').map(|x| x.0.to_string())).collect(); v.sort(); v };
         for (en, de, fr) in crate::i18n_table::TABLE { assert!(ph(en) == ph(de) && ph(en) == ph(fr), "placeholders differ: {en}"); }
     }
+
+    /// Every interface text written as tr("…"), tf!("…"), .say("…") or .tip("…") has a German and
+    /// a French version (new texts were easy to forget).
+    #[test]
+    fn every_interface_text_is_translated() {
+        let keys: std::collections::HashSet<&str> = crate::i18n_table::TABLE.iter().map(|t| t.0).collect();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut missing = vec![];
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".rs") || name.starts_with("i18n") { continue; }
+            let src = std::fs::read_to_string(e.path()).unwrap();
+            for start in ["tr(\"", "tf!(\"", ".say(\"", ".tip(\""] {
+                for (at, _) in src.match_indices(start) {
+                    // "tr(" on its own, not the end of push_str( or similar
+                    if src[..at].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') { continue; }
+                    let rest = &src[at + start.len()..];
+                    // the literal up to its closing quote (skipping escaped quotes), unescaped as Rust would
+                    let mut lit = String::new();
+                    let mut chars = rest.chars();
+                    while let Some(c) = chars.next() {
+                        match c { '"' => break, '\\' => match chars.next() { Some('n') => lit.push('\n'), Some('t') => lit.push('\t'), Some(x) => lit.push(x), None => {} }, c => lit.push(c) }
+                    }
+                    let words = lit.split('{').map(|p| p.split_once('}').map_or(p, |x| x.1)).collect::<String>();
+                    if words.chars().any(char::is_alphabetic) && !keys.contains(lit.as_str()) { missing.push(format!("{name}: {lit}")); }
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(missing.is_empty(), "add these to i18n_table.rs:\n{}", missing.join("\n"));
+    }
 }

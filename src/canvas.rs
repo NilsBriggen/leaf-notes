@@ -57,6 +57,14 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 }
             }
         }); }
+        // touch screens skip that line, but not the pages linking here
+        if head && touch && page.kind != PageKind::Locked && !backlinks.is_empty() { ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(tr("↩ Linked from")).size(11.0).weak());
+            for (title, at) in backlinks {
+                let t = if title.trim().is_empty() { tr("Untitled page") } else { title.as_str() };
+                if ui.add(egui::Button::new(RichText::new(t).size(11.0).color(accent(ui))).corner_radius(9)).clicked() { action = Some(PageAction::Go(at.0, at.1, at.2)); }
+            }
+        }); }
         if page.kind == PageKind::Locked {
             if let Some(pw) = locked_view(ui, st) { action = Some(PageAction::Unlock(pw)); }
             ui.set_min_size(ui.available_size());
@@ -82,6 +90,9 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                     Kind::Text { text, heading } if *heading > 0 => vec![(b.pos[1], text.lines().next().unwrap_or("").to_string())],
                     Kind::Text { text, .. } => text.lines().enumerate().filter(|(_, l)| matches!(rich::classify(l).0, rich::LineKind::Heading(_)))
                         .map(|(i, l)| (b.pos[1] + i as f32 * 22.0, l.trim_start_matches(['#', ' ']).to_string())).collect(),
+                    // printed PDF pages: "Page 3" to jump to
+                    Kind::Image { file } => file.strip_suffix(".png").and_then(|f| f.rsplit_once("-page")).and_then(|(_, n)| n.parse::<u32>().ok())
+                        .map(|n| vec![(b.pos[1] + 30.0, tf!("Page {n}", n = n))]).unwrap_or_default(),
                     _ => vec![],
                 }).filter(|(_, t)| !t.trim().is_empty()).collect();
                 heads.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -181,6 +192,11 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
             ctx.request_repaint();
         }
         if st.pan != Vec2::ZERO { view = view.translate(-std::mem::take(&mut st.pan)); }
+        // Page Up / Page Down: a screen at a time (long printouts), unless a note has the keyboard
+        if !ui.ctx().egui_wants_keyboard_input() {
+            let (up, down) = ui.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::PageUp), i.consume_key(Modifiers::NONE, Key::PageDown)));
+            if up || down { view = view.translate(Vec2::new(0.0, if down { 1.0 } else { -1.0 } * view.height() * 0.85)); if view.top() < 0.0 { view = view.translate(Vec2::new(0.0, -view.top())); } }
+        }
         if let Some(z) = st.zoom_req.take() {
             let cur = scale;
             let target = match z {
@@ -192,6 +208,8 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                     avail.x / (right + 40.0)
                 }
             }.clamp(0.3, 4.0);
+            // the buttons and keys zoom around the middle of what's on screen, like pinching there
+            if !matches!(z, ZoomReq::FitWidth) { view = Rect::from_center_size(view.center(), avail / target); }
             scale = target;
         }
         // Keep the zoom when the space changes (the on-screen keyboard opening, a window resize):
@@ -316,7 +334,7 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         }
     }
     if page.blocks.is_empty() && page.strokes.is_empty() {
-        ui.painter().text(o + Vec2::new(28.0, 24.0), Align2::LEFT_TOP, tr("Click anywhere to type, or pick the pen to write."), FontId::proportional(14.0), ui.visuals().weak_text_color());
+        ui.painter().text(o + Vec2::new(28.0, 24.0), Align2::LEFT_TOP, tr(if st.touch_ui { "Tap anywhere to type, or pick the pen to write. Type / for tables, maths and more." } else { "Click anywhere to type, or pick the pen to write. Type / for tables, maths and more." }), FontId::proportional(14.0), ui.visuals().weak_text_color());
     }
     let later = playback_moment(page, st);
     let mut remove = None;
@@ -339,6 +357,13 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         }
     }
     if st.want_snap { st.want_snap = false; st.snap(page); }
+    if let Some(p) = st.note_at.take() {
+        let (x, y) = ((p.x - o.x - 4.0).max(0.0), (p.y - o.y - 16.0).max(0.0));
+        let b = block(x, y, st.p.note_width.min(360.0), Kind::Text { text: String::new(), heading: 0 });
+        st.focus_id = Some(egui::Id::unique(("ed", b.id)));
+        st.editing = Some(b.id);
+        page.blocks.push(b);
+    }
     if std::mem::take(&mut st.snap_press) { match st.press_page.take() { Some(before) => st.snap(&before), None => st.snap(page) } }
     if let Some((after, kind)) = st.insert_below.take() {
         if let Some(b) = page.blocks.iter().find(|b| b.id == after) {
@@ -436,7 +461,7 @@ fn selection_handles(ui: &mut egui::Ui, o: Pos2, page: &mut Page, st: &mut St) {
         if round { painter.circle(c, 6.0, Color32::WHITE, EStroke::new(1.5, acc)); } else { painter.rect(Rect::from_center_size(c, Vec2::splat(11.0)), 2.0, Color32::WHITE, EStroke::new(1.5, acc), egui::StrokeKind::Middle); }
     }
     for (kind, c) in [(0u8, corner), (1u8, knob)] {
-        let resp = ui.interact(Rect::from_center_size(o + c.to_vec2(), Vec2::splat(22.0)), ui.scope_id().with(("sel-handle", kind)), Sense::drag());
+        let resp = ui.interact(Rect::from_center_size(o + c.to_vec2(), Vec2::splat(if st.touch_ui { 36.0 } else { 22.0 })), ui.scope_id().with(("sel-handle", kind)), Sense::drag());
         if resp.hovered() || resp.dragged() { ui.ctx().set_cursor_icon(if kind == 0 { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::Grab }); }
         if resp.drag_started() { st.snap(page); st.xform = Some((kind, if kind == 0 { r.left_top() + Vec2::splat(6.0) } else { r.center() })); }
         if resp.drag_stopped() { st.xform = None; }
@@ -666,7 +691,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                         let d = (last[0] - q.x).hypot(last[1] - q.y);
                         if d > 1.0 && !st.snapped {
                             // Real pen pressure when the device reports it; otherwise slow strokes are a bit bolder, like a fountain pen.
-                            let pr = if !st.p.pressure { 0.85 } else { force.or(st.frame_force).unwrap_or_else(|| last[2] * 0.75 + (1.1 - d / 28.0).clamp(0.45, 1.0) * 0.25) };
+                            let pr = if !st.p.pressure { 0.85 } else { force.or(st.frame_force).map(|f| f.clamp(0.0, 1.0).powf(st.p.pressure_curve)).unwrap_or_else(|| last[2] * 0.75 + (1.1 - d / 28.0).clamp(0.45, 1.0) * 0.25) };
                             // the stabilizer lets the line trail the pen slightly, which irons out shaky hands
                             let (x, y) = trail(last, q.x, q.y, st.p.stabilizer);
                             s.points.push([x, y, pr]);
@@ -694,6 +719,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                 } else { st.lasso.push(p) },
                 Tool::Shape(shape) => if let (Some(a), Some(cur)) = (st.anchor, &mut st.current) {
                     let mut b = [p.x, p.y];
+                    if !shift && matches!(shape, Shape::Line | Shape::Arrow) { b = level(a, b); }
                     if shift {
                         // Shift keeps lines at 45° steps and boxes/circles even.
                         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -795,7 +821,7 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
     let h = st.heights.get(&b.id).copied().unwrap_or(40.0);
     let outer = Rect::from_min_size(o + Vec2::new(b.pos[0], b.pos[1]), Vec2::new(b.width, h));
     // a small floating toolbar above the note's top-right corner: move · resize · more · delete
-    let (bw, bh) = (30.0, 26.0);
+    let (bw, bh) = if st.touch_ui { (44.0, 36.0) } else { (30.0, 26.0) }; // finger-sized on touch screens
     let mut bar = Rect::from_min_size(Pos2::new(outer.right() - 4.0 * bw - 6.0, outer.top() - bh - 6.0), Vec2::new(4.0 * bw + 6.0, bh));
     // notes at the top of the view keep their toolbar on screen
     let top = ui.clip_rect().top() + 2.0;
@@ -819,6 +845,8 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
             if resp.hovered() || resp.dragged() { ui.painter().rect_filled(r.shrink(1.0), 6.0, v.widgets.hovered.weak_bg_fill); }
             let col = if matches!(icon, BarIcon::Delete) && resp.hovered() { Color32::from_rgb(214, 70, 60) } else if resp.hovered() || resp.dragged() { acc } else { v.text_color() };
             bar_icon(ui.painter(), r.center(), icon, col);
+            let name = tr(tip).to_string();
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name)); // screen readers say what it does
             resp.tip(tip)
         };
         let g = button(ui, 0, BarIcon::Grip, "grip", Sense::drag(), "Drag to move");
@@ -836,8 +864,12 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
     }
     if let Some(m) = &menu_from { egui::Popup::menu(m).show(|ui| block_menu(ui, b, &mut act)); }
     body.context_menu(|ui| block_menu(ui, b, &mut act));
+    let printed = matches!(&b.kind, Kind::Image { file } if file.strip_suffix(".png").and_then(|f| f.rsplit_once("-page")).is_some_and(|(_, n)| n.parse::<u32>().is_ok()));
     if body.clicked() && st.listen && st.recordings_span.is_some_and(|(a, z)| b.t >= a && b.t <= z) {
         st.jump = Some(b.t);
+    } else if body.clicked() && printed && typing && st.p.click_to_type {
+        // a printed PDF page is paper too: a tap on it starts a note there
+        st.note_at = body.interact_pointer_pos();
     } else if body.clicked() {
         st.editing = Some(b.id);
         st.focus_id = Some(egui::Id::unique(("ed", b.id)));
@@ -944,7 +976,9 @@ fn popup_items(pp: &Popup, q: &str, titles: &[String]) -> Vec<(String, &'static 
             all.into_iter().filter(|(l, ..)| tr(l).to_lowercase().contains(&ql) || l.to_lowercase().contains(&ql)).map(|(l, i, a)| (l.to_string(), i, a)).collect()
         }
         PopKind::Link => {
-            let mut v: Vec<(String, &'static str, Act)> = titles.iter().filter(|t| t.to_lowercase().contains(&ql)).take(7).map(|t| (t.clone(), "↗", Act::Link(t.clone()))).collect();
+            let mut found: Vec<&String> = titles.iter().filter(|t| t.to_lowercase().contains(&ql)).collect();
+            found.sort_by_key(|t| !t.to_lowercase().starts_with(&ql)); // names starting with what's typed first
+            let mut v: Vec<(String, &'static str, Act)> = found.into_iter().take(7).map(|t| (t.clone(), "↗", Act::Link(t.clone()))).collect();
             let q = q.trim();
             if !q.is_empty() && !titles.iter().any(|t| t.eq_ignore_ascii_case(q)) { v.push((format!("New page “{q}”"), "+", Act::Link(q.to_string()))); }
             v
@@ -1109,7 +1143,10 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
                         for (k, r) in page.recordings.iter().enumerate() { if ui.selectable_label(k == i, label(k, r)).clicked() { i = k; st.player = None; let _ = ensure_player(page, st, k); ui.close(); } }
                         ui.separator();
                     }
-                    if ui.button(tr("✍  Turn into text")).tip("Turn this recording into text with your AI key; each paragraph is linked to its moment").clicked() { st.transcribe_req = Some(page.recordings[i].id); ui.close(); }
+                    // Anthropic has no speech-to-text: say so here rather than after the click
+                    let can = st.ai.provider == crate::ai::Provider::OpenAiCompatible;
+                    let tip = if can { "Turn this recording into text with your AI key; each paragraph is linked to its moment" } else { "Needs an OpenAI-compatible service (OpenAI, Groq or a local Whisper server) in Settings ▸ AI" };
+                    if ui.add_enabled(can, egui::Button::new(tr("✍  Turn into text"))).tip(tip).clicked() { st.transcribe_ask = Some(page.recordings[i].id); ui.close(); }
                     if ui.button(RichText::new(tr("🗑  Remove recording")).color(Color32::from_rgb(200, 60, 50))).tip("Remove this recording from the page (Undo brings it back)").clicked() {
                         st.snap(page);
                         let id = page.recordings[i].id;
@@ -1123,18 +1160,22 @@ fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
                 let sp = ui.add(egui::Button::new(RichText::new(format!("{}× ▾", st.speed)).size(12.0)).frame_when_inactive(false)).tip("Playback speed");
                 egui::Popup::menu(&sp).show(|ui| {
                     for x in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
-                        if ui.selectable_label(st.speed == x, format!("{x}×")).clicked() { st.speed = x; if let Some(p) = &st.player { p.set_speed(x); } ui.close(); }
+                        if ui.selectable_label(st.speed == x, format!("{x}×")).clicked() { st.speed = x; st.p.speed = x; st.dirty = true; if let Some(p) = &st.player { p.set_speed(x); } ui.close(); }
                     }
                 });
                 let tip = "On: clicking a note or ink plays what was said while you wrote it";
                 let jump = if narrow { "👆".to_string() } else { tr("👆 Tap notes to jump").to_string() };
                 if ui.add(egui::Button::new(RichText::new(jump).size(12.0)).selected(st.listen).corner_radius(10)).tip(tip).clicked() { st.listen ^= true; }
+                // back or ahead 10 seconds (a missed sentence), also ← and →
+                if ui.add(egui::Button::new(RichText::new("⟲10").size(12.0)).frame_when_inactive(false)).tip("Back 10 seconds (←)").clicked() && ensure_player(page, st, i) { let p = st.player.as_ref().unwrap(); p.seek(p.time() - 10.0); }
+                if ui.add(egui::Button::new(RichText::new("10⟳").size(12.0)).frame_when_inactive(false)).tip("Ahead 10 seconds (→)").clicked() && ensure_player(page, st, i) { let p = st.player.as_ref().unwrap(); p.seek(p.time() + 10.0); }
                 let rec = &page.recordings[i];
-                let mut t = st.player.as_ref().filter(|p| p.id == rec.id).map_or(0.0, |p| p.time());
+                let t = st.player.as_ref().filter(|p| p.id == rec.id).map_or(0.0, |p| p.time());
                 let time = if narrow { mmss(t) } else { format!("{} / {}", mmss(t), mmss(rec.secs)) };
                 ui.label(RichText::new(time).size(12.0).monospace().weak());
                 ui.spacing_mut().slider_width = (ui.available_width() - 8.0).clamp(40.0, 520.0);
-                if ui.add(egui::Slider::new(&mut t, 0.0..=rec.secs.max(0.1)).show_value(false)).changed() && ensure_player(page, st, i) { st.player.as_ref().unwrap().seek(t); }
+                let (mut t, secs) = (t, rec.secs);
+                if ui.add(egui::Slider::new(&mut t, 0.0..=secs.max(0.1)).show_value(false)).changed() && ensure_player(page, st, i) { st.player.as_ref().unwrap().seek(t); }
             });
         });
     });
@@ -1150,7 +1191,16 @@ fn locked_view(ui: &mut egui::Ui, st: &mut St) -> Option<String> {
         ui.label(RichText::new(tr("This section is locked")).font(crate::rich::serif(24.0)).color(ui.visuals().strong_text_color()));
         ui.label(RichText::new(tr("Its pages are encrypted. Enter the password to open them.")).weak());
         ui.add_space(10.0);
-        let r = ui.add(egui::TextEdit::singleline(&mut st.unlock_pw).password(true).hint_text(tr("Password")).desired_width(280.0));
+        let show_id = egui::Id::unique("unlock-show");
+        let mut show = ui.data(|d| d.get_temp::<bool>(show_id)).unwrap_or(false);
+        let r = ui.horizontal(|ui| {
+            let r = ui.add(egui::TextEdit::singleline(&mut st.unlock_pw).password(!show).hint_text(tr("Password")).desired_width(250.0));
+            if ui.add(egui::Button::new(if show { "🙈" } else { "👁" }).frame_when_inactive(false)).tip(if show { "Hide the password" } else { "Show the password" }).clicked() { show ^= true; }
+            r
+        }).inner;
+        ui.data_mut(|d| d.insert_temp(show_id, show));
+        // ready to type straight away (and the on-screen keyboard comes up)
+        if ui.memory(|m| m.focused().is_none()) { r.request_focus(); }
         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { go = true; }
         if !st.unlock_err.is_empty() { ui.label(RichText::new(&st.unlock_err).color(Color32::from_rgb(200, 60, 50))); }
         ui.add_space(6.0);
@@ -1185,6 +1235,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
         });
     });
     ui.add_space(10.0);
+    let mut add_after: Option<usize> = None;
     let mut remove = None;
     let mut swap = None;
     let mut changed = false;
@@ -1219,6 +1270,8 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
                             .background_color(ui.visuals().faint_bg_color).margin(egui::Margin::symmetric(8, 6)));
                         if st.focus_id == Some(id) { r.request_focus(); st.focus_id = None; }
                         changed |= r.changed();
+                        // Ctrl+Enter on the back: the next card, without reaching for the mouse
+                        if k == 1 && r.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) { add_after = Some(i); }
                         // show how maths and formatting will look when studying
                         if text.contains('$') {
                             egui::Frame::new().inner_margin(egui::Margin { left: 6, right: 0, top: 4, bottom: 0 }).show(ui, |ui| { let _ = rich::view(ui, text, 14.0, 0, &colors); });
@@ -1227,6 +1280,12 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
                 });
             });
             ui.add_space(8.0);
+        }
+        if let Some(i) = add_after {
+            let c = DeckCard::new("", "");
+            st.focus_id = Some(egui::Id::unique(("cardf", c.id)));
+            st.snap(page);
+            page.cards.insert(i + 1, c);
         }
         if page.cards.is_empty() { ui.label(RichText::new(tr("No cards yet.")).weak()); }
         let add = ui.add(egui::Button::new(RichText::new(tr("+  Add card")).size(14.0).color(acc)).min_size(Vec2::new(ui.available_width(), 40.0)).corner_radius(12)
@@ -1238,7 +1297,31 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
             page.cards.push(c);
         }
         ui.add_space(6.0);
-        ui.label(RichText::new(tr("Tip: Tab jumps from front to back. Use $x^2$ for maths and **bold** for emphasis.")).size(11.5).weak());
+        // many cards at once: a vocabulary list, an export from another app
+        let bulk_id = egui::Id::unique(("bulk", page.id));
+        let mut bulk: Option<String> = ui.data(|d| d.get_temp(bulk_id));
+        match &mut bulk {
+            None => { if ui.add(egui::Button::new(tr("Add many from text…")).frame_when_inactive(false)).tip("One card per line: “front :: back”, front and back separated by a tab, or Q: and A: lines").clicked() { bulk = Some(String::new()); } }
+            Some(t) => {
+                ui.add(egui::TextEdit::multiline(t).desired_rows(5).desired_width(f32::INFINITY).hint_text(tr("term :: meaning\nterm<Tab>meaning\nQ: question\nA: answer")));
+                let (mut add, mut cancel) = (false, false);
+                ui.horizontal(|ui| {
+                    add = ui.button(tr("Add these cards")).clicked();
+                    cancel = ui.button(tr("Cancel")).clicked();
+                });
+                if add {
+                    let new = cards_from_text(t);
+                    let n = new.iter().filter(|(f, _)| !page.cards.iter().any(|c| c.front.trim() == f.trim())).count();
+                    st.snap(page);
+                    for (f, b) in new { if !page.cards.iter().any(|c| c.front.trim() == f.trim()) { page.cards.push(DeckCard::new(&f, &b)); } }
+                    changed = true;
+                    st.say(tf!("Added {n} card(s).", n = n));
+                }
+                if add || cancel { bulk = None; }
+            }
+        }
+        match bulk { Some(b) => { ui.data_mut(|d| d.insert_temp(bulk_id, b)); } None => ui.data_mut(|d| d.remove::<String>(bulk_id)) }
+        ui.label(RichText::new(tr("Tip: Tab jumps from front to back, Ctrl+Enter adds the next card. Use $x^2$ for maths and **bold** for emphasis.")).size(11.5).weak());
         ui.add_space(30.0);
     });
     if let Some(i) = remove { st.snap(page); page.cards.remove(i); }
@@ -1315,8 +1398,22 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     job.wrap.max_width = wrap;
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
+                // Tab / Shift+Tab on a list line make it a sub-point (or less of one), instead of leaving the note
+                if has_focus && st.popup.is_none() {
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    if let Some(c) = egui::TextEdit::load_state(&ctx, id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.0) {
+                        let mut t = text.clone();
+                        if let Some(nc) = rich::indent_line(&mut t, c, shift) {
+                            if ui.input_mut(|i| i.consume_key(if shift { Modifiers::SHIFT } else { Modifiers::NONE }, Key::Tab)) {
+                                *text = t;
+                                changed = true;
+                                set_cursor(&ctx, id, nc);
+                            }
+                        }
+                    }
+                }
                 let out = egui::TextEdit::multiline(text).id(id).frame(egui::Frame::NONE).desired_rows(1).desired_width(w)
-                    .hint_text(tr("Type here…  **bold**, - list, $x^2$")).layouter(&mut layouter).show(ui);
+                    .hint_text(tr("Type here…  **bold**, - list, $x^2$, / for more, [[ to link a page")).layouter(&mut layouter).show(ui);
                 let r = &out.response;
                 focus(r, st);
                 if let Some(i) = popup_ui(ui, &ctx, id, b.id, text, &out, st) { changed |= apply_popup(&ctx, id, b.id, text, i, st); }
@@ -1336,8 +1433,9 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 }
                 if r.lost_focus() && st.editing == Some(b.id) && st.fmt.is_none() && st.focus_id != Some(id) { st.editing = None; }
             } else {
-                let (clicked, link) = rich::view(ui, text, size, hd, &colors);
-                if let Some(l) = link { st.open_link = Some(l); } else if clicked {
+                let (clicked, link, tick) = rich::view_ticks(ui, text, size, hd, &colors);
+                if let Some(n) = tick { rich::toggle_check(text, n); changed = true; st.snap_press = true; }
+                else if let Some(l) = link { st.open_link = Some(l); } else if clicked {
                     st.editing = Some(b.id);
                     st.focus_id = Some(id);
                     st.last_text = Some(b.id);

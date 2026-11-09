@@ -64,7 +64,7 @@ pub enum Outcome {
 
 /// Whether the host part of `rest` (an address after "http://") is on the home network: localhost,
 /// a private or loopback IP address, or a .local name. Parsed, so "10.evil.com" or "127.x@evil.com" don't count.
-fn home_host(rest: &str) -> bool {
+pub(crate) fn home_host(rest: &str) -> bool {
     let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
     if auth.contains('@') { return false; }
     let host = if auth.starts_with('[') { auth.split(']').next().unwrap_or("").trim_start_matches('[') } else { auth.rsplit_once(':').map_or(auth, |(h, _)| h) };
@@ -110,7 +110,8 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
             (Some((sh, _)), Some(b), _) => merge(&b.store, local, sh)?,
             (Some((sh, _)), None, Some(First::Merge)) => merge(&Store { notebooks: vec![], trash: vec![], study: HashMap::new() }, local, sh)?,
             (Some((sh, _)), None, None) => {
-                if has_notes(local) { return Ok(Outcome::AskFirst { pages: sh.notebooks.iter().flat_map(|n| &n.sections).map(|s| s.pages.len()).sum() }); }
+                // the untouched sample notebook isn't "this device's notes": the synced ones simply replace it
+                if has_notes(local) && !untouched_sample(local) { return Ok(Outcome::AskFirst { pages: sh.notebooks.iter().flat_map(|n| &n.sections).map(|s| s.pages.len()).sum() }); }
                 sh.clone()
             }
         };
@@ -146,6 +147,12 @@ fn parse_shared(bytes: &[u8]) -> Result<(Store, Vec<String>), String> {
     let store: Store = serde_json::from_value(v.get("store").cloned().unwrap_or(Value::Null)).map_err(|e| tf!("The synced notes couldn't be read ({e}), so nothing was changed.", e = e))?;
     let files = v.get("files").and_then(Value::as_array).map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect()).unwrap_or_default();
     Ok((store, files))
+}
+
+/// Still exactly the sample notebook a new install starts with.
+fn untouched_sample(s: &Store) -> bool {
+    let texts = |s: &Store| { let mut v: Vec<String> = s.notebooks.iter().flat_map(|n| &n.sections).flat_map(|x| &x.pages).map(|p| format!("{}\n{}", p.plain_text(), p.strokes.len())).collect(); v.sort(); v };
+    s.trash.is_empty() && texts(s) == texts(&crate::model::sample())
 }
 
 fn has_notes(s: &Store) -> bool {
@@ -763,8 +770,14 @@ mod tests {
         let mut sa = sample();
         let Ok(Outcome::Synced { store: s1, up: 1, .. }) = run(&cfg, &a, &sa, None, false) else { panic!("first sync") };
         sa = s1;
-        // device B has its own notes: it's asked first, then merges
-        let sb = sample();
+        // a new device with only the untouched sample notebook just takes the synced notes, no question
+        let c = tmp("c");
+        let Ok(Outcome::Synced { store: sc, .. }) = run(&cfg, &c, &sample(), None, false) else { panic!("the sample shouldn't ask") };
+        assert!(same(&sc, &sa));
+        let _ = std::fs::remove_dir_all(c);
+        // device B has its own notes: it's asked first, then merges (an untouched sample doesn't count as its own)
+        let mut sb = sample();
+        sb.notebooks[0].sections[0].pages[0].title = "My own page".into();
         assert!(matches!(run(&cfg, &b, &sb, None, false), Ok(Outcome::AskFirst { .. })));
         let Ok(Outcome::Synced { store: mut sb, down: 1, .. }) = run(&cfg, &b, &sb, Some(First::UseShared), false) else { panic!("join") };
         assert_eq!(std::fs::read(b.join("files/123.png")).unwrap(), b"png");

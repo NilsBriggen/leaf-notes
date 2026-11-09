@@ -25,7 +25,12 @@ pub struct Style { pub bold: bool, pub italic: bool, pub strike: bool, pub code:
 #[derive(Debug, PartialEq, Clone)]
 pub enum Piece { Marker(String), Text(String, Style), Math(String), Link(String) }
 
-/// Split one line into styled pieces. Markers only open when a matching close exists on the line.
+thread_local! {
+    /// Lower-case titles of all pages (set by the app once a second), to show links to missing pages.
+    static KNOWN_TITLES: std::cell::RefCell<std::collections::HashSet<String>> = Default::default();
+}
+pub fn set_known_titles(t: std::collections::HashSet<String>) { KNOWN_TITLES.with(|k| *k.borrow_mut() = t); }
+
 /// `pieces`, remembered per line: notes are drawn every frame and their text rarely changes.
 pub fn pieces_cached(line: &str) -> Vec<Piece> {
     thread_local! { static CACHE: std::cell::RefCell<std::collections::HashMap<String, Vec<Piece>>> = Default::default(); }
@@ -39,6 +44,7 @@ pub fn pieces_cached(line: &str) -> Vec<Piece> {
     })
 }
 
+/// Split one line into styled pieces. Markers only open when a matching close exists on the line.
 pub fn pieces(line: &str) -> Vec<Piece> {
     let ch: Vec<char> = line.chars().collect();
     let n = ch.len();
@@ -191,11 +197,18 @@ pub fn edit_job(text: &str, base: f32, heading: u8, c: &Colors) -> LayoutJob {
 /// Read-only rendering with markers hidden, $math$ drawn and [[links]] clickable.
 /// Returns whether the text was clicked, and which page link was clicked (if any).
 pub fn view(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -> (bool, Option<String>) {
+    let (clicked, link, _) = view_ticks(ui, text, base, heading, c);
+    (clicked, link)
+}
+
+/// `view`, also saying which line's "[ ]" box was clicked (it can be ticked without editing the text).
+pub fn view_ticks(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -> (bool, Option<String>, Option<usize>) {
     let mut clicked = false;
     let mut link = None;
+    let mut tick = None;
     ui.style_mut().interaction.selectable_labels = false;
     let mut number = 0;
-    for line in text.split('\n') {
+    for (li, line) in text.split('\n').enumerate() {
         let (kind, plen) = classify(line);
         let (size, color) = match kind {
             LineKind::Heading(l) => (heading_size(base, l), c.strong),
@@ -203,7 +216,7 @@ pub fn view(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -
         };
         if line.trim().is_empty() { ui.add_space(size * 0.8); continue; }
         number = if kind == LineKind::Number { number + 1 } else { 0 };
-        let indent = (line.len() - line.trim_start().len()) as f32 * 6.0;
+        let indent = (line.len() - line.trim_start().len()) as f32 * 10.0; // two spaces: one sub-point step
         if matches!(kind, LineKind::Heading(_)) { ui.add_space(size * 0.3); }
         ui.spacing_mut().item_spacing.y = size * 0.3;
         ui.horizontal_wrapped(|ui| {
@@ -215,7 +228,10 @@ pub fn view(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -
                 LineKind::Check(d) => Some(if d { "☑  " } else { "☐  " }.to_string()),
                 _ => None,
             };
-            if let Some(l) = lead { ui.label(egui::RichText::new(l).size(size).color(c.accent)); }
+            if let Some(l) = lead {
+                let r = ui.add(egui::Label::new(egui::RichText::new(l).size(size).color(c.accent)).sense(egui::Sense::click()));
+                if matches!(kind, LineKind::Check(_)) && r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { tick = Some(li); }
+            }
             if kind == LineKind::Quote {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(3.0, size * 1.2), egui::Sense::hover());
                 ui.painter().rect_filled(r, 1.0, c.accent);
@@ -237,8 +253,11 @@ pub fn view(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -
                     }
                     Piece::Link(l) => {
                         if !job.is_empty() { clicked |= ui.label(std::mem::take(&mut job)).clicked(); }
-                        let r = ui.add(egui::Label::new(egui::RichText::new(format!("↗ {l}")).size(size).color(c.accent).underline()).sense(egui::Sense::click()))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand).tip("Open this page");
+                        // a link to a page that doesn't exist (yet) looks like it, instead of like a working link
+                        let exists = KNOWN_TITLES.with(|k| { let k = k.borrow(); k.is_empty() || k.contains(&l.trim().to_lowercase()) });
+                        let col = if exists { c.accent } else { c.dim };
+                        let r = ui.add(egui::Label::new(egui::RichText::new(format!("↗ {l}")).size(size).color(col).underline()).sense(egui::Sense::click()))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand).tip(if exists { "Open this page" } else { "No page with this name yet — click to create it" });
                         if r.clicked() { link = Some(l); }
                     }
                 }
@@ -246,7 +265,35 @@ pub fn view(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -
             if !job.is_empty() { clicked |= ui.label(job).clicked(); }
         });
     }
-    (clicked, link)
+    (clicked, link, tick)
+}
+
+/// Tab / Shift+Tab on a list line: indent it by two spaces, or take two away (sub-points).
+/// The new cursor (char index), or None when the cursor isn't on a list line.
+pub fn indent_line(text: &mut String, cursor: usize, out: bool) -> Option<usize> {
+    let cb = byte(text, cursor);
+    let start = text[..cb].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[cb..].find('\n').map_or(text.len(), |i| cb + i);
+    if !matches!(classify(&text[start..end]).0, LineKind::Bullet | LineKind::Number | LineKind::Check(_)) { return None; }
+    if out {
+        let n = text[start..end].chars().take_while(|c| *c == ' ').count().min(2);
+        if n == 0 { return Some(cursor); }
+        text.replace_range(start..start + n, "");
+        Some(cursor.saturating_sub(n))
+    } else {
+        text.insert_str(start, "  ");
+        Some(cursor + 2)
+    }
+}
+
+/// Tick or untick the "[ ]" box of line `n`.
+pub fn toggle_check(text: &mut String, n: usize) {
+    let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+    let Some(l) = lines.get_mut(n) else { return };
+    for (from, to) in [("[ ]", "[x]"), ("[x]", "[ ]"), ("[X]", "[ ]")] {
+        if let Some(i) = l.find(from) { l.replace_range(i..i + 3, to); break; }
+    }
+    *text = lines.join("\n");
 }
 
 // ---------- editing helpers (char indices) ----------
@@ -364,6 +411,11 @@ mod tests {
         toggle_prefix(&mut l, 0, 7, "1. ");
         assert_eq!(l, "1. one\n2. two");
         // another kind of line is switched, not stripped
+        let mut li = String::from("a\n- b");
+        assert_eq!(indent_line(&mut li, 4, false), Some(6));
+        assert_eq!(li, "a\n  - b");
+        assert_eq!(indent_line(&mut li, 6, true), Some(4));
+        assert_eq!(indent_line(&mut String::from("plain"), 2, false), None);
         let mut h = String::from("## Title");
         toggle_prefix(&mut h, 0, 2, "# ");
         assert_eq!(h, "# Title");

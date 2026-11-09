@@ -57,12 +57,32 @@ pub(crate) fn segmented(ui: &mut egui::Ui, options: &[(&str, &str)], selected: u
 }
 
 /// A small caption, then a slider that ends exactly `width` from where the row starts.
+/// Pen colours a tap away (black, blue, red, green, purple, orange, brown, grey).
+const PEN_COLORS: [[u8; 4]; 8] = [[30, 30, 30, 255], [37, 99, 235, 255], [220, 38, 38, 255], [22, 163, 74, 255], [124, 58, 237, 255], [234, 88, 12, 255], [120, 72, 40, 255], [107, 114, 128, 255]];
+
+/// A small round colour button.
+fn swatch(ui: &mut egui::Ui, c: [u8; 4], selected: bool) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+    ui.painter().circle_filled(r.center(), 7.0, c4([c[0], c[1], c[2], 255]));
+    if selected || resp.hovered() { ui.painter().circle_stroke(r.center(), 8.5, EStroke::new(1.5, ui.visuals().text_color())); }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])));
+    resp
+}
+
+/// The last colours picked by hand, newest first (four kept).
+fn remember_color(v: &mut Vec<[u8; 4]>, c: [u8; 4]) {
+    if PEN_COLORS.contains(&c) { return; }
+    v.retain(|x| *x != c);
+    v.insert(0, c);
+    v.truncate(4);
+}
+
 fn labelled_slider(ui: &mut egui::Ui, caption: &str, width: f32, value: &mut f32, range: std::ops::RangeInclusive<f32>, tip: &str) {
     ui.horizontal(|ui| {
         let start = ui.cursor().left();
-        ui.label(RichText::new(tr(caption)).size(11.5).weak());
+        let label = ui.label(RichText::new(tr(caption)).size(11.5).weak());
         ui.spacing_mut().slider_width = (width - (ui.cursor().left() - start)).max(40.0);
-        ui.add(egui::Slider::new(value, range).show_value(false)).tip(tip);
+        ui.add(egui::Slider::new(value, range).show_value(false)).labelled_by(label.id).tip(tip);
     });
 }
 
@@ -147,7 +167,16 @@ fn format_utc(secs: u64, time: bool) -> String {
 pub(crate) type SearchHit = (bool, (usize, usize, usize), String, String, String, usize, usize);
 
 /// A study session: the deck, what's left to go, and how it went.
-pub(crate) struct Study { pub title: String, pub cards: Vec<Card>, pub queue: Vec<usize>, pub total: usize, pub shown: bool, pub tally: [u32; 3], pub missed: Vec<usize> }
+pub(crate) struct Study { pub title: String, pub cards: Vec<Card>, pub queue: Vec<usize>, pub total: usize, pub shown: bool, pub tally: [u32; 3], pub missed: Vec<usize>, pub undo: Option<StudyUndo> }
+
+/// The last rating, to take back (a wrong key): the card's key and progress before, the rating, the queue and misses before.
+pub(crate) struct StudyUndo { key: String, before: Option<CardState>, rating: usize, queue: Vec<usize>, missed: Vec<usize> }
+
+/// A different order each time, so a card's place in the deck isn't a hint.
+fn shuffle(v: &mut [usize]) {
+    let mut x = now_f().to_bits() | 1;
+    for i in (1..v.len()).rev() { x ^= x << 13; x ^= x >> 7; x ^= x << 17; v.swap(i, (x % (i as u64 + 1)) as usize); }
+}
 
 /// Section title inside the Settings window.
 /// "just now", "5 min ago", "3 h ago"…
@@ -603,6 +632,10 @@ impl NotesApp {
                         ui.spacing_mut().interact_size = Vec2::new(32.0, 24.0);
                         let mut c = self.st.p.hl_color;
                         if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Any colour for the highlighter").changed() { self.st.p.hl_color = [c[0], c[1], c[2], c[3].min(160)]; }
+                        for c in [[253, 224, 71, 120], [134, 239, 172, 120], [249, 168, 212, 120], [125, 211, 252, 120], [253, 186, 116, 120], [196, 181, 253, 120]] {
+                            let cur = self.st.p.hl_color;
+                            if swatch(ui, c, cur == c).clicked() { self.st.p.hl_color = c; }
+                        }
                     });
                     labelled_slider(ui, "Size", 150.0, &mut self.st.p.hl_width, 6.0..=40.0, "How thick the highlighter is");
                 });
@@ -623,7 +656,7 @@ impl NotesApp {
                     ui.spacing_mut().interact_size = Vec2::new(32.0, 24.0);
                     let pen = self.st.pen();
                     let mut c = pen.color;
-                    if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Colour and see-through-ness").changed() { pen.color = c; }
+                    if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Colour and see-through-ness").changed() { pen.color = c; remember_color(&mut self.st.p.recent_colors, c); }
                     // removing a pen shouldn't need a right-click (or a long-press) to find
                     if self.st.p.pens.len() > 1 && ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Remove this pen from My pens").clicked() {
                         let i = self.st.p.pen;
@@ -634,13 +667,25 @@ impl NotesApp {
                 });
                 ui.horizontal(|ui| {
                     let tip = match self.st.force { Some(f) => tf!("Pen thickness. Pen pressure now: {pct}%", pct = format!("{:.0}", f * 100.0)), None => "Pen thickness. Pressure comes from your pen, or from speed with a mouse".into() };
-                    ui.label(RichText::new(tr("Size")).size(11.5).weak());
+                    let l = ui.label(RichText::new(tr("Size")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 70.0;
-                    ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).tip(tip);
-                    ui.label(RichText::new(tr("Smooth")).size(11.5).weak());
+                    ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).labelled_by(l.id).tip(tip);
+                    let l = ui.label(RichText::new(tr("Smooth")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 50.0;
-                    ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).tip("Smoothing: irons out shaky lines (see the sample). More smoothing makes the line trail the pen a little.");
+                    ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).labelled_by(l.id).tip("Smoothing: irons out shaky lines (see the sample). More smoothing makes the line trail the pen a little.");
                 });
+                // a few colours a tap away (and the last ones picked), instead of the colour picker every time
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    let recent = self.st.p.recent_colors.clone();
+                    for c in PEN_COLORS.iter().copied().chain(recent) {
+                        let cur = self.st.pen().color;
+                        if swatch(ui, c, cur == c).clicked() { self.st.pen().color = c; }
+                    }
+                });
+                if self.st.p.pressure && self.st.force.is_some() {
+                    labelled_slider(ui, "Pressure", 150.0, &mut self.st.p.pressure_curve, 0.4..=2.5, "How hard you need to press: left makes light touches bolder, right needs a firmer hand");
+                }
             });
             // a deliberately shaky line, run through the same smoothing as real ink
             let (stab, pen) = (self.st.p.stabilizer, *self.st.pen());
@@ -757,17 +802,23 @@ impl NotesApp {
     }
 
     /// Cards already studied that are due again, from every deck.
+    /// Cards due again, and up to 20 never studied (a new deck shows up here too, a bit at a time).
     pub(crate) fn due_cards(&self) -> Vec<Card> {
         let now = now_secs();
-        self.store.notebooks.iter().flat_map(|n| n.sections.iter()).flat_map(|s| s.pages.iter()).flat_map(|p| p.deck())
-            .filter(|c| self.store.study.get(&c.key).is_some_and(|s| s.due <= now)).collect()
+        let all = self.store.notebooks.iter().flat_map(|n| n.sections.iter()).flat_map(|s| s.pages.iter()).flat_map(|p| p.deck());
+        let (mut due, mut fresh) = (vec![], vec![]);
+        for c in all {
+            match self.store.study.get(&c.key) { Some(s) if s.due <= now => due.push(c), None if fresh.len() < 20 => fresh.push(c), _ => {} }
+        }
+        due.extend(fresh);
+        due
     }
 
     pub(crate) fn start_review(&mut self) {
         let cards = self.due_cards();
         if cards.is_empty() { self.st.say("Nothing due today — nice! Cards come back here once you've studied them."); return; }
         let total = cards.len();
-        self.st.study = Some(Study { title: tr("Due today").into(), queue: (0..total).collect(), cards, total, shown: false, tally: [0; 3], missed: vec![] });
+        self.st.study = Some(Study { title: tr("Due today").into(), queue: { let mut q: Vec<usize> = (0..total).collect(); shuffle(&mut q); q }, cards, total, shown: false, tally: [0; 3], missed: vec![], undo: None });
     }
 
     /// Study the open deck: cards that are due or new first, then the rest.
@@ -778,9 +829,11 @@ impl NotesApp {
         let title = if p.title.is_empty() { tr("Untitled deck").into() } else { p.title.clone() };
         let now = now_secs();
         let (mut due, mut later): (Vec<usize>, Vec<usize>) = (0..cards.len()).partition(|&i| self.store.study.get(&cards[i].key).is_none_or(|s| s.due <= now));
+        shuffle(&mut due);
+        shuffle(&mut later);
         due.append(&mut later);
         let total = due.len();
-        self.st.study = Some(Study { title, cards, queue: due, total, shown: false, tally: [0; 3], missed: vec![] });
+        self.st.study = Some(Study { title, cards, queue: due, total, shown: false, tally: [0; 3], missed: vec![], undo: None });
     }
 
     /// First use of Record: say what the microphone is for, and ask.
@@ -819,8 +872,22 @@ impl NotesApp {
         let mut close = false;
         let mut rate: Option<usize> = None;
         let (space, k1, k2, k3) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::Space), i.consume_key(Modifiers::NONE, Key::Num1), i.consume_key(Modifiers::NONE, Key::Num2), i.consume_key(Modifiers::NONE, Key::Num3)));
-        if space && !sd.shown { sd.shown = true; }
+        let (enter, back) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::Enter), i.consume_key(Modifiers::NONE, Key::Backspace) || i.consume_key(Modifiers::COMMAND, Key::Z)));
+        // Enter: show the answer, then "Good" (one key all the way through)
+        if (space || enter) && !sd.shown { sd.shown = true; } else if enter && sd.shown { rate = Some(1); }
         if sd.shown { if k1 { rate = Some(0) } else if k2 { rate = Some(1) } else if k3 { rate = Some(2) } }
+        // Backspace or Ctrl+Z: take the last rating back
+        if back {
+            if let Some(u) = sd.undo.take() {
+                match u.before { Some(b) => { self.store.study.insert(u.key, b); } None => { self.store.study.remove(&u.key); } }
+                sd.queue = u.queue;
+                sd.missed = u.missed;
+                sd.tally[u.rating] = sd.tally[u.rating].saturating_sub(1);
+                sd.shown = true;
+                rate = None;
+                self.st.dirty = true;
+            }
+        }
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("study")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 600.0));
@@ -842,6 +909,9 @@ impl NotesApp {
                         ui.add_space(20.0);
                         ui.label(RichText::new(tr("All done 🎉")).font(rich::serif(26.0)));
                         ui.label(RichText::new(tf!("{total} cards · {x} again · {x2} good · {x3} easy", total = sd.total, x = sd.tally[0], x2 = sd.tally[1], x3 = sd.tally[2])).weak());
+                        // when these cards come back
+                        let next = sd.cards.iter().filter_map(|c| self.store.study.get(&c.key)).map(|s| s.due).filter(|d| *d > now_secs()).min();
+                        if let Some(d) = next { ui.label(RichText::new(tf!("Next review: {when}", when = format_date(d, false))).weak()); }
                         ui.add_space(14.0);
                         ui.horizontal(|ui| {
                             ui.add_space((ui.available_width() - 220.0).max(0.0) / 2.0);
@@ -884,6 +954,7 @@ impl NotesApp {
         });
         if let (Some(k), Some(i)) = (rate, sd.queue.first().copied()) {
             let key = sd.cards[i].key.clone();
+            sd.undo = Some(StudyUndo { key: key.clone(), before: self.store.study.get(&key).copied(), rating: k, queue: sd.queue.clone(), missed: sd.missed.clone() });
             let state = self.store.study.entry(key).or_default();
             sd.queue.remove(0);
             match k {
@@ -1034,13 +1105,19 @@ impl NotesApp {
                     .iter().map(|(n, one, many)| crate::i18n::fill(if *n == 1 { one } else { many }, &[("n", n)])).collect::<Vec<_>>().join(" · ") };
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(RichText::new(tr(if self.st.dirty { "Saving…" } else { "✓ Saved" })).size(11.5).weak());
-                    if let Some((v, url)) = self.st.update.clone() {
-                        if ui.add(egui::Button::new(RichText::new(tf!("⬆ Leaf Notes {v} is available", v = v.trim_start_matches('v'))).size(11.5).color(accent(ui))).frame_when_inactive(false)).tip("Open the download page").clicked() { ui.ctx().open_url(egui::OpenUrl::new_tab(url)); }
+                    if let Some((v, url, notes)) = self.st.update.clone() {
+                        let tip = if notes.is_empty() { tr("Download it").to_string() } else { format!("{notes}\n\n{}", tr("Click to download it. Right-click: not this version.")) };
+                        let b = ui.add(egui::Button::new(RichText::new(tf!("⬆ Leaf Notes {v} is available", v = v.trim_start_matches('v'))).size(11.5).color(accent(ui))).frame_when_inactive(false)).tip(tip);
+                        if b.clicked() { ui.ctx().open_url(egui::OpenUrl::new_tab(url)); }
+                        b.context_menu(|ui| { if ui.button(tr("Don't tell me about this version again")).clicked() { self.st.p.skip_version = v.clone(); self.st.update = None; self.st.dirty = true; ui.close(); } });
                     }
                     if self.st.persist && self.st.sync.on() {
                         let err = !self.st.sync_err.is_empty();
+                        let retry = (self.st.sync_at + 40.0 - now_f()).max(0.0);
                         let (t, tip) = if self.st.sync_rx.is_some() { ("🔄 Syncing…".to_string(), "Syncing with your other devices".to_string()) }
-                            else if err { ("⚠ Not synced".into(), tf!("{sync_err}\nClick for sync settings", sync_err = self.st.sync_err)) }
+                            else if err { ("⚠ Not synced".into(), tf!("{sync_err}\nYour notes are safe on this device. Trying again in about {s} s. Click for sync settings.", sync_err = self.st.sync_err, s = format!("{retry:.0}"))) }
+                            // edited since the last sync: say it's on its way
+                            else if self.st.sync_pending && self.st.sync_ok > 0 { ("🔄 Changes waiting".into(), tf!("Synced {x}. The latest changes go out shortly; click to sync now.", x = ago(self.st.sync_ok))) }
                             else if self.st.sync_ok > 0 { (tf!("🔄 Synced {x}", x = ago(self.st.sync_ok)), "Click to sync now".into()) }
                             else { ("🔄 Sync".into(), "Click to sync now".into()) };
                         let col = if err { Color32::from_rgb(220, 80, 60) } else { ui.visuals().weak_text_color() };
@@ -1049,10 +1126,26 @@ impl NotesApp {
                         }
                     }
                     self.focus_timer(ui);
+                    // a mistaken delete is one click away from undone (for a few seconds)
+                    if self.st.undo_delete.is_some_and(|t| now_f() - t < 10.0) && !self.store.trash.is_empty() {
+                        if ui.add(egui::Button::new(RichText::new(tr("↶ Undo delete")).size(11.5).color(accent(ui))).frame_when_inactive(false)).clicked() {
+                            self.st.undo_delete = None;
+                            let i = self.store.trash.len() - 1;
+                            self.restore(i);
+                        }
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                    }
                     if (self.st.zoom_now - 1.0).abs() > 0.02 && ui.add(egui::Button::new(RichText::new(format!("{:.0}%", self.st.zoom_now * 100.0)).size(11.5)).frame_when_inactive(false)).tip("Page zoom — click for actual size").clicked() { self.st.zoom_req = Some(ZoomReq::To(1.0)); }
                     if !self.st.ai_rx.is_empty() { ui.label(RichText::new(tr("AI working…")).size(11.5).color(accent(ui))); ui.spinner(); }
                     if self.st.tool != Tool::Type {
-                        ui.label(RichText::new(tr(match self.st.tool { Tool::Pen => "✏ Pen", Tool::Highlighter => "Highlighter", Tool::Eraser => "Eraser", Tool::Lasso => "Select ink", Tool::Shape(_) => "Shape", Tool::Type => "" })).size(11.5).weak());
+                        // the tool in hand, and every other one a tap away (the toolbar may be folded away on a tablet)
+                        let name = tr(match self.st.tool { Tool::Pen => "✏ Pen", Tool::Highlighter => "Highlighter", Tool::Eraser => "Eraser", Tool::Lasso => "Select ink", Tool::Shape(_) => "Shape", Tool::Type => "" });
+                        ui.menu_button(RichText::new(format!("{name} ▴")).size(11.5).weak(), |ui| {
+                            for (t, label) in [(Tool::Type, "Aa  Type"), (Tool::Pen, "✏  Pen"), (Tool::Highlighter, "▮  Highlighter"), (Tool::Eraser, "⌫  Eraser"), (Tool::Lasso, "➰  Select ink"),
+                                (Tool::Shape(Shape::Line), "╱  Line"), (Tool::Shape(Shape::Arrow), "→  Arrow"), (Tool::Shape(Shape::Rect), "▭  Box"), (Tool::Shape(Shape::Ellipse), "◯  Circle")] {
+                                if ui.selectable_label(self.st.tool == t, tr(label)).clicked() { self.st.tool = t; ui.close(); }
+                            }
+                        });
                     }
                     // what's left on the left: the page counts, and the latest message, shortened to fit (never under the items on the right)
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -1091,6 +1184,20 @@ impl NotesApp {
                     let cur = at == (self.nb, self.sec, self.pg);
                     let r = nav_item(ui, &mut self.st, id, &format!("★  {title}"), None, cur, 0, None);
                     if r.clicked() { self.go_to(at.0, at.1, at.2); }
+                    r.context_menu(|ui| { if ui.button(tr("Remove from favourites")).clicked() { self.st.p.favorites.retain(|f| *f != id); self.st.dirty = true; ui.close(); } });
+                }
+            }
+            // what you had open lately (not the favourites, not this page)
+            let here = self.store.notebooks[self.nb].sections[self.sec].pages.get(self.pg).map(|p| p.id);
+            let recent: Vec<(u64, String, (usize, usize, usize))> = self.st.p.recent.iter().filter(|id| Some(**id) != here && !self.st.p.favorites.contains(id)).filter_map(|id| self.locate(*id).map(|at| {
+                let p = &self.store.notebooks[at.0].sections[at.1].pages[at.2];
+                (p.id, if p.title.trim().is_empty() { tr("Untitled page").to_string() } else { p.title.clone() }, at)
+            })).take(4).collect();
+            if !recent.is_empty() && !self.st.narrow {
+                ui.add_space(6.0);
+                ui.label(RichText::new(tr("RECENT")).size(10.5).weak());
+                for (id, title, at) in recent {
+                    if nav_item(ui, &mut self.st, id, &format!("🕓  {title}"), None, false, 0, None).clicked() { self.go_to(at.0, at.1, at.2); }
                 }
             }
             ui.add_space(8.0);
@@ -1151,7 +1258,7 @@ impl NotesApp {
                 self.st.dirty = true;
                 self.st.say("Section moved.");
             }
-            if let Some(i) = clicked { let nb = self.nb; self.go_to(nb, i, 0); self.st.search.clear(); self.st.tag_filter = None; }
+            if let Some(i) = clicked { let nb = self.nb; self.open_section(nb, i); self.st.search.clear(); self.st.tag_filter = None; }
         });
         self.take_pending_delete();
         self.clamp();
@@ -1222,7 +1329,7 @@ impl NotesApp {
             if ui.button(tr("🗑  Recently deleted")).clicked() { action = 3; ui.close(); }
             if self.store.notebooks.len() > 1 && ui.button(RichText::new(tr("Delete this notebook")).color(Color32::from_rgb(200, 60, 50))).clicked() { action = 4; ui.close(); }
         });
-        if let Some(i) = pick { self.go_to(i, 0, 0); }
+        if let Some(i) = pick { self.open_section(i, 0); }
         match action {
             1 => {
                 let c = PALETTE[self.store.notebooks.len() % PALETTE.len()];
@@ -1263,10 +1370,16 @@ impl NotesApp {
                 // a one-line preview of the page, like the first line of a letter
                 let first = p.blocks.iter().filter(|b| matches!(&b.kind, Kind::Text { heading: 0, .. } | Kind::Checklist { .. })).min_by(|a, b| a.pos[1].total_cmp(&b.pos[1]));
                 let preview = first.map(|b| b.kind.summary().replace(['*', '=', '$', '`'], "")).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| format_date(p.created, false));
-                let preview = if p.kind == PageKind::Deck { tf!("▤ Flashcards · {n} cards", n = p.cards.len()) } else if p.kind == PageKind::Locked { tr("Encrypted").to_string() } else { preview };
+                let preview = if p.kind == PageKind::Deck {
+                    // what needs studying, at a glance
+                    let now = now_secs();
+                    let (due, new) = p.deck().iter().fold((0, 0), |(d, n), c| match self.store.study.get(&c.key) { None => (d, n + 1), Some(s) if s.due <= now => (d + 1, n), _ => (d, n) });
+                    if due + new > 0 { tf!("▤ {due} due · {new} new · {n} cards", due = due, new = new, n = p.cards.len()) } else { tf!("▤ Flashcards · {n} cards", n = p.cards.len()) }
+                } else if p.kind == PageKind::Locked { tr("Encrypted").to_string() } else { preview };
                 let sub = Some(if preview.chars().count() > 48 { format!("{}…", preview.chars().take(48).collect::<String>()) } else { preview });
                 let r = nav_item(ui, &mut self.st, p.id, title, None, i == self.pg, p.level, sub);
                 if r.clicked() { clicked = Some(i); }
+                if i == self.pg && self.st.reveal { r.scroll_to_me(None); self.st.reveal = false; }
                 if p.kind == PageKind::Locked { continue; } // the placeholder of a closed locked section has nothing to rename, move or delete
                 r.context_menu(|ui| {
                     if ui.button(tr("Rename")).clicked() { self.st.rename = Some((p.id, title.to_string())); ui.close(); }
@@ -1280,6 +1393,10 @@ impl NotesApp {
                         });
                     });
                     if ui.button(tr("Copy as Markdown")).clicked() { act = Some((i, 5)); ui.close(); }
+                    if ui.button(tr("Copy link")).tip("Copies [[the page's name]], to paste into another page").clicked() { ui.ctx().copy_text(format!("[[{title}]]")); ui.close(); }
+                    let fav = self.st.p.favorites.contains(&p.id);
+                    if ui.button(tr(if fav { "Remove from favourites" } else { "Add to favourites" })).clicked() { act = Some((i, 6)); ui.close(); }
+                    if ui.button(tr("Page history…")).clicked() { act = Some((i, 7)); ui.close(); }
                     ui.separator();
                     if ui.button(RichText::new(tr("Delete page")).color(Color32::from_rgb(200, 60, 50))).clicked() { self.st.status = format!("delete:{id}", id = p.id); ui.close(); }
                 });
@@ -1292,6 +1409,8 @@ impl NotesApp {
             Some((i, 3)) => { pages.swap(i, i + 1); if self.pg == i { self.pg += 1 } else if self.pg == i + 1 { self.pg -= 1 } self.st.dirty = true; }
             Some((i, 4)) => self.duplicate_page(nb, sec, i),
             Some((i, 5)) => { let md = pages[i].plain_text(); ui.ctx().copy_text(md); self.st.say("Copied as Markdown."); }
+            Some((i, 6)) => { let id = pages[i].id; if self.st.p.favorites.contains(&id) { self.st.p.favorites.retain(|f| *f != id); } else { self.st.p.favorites.push(id); } self.st.dirty = true; }
+            Some((i, 7)) => { self.go_to(nb, sec, i); self.show_history(); }
             _ => {}
         }
         if let Some((i, to)) = move_to {
@@ -1451,7 +1570,10 @@ impl NotesApp {
                 }
                 let w = ui.available_width();
                 for (i, (from_ai, text)) in self.st.ai_log.iter().enumerate() {
-                    if *from_ai {
+                    if text.starts_with("———") {
+                        // where the conversation moved to another page
+                        ui.vertical_centered(|ui| ui.label(RichText::new(text).size(11.0).weak()));
+                    } else if *from_ai {
                         egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(10).show(ui, |ui| {
                             ui.set_width(w - 20.0);
                             let _ = rich::view(ui, text, 13.5, 0, &colors);
@@ -1472,7 +1594,12 @@ impl NotesApp {
                     }
                     ui.add_space(6.0);
                 }
-                if !self.st.ai_rx.is_empty() { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(tr("Thinking…")).weak()); }); }
+                if !self.st.ai_rx.is_empty() { ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new(tr("Thinking…")).weak());
+                    // stop waiting (a slow local model, a long page): the late answer is ignored
+                    if ui.small_button(tr("Stop")).clicked() { self.st.ai_rx.clear(); self.st.say("Stopped."); }
+                }); }
             });
             if let Some(i) = insert { let t = self.st.ai_log[i].1.clone(); self.insert_markdown(&t); }
             ui.add_space(4.0);
@@ -1561,6 +1688,39 @@ impl NotesApp {
         if self.st.switcher.is_some() { self.switcher_window(ctx); }
         if self.st.study.is_some() { self.study_window(ctx); }
         if self.st.mic_prompt { self.mic_window(ctx); }
+        if self.st.restore_ask.is_some() { self.restore_window(ctx); }
+        if let Some(id) = self.st.transcribe_ask {
+            // how much goes where, before a long lecture is uploaded (it can cost money)
+            let secs = self.store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).flat_map(|p| &p.recordings).find(|r| r.id == id).map_or(0.0, |r| r.secs);
+            let host = self.st.ai.base_url.split('/').nth(2).unwrap_or("").to_string();
+            let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
+            let mut go = None;
+            let m = egui::Modal::new(egui::Id::unique("transcribe-ask")).frame(frame).show(ctx, |ui| {
+                ui.set_width(crate::fit_w(ui.ctx(), 420.0));
+                ui.label(RichText::new(tr("Make a transcript?")).font(rich::serif(20.0)));
+                ui.label(tf!("About {min} minutes of audio (≈{mb} MB) will be sent to {host} to be turned into text. Services charge for this by the minute.", min = format!("{:.0}", (secs / 60.0).ceil()), mb = format!("{:.0}", secs * 32_000.0 / 1e6), host = host));
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(RichText::new(tr("Send it")).color(Color32::WHITE)).fill(accent_base())).clicked() { go = Some(true); }
+                    if ui.button(tr("Cancel")).clicked() { go = Some(false); }
+                });
+            });
+            if m.should_close() { go = Some(false); }
+            if let Some(g) = go { self.st.transcribe_ask = None; if g { self.start_transcribe(id); } }
+        }
+        if let Some(path) = self.st.drop_pdf.clone() {
+            let mut how = None;
+            let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
+            let m = egui::Modal::new(egui::Id::unique("drop-pdf")).frame(frame).show(ctx, |ui| {
+                ui.set_width(crate::fit_w(ui.ctx(), 400.0));
+                ui.label(RichText::new(path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).strong());
+                ui.add_space(6.0);
+                if ui.button(tr("Print its pages onto this page (to write on them)")).clicked() { how = Some(Ins::Printout); }
+                if ui.button(tr("Attach it as a file")).clicked() { how = Some(Ins::Attach); }
+                if ui.button(tr("Cancel")).clicked() { self.st.drop_pdf = None; }
+            });
+            if m.should_close() { self.st.drop_pdf = None; }
+            if let Some(h) = how { self.st.drop_pdf = None; self.insert_file(&path, h); }
+        }
         if self.st.show_trash {
             let mut open = true;
             let mut restore = None;

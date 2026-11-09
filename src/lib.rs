@@ -116,6 +116,18 @@ pub(crate) struct Prefs {
     pen: usize,
     /// 0 = raw ink, 1 = strongly smoothed lines.
     stabilizer: f32,
+    /// How pen pressure maps to thickness (1 = as measured, below 1 bolder light touches).
+    pressure_curve: f32,
+    /// Playback speed of recordings (kept between sessions).
+    speed: f32,
+    /// Opened locked sections close again after this many idle minutes (0: only when the app closes).
+    lock_after_min: u32,
+    /// A release the person chose not to be told about again.
+    skip_version: String,
+    /// The page last open in each section (section id → page id), to come back to it.
+    last_page: HashMap<u64, u64>,
+    /// Colours picked by hand lately (Pen settings shows them next to the presets).
+    recent_colors: Vec<[u8; 4]>,
     hl_color: [u8; 4],
     erase_partial: bool,
     /// Eraser size (radius, page points) and highlighter thickness.
@@ -159,7 +171,7 @@ pub(crate) struct Prefs {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35,
+        Prefs { dark: false, zoom: 1.0, show_nav: true, show_ai: false, ribbon_open: true, pens: default_pens(), pen: 0, stabilizer: 0.35, pressure_curve: 1.0, recent_colors: vec![], last_page: HashMap::new(), speed: 1.0, lock_after_min: 10, skip_version: String::new(),
             hl_color: [253, 224, 71, 120], erase_partial: true, eraser_size: 8.0, hl_width: 16.0, ink_ai: false, last: (0, 0, 0),
             follow_system: false, accent: [15, 118, 110], note_size: 15.0, line: 1.55, serif: true, new_paper: Paper::Plain,
             draw_mouse: false, draw_finger: false, pressure: true, straighten_hl: true, scratch_out: true, click_to_type: true, auto_lists: true, note_width: 480.0, favorites: vec![], recent: vec![], mic_ok: false, pen_detect: false, lang: String::new(), seen_version: String::new(), high_contrast: false, check_updates: true }
@@ -270,6 +282,20 @@ struct St {
     /// Take an undo step from `press_page` (the page when the pointer went down) at the end of this frame.
     snap_press: bool,
     press_page: Option<Page>,
+    /// A backup file picked to restore, waiting for "add" or "replace".
+    restore_ask: Option<PathBuf>,
+    /// A recording waiting for "yes, send it" before it goes to the AI service for a transcript.
+    transcribe_ask: Option<u64>,
+    /// When the person last did something (opened locked sections close after a while without).
+    last_input: f64,
+    /// When something was last moved to Recently deleted (an Undo button shows for a few seconds).
+    undo_delete: Option<f64>,
+    /// Scroll the page list to the open page (after moving to another page).
+    reveal: bool,
+    /// A PDF dropped on the window, waiting for "print it" or "attach it".
+    drop_pdf: Option<PathBuf>,
+    /// A tap on a printed PDF page: start a note there (screen position).
+    note_at: Option<Pos2>,
     heights: HashMap<u64, f32>,
     textures: HashMap<String, Option<TextureHandle>>,
     /// Pictures decoded in this frame (frame time, how many).
@@ -301,8 +327,10 @@ struct St {
     transcribe: Option<(u64, f64, Receiver<Result<Vec<(f32, String)>, String>>)>,
     transcribe_req: Option<u64>,
     /// A newer release: (version, its page), and the check still running.
-    update: Option<(String, String)>,
-    update_rx: Option<Receiver<Option<(String, String)>>>,
+    update: Option<(String, String, String)>,
+    update_rx: Option<Receiver<Option<(String, String, String)>>>,
+    /// The update check was asked for by hand (so "up to date" is said too).
+    update_manual: bool,
     /// A report from an earlier crash, waiting for "send or delete".
     crash: Option<PathBuf>,
     /// Page history window: (page, its older versions, the one selected).
@@ -597,11 +625,11 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false, 0.0), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], backlinks: vec![], backlinks_for: 0, open_tasks_n: 0, derived_at: -10.0, search_cache: None, switch_cache: None, insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, snap_press: false, press_page: None, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false, 0.0), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], backlinks: vec![], backlinks_for: 0, open_tasks_n: 0, derived_at: -10.0, search_cache: None, switch_cache: None, insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, snap_press: false, press_page: None, note_at: None, drop_pdf: None, undo_delete: None, reveal: true, last_input: now_f(), transcribe_ask: None, restore_ask: None, heights: HashMap::new(),
             textures: HashMap::new(), decodes: (0.0, 0), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
-            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, tour_fresh: false, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
+            status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, update_manual: false, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, tour_fresh: false, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
             full_save: true, full_at: 0.0, saves: 0, sync_saves: 0, instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
@@ -609,8 +637,9 @@ impl NotesApp {
         app.clamp();
         app.st.dirty = app.st.persist; // a first save moves secrets from older settings files into the keyring
         if let Some(m) = load_msg { app.st.say(m); app.st.status_age = -50.0; } // stays up for a minute
+        app.st.speed = app.st.p.speed.clamp(0.5, 2.0);
         if app.st.persist { app.recover_recordings(); app.greet(fresh_install); welcome::install_crash_hook(); app.st.crash = welcome::crash_reports().into_iter().next(); }
-        if app.st.persist && app.st.p.check_updates { app.st.update_rx = Some(updates::check(welcome::VERSION)); }
+        if app.st.persist && app.st.p.check_updates { app.st.update_rx = Some(updates::check(welcome::VERSION, app.st.p.skip_version.clone())); }
         if !persist {
             // A representative moment for the preview picture: a formatted note targeted, the AI pane mid-conversation.
             app.st.last_text = app.page().blocks.get(1).map(|b| b.id);
@@ -648,12 +677,19 @@ impl NotesApp {
         if self.st.dirty { self.st.full_save = true; } // the page being left may have unsaved changes
         if self.st.narrow { self.st.p.show_nav = false; } // phones: show the page that was picked
         (self.nb, self.sec, self.pg) = (nb, sec, pg);
-        if let Some(id) = self.store.notebooks.get(nb).and_then(|n| n.sections.get(sec)).and_then(|s| s.pages.get(pg)).map(|p| p.id) {
+        self.st.reveal = true;
+        if let Some((sid, id)) = self.store.notebooks.get(nb).and_then(|n| n.sections.get(sec)).and_then(|s| s.pages.get(pg).map(|p| (s.id, p.id))) {
+            self.st.p.last_page.insert(sid, id);
             self.st.p.recent.retain(|r| *r != id);
             self.st.p.recent.insert(0, id);
             self.st.p.recent.truncate(15);
         }
         self.st.popup = None;
+        // the assistant's answers were about the page left behind: say so in the chat, and don't send them along as context
+        if self.st.ai_log.last().is_some_and(|(_, t)| !t.starts_with("———")) {
+            let title = self.store.notebooks.get(nb).and_then(|n| n.sections.get(sec)).and_then(|s| s.pages.get(pg)).map(|p| p.title.clone()).unwrap_or_default();
+            self.st.ai_log.push((true, format!("——— {} ———", if title.trim().is_empty() { tr("Untitled page").to_string() } else { title })));
+        }
         self.st.player = None; // playback controls live on the page, so stop when leaving it
         self.st.fade_after = None;
         self.st.selected.clear();
@@ -663,6 +699,12 @@ impl NotesApp {
     }
 
     /// Where a page lives: (notebook, section, page) indexes.
+    /// Open a section where it was left (its last open page), or at its first page.
+    pub(crate) fn open_section(&mut self, nb: usize, sec: usize) {
+        let pg = self.store.notebooks.get(nb).and_then(|n| n.sections.get(sec)).and_then(|s| { let id = self.st.p.last_page.get(&s.id)?; s.pages.iter().position(|p| p.id == *id) }).unwrap_or(0);
+        self.go_to(nb, sec, pg);
+    }
+
     fn locate(&self, id: u64) -> Option<(usize, usize, usize)> {
         self.store.notebooks.iter().enumerate().find_map(|(a, n)| n.sections.iter().enumerate().find_map(|(b, s)| s.pages.iter().position(|p| p.id == id).map(|c| (a, b, c))))
     }
@@ -752,6 +794,7 @@ impl NotesApp {
             }
             None => {}
         }
+        if !binned.is_empty() { self.st.undo_delete = Some(now_f()); }
         self.store.trash.extend(binned);
         self.st.dirty = true;
         self.st.selected.clear();
@@ -862,17 +905,31 @@ impl NotesApp {
         }
         let (tx, rx) = channel();
         let (s, system) = (self.st.ai.clone(), system.to_string());
-        std::thread::spawn(move || { let _ = tx.send(ai::ask(&s, &system, &prompt, png.as_deref())); });
+        let optional_picture = matches!(job, Job::Chat); // the chat's handwriting picture is extra: some models take no pictures
+        std::thread::spawn(move || {
+            let mut r = ai::ask(&s, &system, &prompt, png.as_deref());
+            if r.is_err() && png.is_some() && optional_picture { r = ai::ask(&s, &system, &prompt, None); }
+            let _ = tx.send(r);
+        });
         self.st.ai_rx.push((job, rx));
     }
 
     fn chat(&mut self, prompt: String) {
-        let page = self.page().plain_text();
-        let history: String = self.st.ai_log.iter().rev().take(6).rev().map(|(ai, t)| format!("{}: {t}\n", if *ai { "Assistant" } else { "User" })).collect();
+        let mut page = self.page().plain_text();
+        // a long page or printout: the start of it, said so (a huge request is slow, may be refused, and costs)
+        const MAX: usize = 60_000;
+        if page.len() > MAX { let cut = page.char_indices().nth(MAX).map_or(page.len(), |(i, _)| i); page.truncate(cut); page.push_str("\n[… the rest of the page was left out]"); }
+        // the page's handwriting goes along as a picture, so questions about pen notes can be answered
+        let strokes: Vec<&Stroke> = self.page().strokes.iter().filter(|s| !s.highlighter).collect();
+        let png = if strokes.is_empty() { None } else { rasterize(&strokes) };
+        // the conversation about this page only (since the last "——— page ———" divider)
+        let since = self.st.ai_log.iter().rposition(|(_, t)| t.starts_with("———")).map_or(0, |i| i + 1);
+        let history: String = self.st.ai_log[since..].iter().rev().take(6).rev().map(|(ai, t)| format!("{}: {t}\n", if *ai { "Assistant" } else { "User" })).collect();
         let full = format!("{}--- Current note page ---\n{page}\n--- Request ---\n{prompt}", if history.is_empty() { String::new() } else { format!("--- Conversation so far ---\n{history}") });
         self.st.ai_log.push((false, prompt));
         self.st.p.show_ai = true;
-        self.start_job(Job::Chat, &format!("You are a helpful assistant inside a note-taking app. Reply in concise Markdown. Use $...$ for inline math and put display math on its own line as $$...$$. Write action items as '- [ ] item'.{}", crate::i18n::reply_hint()), full, None);
+        let picture = if png.is_some() { " The attached picture shows the page's handwritten notes." } else { "" };
+        self.start_job(Job::Chat, &format!("You are a helpful assistant inside a note-taking app. Reply in concise Markdown. Use $...$ for inline math and put display math on its own line as $$...$$. Write action items as '- [ ] item'.{picture}{}", crate::i18n::reply_hint()), full, png);
     }
 
     fn rewrite(&mut self, mode: Rewrite, instruction: &str) {
@@ -1144,10 +1201,12 @@ impl NotesApp {
     /// A new empty page on the chosen background (or the one from Settings).
     fn new_page(&mut self, paper: Option<Paper>) -> bool {
         if !self.section_open_for_writing() { return false; }
-        let p = Page { paper: paper.unwrap_or(self.st.p.new_paper), ..Page::new("") };
+        let mut p = Page { paper: paper.unwrap_or(self.st.p.new_paper), ..Page::new("") };
+        // right after the page you're on (a subpage next to subpages), not at the end of a long list
+        let pg = self.pg;
         let sec = self.section();
-        sec.pages.push(p);
-        let at = sec.pages.len() - 1;
+        let at = if pg < sec.pages.len() { p.level = sec.pages[pg].level; pg + 1 } else { sec.pages.len() };
+        sec.pages.insert(at, p);
         let (nb, s) = (self.nb, self.sec);
         self.go_to(nb, s, at);
         self.st.focus_id = Some(egui::Id::unique("page-title"));
@@ -1190,7 +1249,12 @@ impl NotesApp {
         if !whole && export::printout_source(&page, &hf).is_some() {
             let Some(out) = self.ask_save_path(&file, "pdf") else { return };
             match export::export_printout(&page, &data_dir().join("files"), &hf, self.st.p.note_size, &out) {
-                Ok(n) => { shared(&out); self.st.say(tf!("Exported the printout with your notes on {n} page(s) to {out}", n = n, out = where_saved(&out))) }
+                Ok(n) => {
+                    shared(&out);
+                    let lost = export::unprintable(&page);
+                    let note = if lost > 0 { tf!(" ⚠ {k} character(s) (Greek, maths symbols…) can't be printed this way and show as ?. “Export whole page as PDF” keeps them.", k = lost) } else { String::new() };
+                    self.st.say(tf!("Exported the printout with your notes on {n} page(s) to {out}", n = n, out = where_saved(&out)) + &note)
+                }
                 Err(e) => self.st.say(format!("⚠ {e}")),
             }
             return;
@@ -1416,8 +1480,40 @@ impl NotesApp {
             if key(Key::E) { self.st.tool = Tool::Eraser; }
             if key(Key::L) { self.st.tool = Tool::Lasso; }
             if !self.st.selected.is_empty() && (key(Key::Delete) || key(Key::Backspace)) { self.delete_selected_ink(); }
+            // ← / → skip 10 seconds in the recording that's playing
+            if let Some(pl) = &self.st.player {
+                if key(Key::ArrowLeft) { pl.seek(pl.time() - 10.0); }
+                if key(Key::ArrowRight) { pl.seek(pl.time() + 10.0); }
+            }
+            // 1–9: My pens; S: the next shape (not while studying, where 1–3 rate cards)
+            if self.st.study.is_none() {
+                for (i, k) in [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9].into_iter().enumerate() {
+                    if i < self.st.p.pens.len() && key(k) { self.st.p.pen = i; self.st.tool = Tool::Pen; }
+                }
+            }
+            if key(Key::S) {
+                self.st.tool = Tool::Shape(match self.st.tool { Tool::Shape(Shape::Line) => Shape::Arrow, Tool::Shape(Shape::Arrow) => Shape::Rect, Tool::Shape(Shape::Rect) => Shape::Ellipse, _ => Shape::Line });
+            }
+            // the page's own zoom (Ctrl +/− sizes the whole window's text instead)
+            let alt = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::ALT, k));
+            if alt(Key::Equals) || alt(Key::Plus) { self.st.zoom_req = Some(ZoomReq::By(1.25)); }
+            if alt(Key::Minus) { self.st.zoom_req = Some(ZoomReq::By(1.0 / 1.25)); }
+            if alt(Key::Num0) { self.st.zoom_req = Some(ZoomReq::To(1.0)); }
+            if alt(Key::Num9) { self.st.zoom_req = Some(ZoomReq::FitWidth); }
         }
         if cmd(Key::N) { self.new_page(None); }
+        // moving around and opening things without the mouse
+        let (nb, sec, pg) = (self.nb, self.sec, self.pg);
+        let pages = self.store.notebooks[nb].sections[sec].pages.len();
+        if cmd(Key::PageDown) && pg + 1 < pages { self.go_to(nb, sec, pg + 1); }
+        if cmd(Key::PageUp) && pg > 0 { self.go_to(nb, sec, pg - 1); }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)) { self.st.focus_id = Some(egui::Id::unique("page-title")); }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) { self.st.show_shortcuts = true; }
+        if !typing && cmd(Key::D) { self.duplicate_page(nb, sec, pg); }
+        if !typing && cmd(Key::B) { self.st.p.show_nav ^= true; }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) { self.st.tasks ^= true; }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R)) { self.start_review(); }
+        if cmd(Key::Comma) { self.st.show_settings = true; }
         if cmd(Key::F) { if self.st.narrow { self.st.p.show_nav = true; } self.st.focus_id = Some(egui::Id::unique("search")); }
         if cmd(Key::K) || cmd(Key::P) { self.st.switcher = Some((String::new(), 0)); }
         // Android's Back: closes whatever is on top, one thing per press; with nothing open, leaves the app
@@ -1538,11 +1634,29 @@ impl eframe::App for NotesApp {
         for img in ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::PasteImage(img) = e { Some(img.clone()) } else { None }).collect::<Vec<_>>()) {
             let file = format!("{}.png", new_id());
             let dir = data_dir().join("files");
+            // a big screenshot is stored at a sensible size (like picked pictures), so pages and sync stay quick
+            let pic = image::RgbaImage::from_raw(img.size[0] as u32, img.size[1] as u32, img.as_raw().to_vec()).map(image::DynamicImage::ImageRgba8)
+                .map(|p| if p.width().max(p.height()) > 2400 { p.resize(2400, 2400, image::imageops::FilterType::Triangle) } else { p });
             let r = std::fs::create_dir_all(&dir).map_err(|e| e.to_string())
-                .and_then(|_| image::save_buffer(dir.join(&file), img.as_raw(), img.size[0] as u32, img.size[1] as u32, image::ColorType::Rgba8).map_err(|e| e.to_string()));
+                .and_then(|_| pic.ok_or_else(|| "not a picture".to_string())?.save(dir.join(&file)).map_err(|e| e.to_string()));
             match r { Ok(()) => { self.insert(Kind::Image { file }); self.st.editing = None; self.st.say("Pasted the picture onto the page."); } Err(e) => self.st.say(tf!("⚠ Couldn't paste the picture: {e}", e = e)) }
         }
-        for f in ctx.input(|i| i.raw.dropped_files.clone()) { let p = f.path().to_path_buf(); if !p.as_os_str().is_empty() { self.insert_file(&p, Ins::Printout); } }
+        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+            let p = f.path().to_path_buf();
+            if p.as_os_str().is_empty() { continue; }
+            // a dropped PDF could be meant to write on or just to keep: ask (printing makes a picture of every page)
+            if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) { self.st.drop_pdf = Some(p); } else { self.insert_file(&p, Ins::Printout); }
+        }
+        // opened locked sections close again after a while without use (a laptop or phone left lying around)
+        if ctx.input(|i| !i.events.is_empty() || i.pointer.is_moving()) {
+            let idle = now_f() - self.st.last_input;
+            let after = self.st.p.lock_after_min as f64 * 60.0;
+            if after > 0.0 && idle > after && !self.st.keys.is_empty() {
+                for id in self.st.keys.keys().copied().collect::<Vec<_>>() { self.relock(id); }
+                self.st.say("Locked sections were closed again after a while without use.");
+            }
+            self.st.last_input = now_f();
+        }
         self.handle_keys(&ctx);
         self.poll_ai(&ctx);
         self.clamp();
@@ -1623,7 +1737,10 @@ impl eframe::App for NotesApp {
             self.st.due_now = self.due_cards().len();
             self.st.open_tasks_n = self.open_tasks().len();
             let here = self.store.notebooks[nb].sections[sec].pages[pg].title.trim().to_lowercase();
-            self.st.page_titles = self.store.notebooks.iter().flat_map(|n| n.sections.iter()).flat_map(|s| s.pages.iter()).map(|p| p.title.clone()).filter(|t| !t.trim().is_empty()).collect();
+            let all = || self.store.notebooks.iter().flat_map(|n| n.sections.iter()).flat_map(|s| s.pages.iter());
+            rich::set_known_titles(all().map(|p| p.title.trim().to_lowercase()).filter(|t| !t.is_empty()).collect());
+            // the "[[" list: every other page (linking a page to itself is no use)
+            self.st.page_titles = all().filter(|p| p.id != here_id).map(|p| p.title.clone()).filter(|t| !t.trim().is_empty()).collect();
             let needle = format!("[[{here}]]");
             let mut backlinks = vec![];
             if !here.is_empty() {
@@ -1721,7 +1838,11 @@ impl eframe::App for NotesApp {
         }
         self.poll_sync();
         self.poll_transcribe();
-        if let Some(rx) = &self.st.update_rx { if let Ok(r) = rx.try_recv() { self.st.update = r; self.st.update_rx = None; } }
+        if let Some(rx) = &self.st.update_rx { if let Ok(r) = rx.try_recv() {
+            if r.is_none() && std::mem::take(&mut self.st.update_manual) { self.st.say("Leaf Notes is up to date."); }
+            self.st.update = r;
+            self.st.update_rx = None;
+        } }
         if self.st.transcribe.is_some() { ctx.request_repaint_after(std::time::Duration::from_millis(500)); }
         if let Some((_, rx)) = &self.st.google_rx {
             match rx.try_recv() {

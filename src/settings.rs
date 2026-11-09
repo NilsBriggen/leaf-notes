@@ -116,6 +116,18 @@ impl NotesApp {
                                 if ui.button(tr("OpenAI")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.openai.com/v1".into(); a.model = "gpt-4o".into(); }
                                 if ui.button(tr("OpenRouter")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://openrouter.ai/api/v1".into(); a.model = "anthropic/claude-sonnet-5.5".into(); }
                                 if ui.button(tr("Ollama (on this computer)")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "http://localhost:11434/v1".into(); a.model = "llama3.2-vision".into(); }
+                                if ui.button(tr("LM Studio (on this computer)")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "http://localhost:1234/v1".into(); a.model = "local-model".into(); }
+                                if ui.button(tr("Groq")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.groq.com/openai/v1".into(); a.model = "llama-3.3-70b-versatile".into(); a.transcribe_model = "whisper-large-v3".into(); }
+                                if ui.button(tr("Mistral")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.mistral.ai/v1".into(); a.model = "mistral-large-latest".into(); }
+                            });
+                            // where a key comes from, for someone who has never made one (and the free option)
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(tr("Get a key:")).size(12.0).weak());
+                                ui.hyperlink_to(RichText::new("Anthropic").size(12.0), "https://console.anthropic.com/settings/keys");
+                                ui.hyperlink_to(RichText::new("OpenAI").size(12.0), "https://platform.openai.com/api-keys");
+                                ui.hyperlink_to(RichText::new("Groq").size(12.0), "https://console.groq.com/keys");
+                                ui.label(RichText::new(tr("· or run one free on this computer with")).size(12.0).weak());
+                                ui.hyperlink_to(RichText::new("Ollama").size(12.0), "https://ollama.com");
                             });
                             egui::Grid::new("ai_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                                 ui.label(tr("Service"));
@@ -198,11 +210,14 @@ impl NotesApp {
                                 sync::Via::Off => {}
                             }
                             let on = s.on();
-                            if *s != before { self.st.sync_err.clear(); self.st.sync_pending = true; self.st.sync_at = now_f(); self.st.dirty = true; }
+                            // changed here: wait for "Connect" (or for the window to close) rather than trying half-typed details
+                            if *s != before { self.st.sync_err.clear(); self.st.sync_pending = true; self.st.sync_at = f64::INFINITY; self.st.dirty = true; }
                             if on {
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
-                                    if ui.add_enabled(self.st.sync_rx.is_none(), egui::Button::new(tr("Sync now"))).clicked() { self.st.sync_now = true; }
+                                    let first = self.st.sync_ok == 0;
+                                    let b = if first { egui::Button::new(RichText::new(tr("Connect")).color(Color32::WHITE)).fill(accent_base()) } else { egui::Button::new(tr("Sync now")) };
+                                    if ui.add_enabled(self.st.sync_rx.is_none(), b).clicked() { self.st.sync_now = true; }
                                     if self.st.sync_rx.is_some() { ui.spinner(); ui.label(tr("Syncing…")); }
                                     else if !self.st.sync_err.is_empty() { ui.label(RichText::new(format!("⚠ {}", self.st.sync_err)).color(Color32::from_rgb(220, 80, 60))); }
                                     else if self.st.sync_ok > 0 { ui.label(RichText::new(tf!("✓ Synced {x}", x = ago(self.st.sync_ok))).color(accent(ui))); }
@@ -267,7 +282,16 @@ impl NotesApp {
                                 if ui.button(tr("Files…")).clicked() { let _ = crate::droid::pick(5, "text/*", true); }
                             });
                             row(ui, "Recently deleted", &if self.store.trash.is_empty() { tr("Nothing in here right now.").to_string() } else { tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()) }, |ui| { if ui.button(tr("Open")).clicked() { self.st.show_trash = true; } });
-                            row(ui, "Check for updates", "Once per start, asks GitHub whether a newer version is out (only the app's version is sent).", |ui| { toggle(ui, &mut p.check_updates); });
+                            row(ui, "Lock sections again", "Opened locked sections close again after this long without use (and always when Leaf Notes closes).", |ui| {
+                                egui::ComboBox::from_id_salt("lock-after").selected_text(if p.lock_after_min == 0 { tr("Only when closing").to_string() } else { tf!("After {m} min", m = p.lock_after_min) }).show_ui(ui, |ui| {
+                                    for m in [5u32, 10, 30, 60, 0] { ui.selectable_value(&mut p.lock_after_min, m, if m == 0 { tr("Only when closing").to_string() } else { tf!("After {m} min", m = m) }); }
+                                });
+                            });
+                            row(ui, "Check for updates", "Once per start, asks GitHub whether a newer version is out (only the app's version is sent).", |ui| {
+                                toggle(ui, &mut p.check_updates);
+                                if self.st.update_rx.is_some() { ui.spinner(); }
+                                else if ui.button(tr("Check now")).clicked() { self.st.update_rx = Some(crate::updates::check(crate::welcome::VERSION, String::new())); self.st.update_manual = true; }
+                            });
                             row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| { if ui.button(tr("Show")).clicked() { self.st.show_shortcuts = true; } });
                             row(ui, "Privacy and terms", &tf!("Notes stay on your devices; secrets are kept in {place}. Leaf Notes is free software under the GPL-3.0.", place = crate::keys::place()), |ui| {
                                 ui.hyperlink_to(tr("Terms"), "https://leafnotes.briggen.dev/terms");
@@ -295,7 +319,7 @@ impl NotesApp {
         });
         if modal.should_close() { open = false; }
         if test { self.test_ai(); }
-        if let Some(f) = restore { self.restore_backup(&f); }
+        if let Some(f) = restore { self.st.restore_ask = Some(f); }
         if let Some(path) = backup_to {
             // locked sections stay sealed in backups too
             let r = serde_json::to_vec_pretty(&self.sealed().unwrap_or_else(|| self.store.clone())).map_err(|e| e.to_string()).and_then(|b| crate::storage::write_atomic(&path, &b).map_err(|e| e.to_string()));
@@ -304,7 +328,11 @@ impl NotesApp {
         }
         if !import.is_empty() { self.import_markdown(import); }
         if serde_json::to_string(&self.st.p).unwrap_or_default() != before { apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
-        if !open { self.st.show_settings = false; self.st.dirty = true; }
+        if !open {
+            self.st.show_settings = false;
+            self.st.dirty = true;
+            if self.st.sync_at.is_infinite() { self.st.sync_at = now_f(); } // sync settings were changed without "Connect": try them now
+        }
     }
 
     /// The first sync with a place that already has notes: combine, or take the synced notes.

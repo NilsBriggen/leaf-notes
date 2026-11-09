@@ -46,6 +46,11 @@ fn winansi(s: &str) -> Vec<u8> {
     }).flat_map(|b| match b { b'(' | b')' | b'\\' => vec![b'\\', b], b => vec![b] }).collect()
 }
 
+/// How many characters of the page's typed notes the printout export can't print (they come out as '?').
+pub fn unprintable(page: &Page) -> usize {
+    page.blocks.iter().map(|b| note_text(&b.kind).chars().filter(|c| !c.is_control() && winansi(&c.to_string()) == b"?" && *c != '?').count()).sum()
+}
+
 /// Plain text of a note for printing over a printout (Markdown markers removed).
 fn note_text(k: &Kind) -> String {
     match k {

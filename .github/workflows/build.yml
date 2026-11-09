@@ -58,6 +58,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-wix --locked
+      # the tests on Windows too (paths, time zone, keyring code differ there)
+      - run: cargo test --release
       - run: cargo build --release
       - name: Sign the program
         if: env.HAS_CERT == 'true'
@@ -140,8 +142,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: CHANGELOG.md
+          sparse-checkout: |
+            CHANGELOG.md
+            Cargo.toml
           sparse-checkout-cone-mode: false
+      - name: The tag matches the app's version
+        # the app shows (and compares updates against) the Cargo.toml version: a tag that differs would mislabel it
+        run: |
+          T="${GITHUB_REF_NAME#v}"; C="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$C" != "$T" ] && [ "$C" != "${T%%-*}" ]; then echo "::error::Tag $GITHUB_REF_NAME but Cargo.toml says $C"; exit 1; fi
       - name: Release description from CHANGELOG.md
         # v0.3.0-beta → the "## 0.3.0 …" section; the build fails if it's missing, so no release goes out without one
         run: |
@@ -152,6 +161,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Checksums
+        # so a download can be checked: sha256sum -c SHA256SUMS
+        run: cd dist && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           body_path: notes.md
