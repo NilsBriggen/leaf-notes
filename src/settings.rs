@@ -9,6 +9,7 @@ impl NotesApp {
         let mut test = false;
         #[allow(unused_mut)]
         let (mut restore, mut import, mut backup_to): (Option<std::path::PathBuf>, Vec<std::path::PathBuf>, Option<std::path::PathBuf>) = (None, vec![], None);
+        let mut pdfs: Vec<std::path::PathBuf> = vec![];
         let before = serde_json::to_string(&self.st.p).unwrap_or_default();
         // phones: a thinner frame, and the section list shows only icons
         let narrow = ctx.content_rect().width() < 640.0;
@@ -86,6 +87,10 @@ impl NotesApp {
                             row(ui, "Draw with a finger", "Some phones report finger pressure like a pen; on those, fingers may still draw.", |ui| { toggle(ui, &mut p.draw_finger); });
                             row(ui, "Pressure-sensitive lines", "Press harder for thicker ink (fountain pen, pencil). Off: even lines.", |ui| { toggle(ui, &mut p.pressure); });
                             row(ui, "Smoothing", "Irons out shaky lines; higher values trail the pen slightly.", |ui| { ui.add(egui::Slider::new(&mut p.stabilizer, 0.0..=1.0).show_value(false)); });
+                            row(ui, "Hold still to snap shapes", "Draw a line, box or circle and keep the pen still at the end: it turns into a perfect one.", |ui| {
+                                toggle(ui, &mut p.snap_shapes);
+                                if p.snap_shapes { ui.add(egui::Slider::new(&mut p.snap_delay, 0.3..=1.5).suffix(" s")).tip("How long to hold still"); }
+                            });
                             row(ui, "Scribble to erase", "Scribbling back and forth over ink erases it (Undo brings it back).", |ui| { toggle(ui, &mut p.scratch_out); });
                             row(ui, "Straighten highlighter strokes", "Nearly straight highlights snap to a ruler-straight line.", |ui| { toggle(ui, &mut p.straighten_hl); });
                             row_below(ui, "Eraser", "Erase only what you touch, or whole strokes.", |ui| {
@@ -144,6 +149,9 @@ impl NotesApp {
                                 }
                             });
                             ui.label(RichText::new(tf!("Your key is kept in {place}.", place = crate::keys::place())).size(11.5).weak());
+                            row_below(ui, "Your own prompts", "One per line; each becomes a button in the assistant (e.g. “Make 5 exam questions from this page”).", |ui| {
+                                ui.add(egui::TextEdit::multiline(&mut p.prompts).desired_rows(3).desired_width(f32::INFINITY));
+                            });
                             row(ui, "Use this AI for handwriting", "Off: the built-in recognizer reads handwriting offline. On: sent to your AI (better for cursive; needs a model that reads images).", |ui| { toggle(ui, &mut p.ink_ai); });
                             ui.horizontal(|ui| {
                                 if ui.button(tr("Test connection")).clicked() { test = true; }
@@ -223,6 +231,12 @@ impl NotesApp {
                                     else if self.st.sync_ok > 0 { ui.label(RichText::new(tf!("✓ Synced {x}", x = ago(self.st.sync_ok))).color(accent(ui))); }
                                 });
                                 ui.label(RichText::new(tf!("Sign-ins and passwords are kept in {place}. Pictures, PDFs and recordings sync too.", place = crate::keys::place())).size(11.5).weak());
+                                let s = &mut self.st.sync;
+                                row(ui, "Big recordings", "Recordings over this size stay on this device (they are large: about 115 MB an hour).", |ui| {
+                                    egui::ComboBox::from_id_salt("rec-limit").selected_text(if s.max_recording_mb == 0 { tr("Always sync").to_string() } else { tf!("Over {n} MB stay here", n = s.max_recording_mb) }).show_ui(ui, |ui| {
+                                        for n in [0u32, 25, 100, 250] { ui.selectable_value(&mut s.max_recording_mb, n, if n == 0 { tr("Always sync").to_string() } else { tf!("Over {n} MB stay here", n = n) }); }
+                                    });
+                                });
                             }
                             if g_start {
                                 match sync::google_start() {
@@ -271,6 +285,14 @@ impl NotesApp {
                                 #[cfg(target_os = "android")]
                                 if ui.button(tr("Restore…")).clicked() { let _ = crate::droid::pick(4, "application/json,*/*", false); }
                             });
+                            #[cfg(not(target_os = "android"))]
+                            row(ui, "Import PDFs", "Each PDF becomes a page of its own, printed on it to write on (lecture slides).", |ui| {
+                                if ui.button(tr("Files…")).clicked() { if let Some(f) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_files() { pdfs = f; } }
+                            });
+                            row(ui, "Daily backups", "A copy of your notes each day in the backups folder (pictures and recordings stay in the files folder); the last 7 are kept.", |ui| { toggle(ui, &mut p.auto_backup); });
+                            // what takes the space, roughly
+                            let info = storage_summary(&data_dir());
+                            row(ui, "Storage", &info, |_| {});
                             row(ui, "Import Markdown", "Each Markdown file becomes a page in this section; a folder becomes a new section.", |ui| {
                                 let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
@@ -327,6 +349,7 @@ impl NotesApp {
             self.st.say(match r { Ok(_) => tf!("Backup saved to {path}", path = crate::where_saved(&path)), Err(e) => tf!("⚠ Backup failed: {e}", e = e) });
         }
         if !import.is_empty() { self.import_markdown(import); }
+        if !pdfs.is_empty() { self.import_pdfs(pdfs); }
         if serde_json::to_string(&self.st.p).unwrap_or_default() != before { apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
         if !open {
             self.st.show_settings = false;
@@ -369,4 +392,22 @@ impl NotesApp {
         }
     }
 
+}
+
+/// "Recordings 1.1 GB · Pictures 80 MB · …" for the files folder and the notes themselves (cached a few seconds).
+fn storage_summary(dir: &std::path::Path) -> String {
+    thread_local! { static CACHE: std::cell::RefCell<(f64, String)> = const { std::cell::RefCell::new((-100.0, String::new())) }; }
+    if let Some(s) = CACHE.with(|c| { let c = c.borrow(); (now_f() - c.0 < 5.0).then(|| c.1.clone()) }) { return s; }
+    let mut sizes = [0u64; 4]; // recordings, pictures, PDFs and files, notes
+    for e in std::fs::read_dir(dir.join("files")).into_iter().flatten().flatten() {
+        let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        let k = if name.ends_with(".wav") || name.ends_with(".wav.part") { 0 } else if [".png", ".jpg", ".jpeg", ".webp"].iter().any(|x| name.ends_with(x)) { 1 } else { 2 };
+        sizes[k] += len;
+    }
+    for sub in ["pages", "history"] { for e in std::fs::read_dir(dir.join(sub)).into_iter().flatten().flatten() { sizes[3] += e.metadata().map(|m| m.len()).unwrap_or(0); } }
+    let mb = |b: u64| if b >= 1 << 30 { format!("{:.1} GB", b as f64 / (1u64 << 30) as f64) } else { format!("{:.0} MB", (b as f64 / (1u64 << 20) as f64).ceil()) };
+    let s = tf!("Recordings {a} · Pictures {b} · PDFs and files {c} · Notes and history {d}", a = mb(sizes[0]), b = mb(sizes[1]), c = mb(sizes[2]), d = mb(sizes[3]));
+    CACHE.with(|c| *c.borrow_mut() = (now_f(), s.clone()));
+    s
 }

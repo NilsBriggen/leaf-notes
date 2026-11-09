@@ -4,7 +4,7 @@ use crate::chrome::format_date;
 use crate::*;
 use eframe::egui::{Align2, FontId, Rect, RichText, Sense};
 
-pub(crate) enum PageAction { Export, Copy, Delete, Duplicate, History, Unlock(String), Go(usize, usize, usize), ToggleFav, Study, Pdf(bool) }
+pub(crate) enum PageAction { Export, Copy, Delete, Duplicate, History, Unlock(String), Go(usize, usize, usize), Nav(bool), ToggleFav, Study, Pdf(bool) }
 
 /// Whole-page PDF export in progress: the page is shown tile by tile at a fixed zoom and each
 /// tile is photographed (so the PDF looks exactly like the page, maths and all).
@@ -29,7 +29,7 @@ impl Capture {
     pub fn done(&self) -> bool { self.wait == u8::MAX }
 }
 
-enum BlockAction { None, Changed, Delete, Duplicate }
+enum BlockAction { None, Changed, Delete, Duplicate, Card, Unpin }
 
 pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: &str, backlinks: &[(String, (usize, usize, usize))], fav: bool, study: &std::collections::HashMap<String, CardState>) -> Option<PageAction> {
     let mut action = None;
@@ -45,6 +45,9 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         // touch screens skip the where-and-when line (the pages list shows it) to leave room for the paper
         // one small line: where the page lives, when it was made, and pages linking here
         if head && (!touch || page.kind == PageKind::Locked) { ui.horizontal_wrapped(|ui| {
+            // back / forward between pages (after following links or search results)
+            if !st.nav_back.is_empty() && ui.add(egui::Button::new(RichText::new("◂").size(12.0)).frame_when_inactive(false)).tip("Back to the page before (Alt+←)").clicked() { action = Some(PageAction::Nav(true)); }
+            if !st.nav_fwd.is_empty() && ui.add(egui::Button::new(RichText::new("▸").size(12.0)).frame_when_inactive(false)).tip("Forward (Alt+→)").clicked() { action = Some(PageAction::Nav(false)); }
             ui.label(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2));
             if page.kind == PageKind::Locked { return; }
             ui.label(RichText::new(format!("·  {}", format_date(page.created, true))).size(11.0).weak());
@@ -192,6 +195,11 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
             ctx.request_repaint();
         }
         if st.pan != Vec2::ZERO { view = view.translate(-std::mem::take(&mut st.pan)); }
+        // opened from a search result: scroll to the first note with the words
+        if let Some(q) = st.find_text.take() {
+            let hit = page.blocks.iter().filter(|b| match &b.kind { Kind::Text { text, .. } => text.to_lowercase().contains(&q), k => k.summary().to_lowercase().contains(&q) }).min_by(|a, b| a.pos[1].total_cmp(&b.pos[1]));
+            if let Some(b) = hit { view = view.translate(Vec2::new(0.0, (b.pos[1] - 40.0).max(0.0) - view.top())); }
+        }
         // Page Up / Page Down: a screen at a time (long printouts), unless a note has the keyboard
         if !ui.ctx().egui_wants_keyboard_input() {
             let (up, down) = ui.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::PageUp), i.consume_key(Modifiers::NONE, Key::PageDown)));
@@ -324,7 +332,9 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             st.editing = Some(id);
             st.focus_id = Some(egui::Id::unique(("ed", id)));
         } else if let Some(p) = click_pos {
-            let (x, y) = ((p.x - o.x - 4.0).max(0.0), (p.y - o.y - 16.0).max(0.0));
+            let (x, mut y) = ((p.x - o.x - 4.0).max(0.0), (p.y - o.y - 16.0).max(0.0));
+            // on lined paper a new note starts on a line, so typed lines sit on the rules
+            if matches!(page.paper, Paper::Ruled | Paper::Cornell) { y = ((y - 8.0) / 28.0).round().max(0.0) * 28.0 + 8.0; }
             // never wider than the paper on screen (phones)
             let w = st.views.get(&page.id).map_or(st.p.note_width, |v| st.p.note_width.min(v.right() - x - 12.0).max(160.0));
             let b = block(x, y, w, Kind::Text { text: String::new(), heading: 0 });
@@ -351,6 +361,12 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             match block_ui(ui, b, st, o) {
                 BlockAction::Delete => remove = Some(b.id),
                 BlockAction::Duplicate => dup = Some(b.id),
+                BlockAction::Unpin => st.unpinned = Some(b.id),
+                BlockAction::Card => {
+                    let text = match &b.kind { Kind::Text { text, .. } => text.clone(), Kind::Math { src } => format!("${src}$"), k => k.summary() };
+                    let (f, back) = text.split_once("::").map_or((text.trim().to_string(), String::new()), |(f, b)| (f.trim().to_string(), b.trim().to_string()));
+                    st.make_card = Some((f, back));
+                }
                 BlockAction::Changed => changed = true,
                 BlockAction::None => {}
             }
@@ -665,7 +681,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     let now = ui.input(|i| i.time);
                     // "still" means within 3 screen points, whatever the zoom
                     if (p - st.still.0).length() > 3.0 * from_global.scaling { st.still = (p, now); }
-                    if !st.snapped && !s.highlighter && now - st.still.1 > 0.55 && s.points.len() > 8 {
+                    if st.p.snap_shapes && !st.snapped && !s.highlighter && now - st.still.1 > st.p.snap_delay as f64 && s.points.len() > 8 {
                         if let Some((pts, kind)) = snap_shape(&s.points) {
                             s.points = pts;
                             st.snapped = true;
@@ -849,11 +865,13 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name)); // screen readers say what it does
             resp.tip(tip)
         };
-        let g = button(ui, 0, BarIcon::Grip, "grip", Sense::drag(), "Drag to move");
+        // a printed PDF page stays where it is (the ink written on it is placed by position): its menu unpins it
+        let pinned = matches!(&b.kind, Kind::Image { file } if file.strip_suffix(".png").and_then(|f| f.rsplit_once("-page")).is_some_and(|(_, n)| n.parse::<u32>().is_ok())) && st.unpinned != Some(b.id);
+        let g = if pinned { ui.allocate_rect(Rect::NOTHING, Sense::hover()) } else { button(ui, 0, BarIcon::Grip, "grip", Sense::drag(), "Drag to move") };
         if g.drag_started() { st.snap_press = true; } // undo puts it back where it was
         if g.dragged() { let d = g.drag_delta(); b.pos[0] = (b.pos[0] + d.x).max(0.0); b.pos[1] = (b.pos[1] + d.y).max(0.0); act = BlockAction::Changed; }
         if g.hovered() || g.dragged() { ui.ctx().set_cursor_icon(if g.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab }); }
-        let rz = button(ui, 1, BarIcon::Resize, "rz", Sense::drag(), "Drag to make wider or narrower");
+        let rz = if pinned { ui.allocate_rect(Rect::NOTHING, Sense::hover()) } else { button(ui, 1, BarIcon::Resize, "rz", Sense::drag(), "Drag to make wider or narrower") };
         if rz.drag_started() { st.snap_press = true; }
         if rz.dragged() { b.width = (b.width + rz.drag_delta().x).clamp(120.0, 1600.0); act = BlockAction::Changed; }
         if rz.hovered() || rz.dragged() { ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal); }
@@ -861,6 +879,17 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
         let del = button(ui, 3, BarIcon::Delete, "del", Sense::click(), "Delete this note");
         if del.clicked() { return BlockAction::Delete; }
         menu_from = Some(more);
+    }
+    // Alt+arrows nudge the note being edited (without the mouse)
+    if st.editing == Some(b.id) {
+        let mut d = Vec2::ZERO;
+        ui.input_mut(|i| {
+            if i.consume_key(Modifiers::ALT, Key::ArrowLeft) { d.x -= 8.0; }
+            if i.consume_key(Modifiers::ALT, Key::ArrowRight) { d.x += 8.0; }
+            if i.consume_key(Modifiers::ALT, Key::ArrowUp) { d.y -= 8.0; }
+            if i.consume_key(Modifiers::ALT, Key::ArrowDown) { d.y += 8.0; }
+        });
+        if d != Vec2::ZERO { st.snap_press = true; b.pos = [(b.pos[0] + d.x).max(0.0), (b.pos[1] + d.y).max(0.0)]; act = BlockAction::Changed; }
     }
     if let Some(m) = &menu_from { egui::Popup::menu(m).show(|ui| block_menu(ui, b, &mut act)); }
     body.context_menu(|ui| block_menu(ui, b, &mut act));
@@ -905,10 +934,27 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
 }
 
 fn block_menu(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction) {
+    let mut rotated: Option<String> = None;
+    block_menu_items(ui, b, act, &mut rotated);
+    if let Some(to) = rotated { b.kind = Kind::Image { file: to }; *act = BlockAction::Changed; }
+}
+
+fn block_menu_items(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction, rotated: &mut Option<String>) {
     let textual = matches!(b.kind, Kind::Text { .. } | Kind::Math { .. } | Kind::Code { .. } | Kind::Checklist { .. });
     if ui.button(tr("⧉  Duplicate")).clicked() { *act = BlockAction::Duplicate; ui.close(); }
+    if textual && ui.button(tr("▤  Make a flashcard")).tip("Into this page's deck: “front :: back”, or the note as the front").clicked() { *act = BlockAction::Card; ui.close(); }
     match &b.kind {
-        Kind::Image { file } => { if ui.button(tr("↗  Open picture")).clicked() { open_path(&files_path(file)); ui.close(); } }
+        Kind::Image { file } => {
+            if ui.button(tr("↗  Open picture")).clicked() { open_path(&files_path(file)); ui.close(); }
+            // a sideways phone photo: turned for good (a new file, so other devices get it too)
+            if ui.button(tr("↻  Rotate a quarter turn")).clicked() {
+                let to = format!("{}.png", new_id());
+                let ok = image::ImageReader::open(files_path(file)).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.decode().ok()).map(|i| i.rotate90().save(files_path(&to)).is_ok()).unwrap_or(false);
+                if ok { *rotated = Some(to); }
+                ui.close();
+            }
+            if file.strip_suffix(".png").and_then(|f| f.rsplit_once("-page")).is_some() && ui.button(tr("✥  Move or resize this page")).clicked() { *act = BlockAction::Unpin; ui.close(); }
+        }
         Kind::File { file, .. } => { if ui.button(tr("↗  Open file")).clicked() { open_path(&files_path(file)); ui.close(); } }
         Kind::Link { url, .. } => { if ui.button(tr("⎘  Copy address")).clicked() { ui.ctx().copy_text(url.clone()); ui.close(); } }
         Kind::Math { src } => { if ui.button(tr("⎘  Copy LaTeX")).clicked() { ui.ctx().copy_text(src.clone()); ui.close(); } }
@@ -1431,6 +1477,20 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                         }
                     }
                 }
+                // Ctrl+Enter: a new note right below (no mouse needed)
+                if r.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) { st.insert_below = Some((b.id, Kind::Text { text: String::new(), heading: 0 })); }
+                // maths on the line being typed, shown as it will look
+                if r.has_focus() {
+                    if let Some(c) = out.cursor_range.map(|cr| cr.primary.index.0) {
+                        let line = text.chars().take(c).collect::<String>().rsplit('\n').next().unwrap_or("").to_string() + &text.chars().skip(c).take_while(|ch| *ch != '\n').collect::<String>();
+                        let maths: Vec<String> = rich::pieces_cached(&line).into_iter().filter_map(|p| if let rich::Piece::Math(m) = p { Some(m) } else { None }).collect();
+                        if !maths.is_empty() {
+                            egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(6).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| for m in &maths { math::math_label(ui, m, size); ui.add_space(12.0); });
+                            });
+                        }
+                    }
+                }
                 if r.lost_focus() && st.editing == Some(b.id) && st.fmt.is_none() && st.focus_id != Some(id) { st.editing = None; }
             } else {
                 let (clicked, link, tick) = rich::view_ticks(ui, text, size, hd, &colors);
@@ -1447,6 +1507,8 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(8).inner_margin(10).show(ui, |ui| {
                     ui.set_width(w - 20.0);
                     if src.trim().is_empty() { ui.label(RichText::new(tr("Type LaTeX below, or tap the symbols.")).weak()); } else { math::math_label(ui, src, 22.0); }
+                    let unknown = math::unknown_commands(src);
+                    if !unknown.is_empty() { ui.label(RichText::new(tf!("Not known here: {cmds} (a typo?)", cmds = unknown.join(", "))).size(11.5).color(Color32::from_rgb(214, 70, 60))); }
                     ui.add_space(6.0);
                     let r = ui.add(egui::TextEdit::multiline(src).id(id).code_editor().desired_rows(1).desired_width(f32::INFINITY).hint_text(tr(r"e.g. \frac{a}{b} or x^2 + y^2 = r^2")));
                     focus(&r, st);
@@ -1496,6 +1558,8 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                         new_item = Some((i, rest));
                     }
                     if r.has_focus() && was_empty && n > 1 && ui.input(|i| i.key_pressed(Key::Backspace)) { remove = Some(i); }
+                    // a visible way to remove an item (an empty field may send no Backspace on a phone)
+                    if active && n > 1 && ui.add(egui::Button::new(RichText::new("×").weak()).frame_when_inactive(false)).tip("Remove this item").clicked() { remove = Some(i); }
                 });
             }
             if let Some((i, rest)) = new_item {
@@ -1518,6 +1582,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             });
         }
         Kind::Table { rows } => {
+            let mut add_row = false;
             let cols = rows.first().map(|r| r.len()).unwrap_or(1).max(1);
             // Columns as wide as their longest cell, scaled down together if the note is narrower.
             let bold = rich::HAS_BOLD.load(std::sync::atomic::Ordering::Relaxed);
@@ -1528,19 +1593,23 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             let total: f32 = colw.iter().sum::<f32>() + cols as f32 * 10.0 + 12.0;
             if total > w { for c in &mut colw { *c = (*c * w / total).max(36.0); } }
             egui::Frame::new().stroke(ui.visuals().widgets.noninteractive.bg_stroke).corner_radius(6).inner_margin(6).show(ui, |ui| {
+                let n_rows = rows.len();
                 egui::Grid::new(("tbl", b.id)).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
                     for (ri, row) in rows.iter_mut().enumerate() {
                         for (ci, cell) in row.iter_mut().enumerate() {
                             let mut te = egui::TextEdit::singleline(cell).desired_width(colw[ci.min(cols - 1)]).clip_text(false).frame(egui::Frame::NONE).id(egui::Id::unique(("cell", b.id, ri, ci)));
                             if ri == 0 { te = te.font(head_font.clone()).text_color(acc); }
                             let r = ui.add(te);
-                            if ri == 0 && ci == 0 && st.focus_id == Some(id) { r.request_focus(); st.focus_id = None; }
+                            if (ri == 0 && ci == 0 && st.focus_id == Some(id)) || st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
                             changed |= r.changed();
+                            // Tab in the last cell: a new row, ready to type in
+                            if r.has_focus() && ri + 1 == n_rows && ci + 1 == cols && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) { add_row = true; }
                         }
                         ui.end_row();
                     }
                 });
             });
+            if add_row { st.snap_press = true; rows.push(vec![String::new(); cols]); st.focus_id = Some(egui::Id::unique(("cell", b.id, rows.len() - 1, 0))); changed = true; }
             if active {
                 ui.horizontal_wrapped(|ui| { // wraps inside narrow notes
                     let before = (rows.len(), cols);

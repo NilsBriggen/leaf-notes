@@ -4,6 +4,9 @@
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     let shot = args.iter().position(|a| a == "--screenshot").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
+    // files to open ("Open with Leaf Notes" in a file manager, or on the command line): onto the page at start
+    let files: Vec<std::path::PathBuf> = args.iter().skip(1).filter(|a| !a.starts_with("--") && shot.as_ref().is_none_or(|s| s.as_os_str() != a.as_str())).map(std::path::PathBuf::from).filter(|p| p.is_file()).collect();
+    let _ = leafnotes::OPEN_AT_START.set(files);
     if let Some(path) = &shot {
         // The window normally draws and saves the picture within a few seconds. A locked or hidden
         // screen gives it no frames at all: then draw the same app without a window instead.

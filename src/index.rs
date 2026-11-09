@@ -23,7 +23,8 @@ pub struct Index {
 fn source_hash(p: &Page) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     let mut add = |x: u64| h = (h ^ x).wrapping_mul(0x100000001b3);
-    for s in p.strokes.iter().filter(|s| !s.highlighter) { add(s.id); add(s.points.len() as u64); }
+    // where the ink is too (its ends), so moved or redrawn ink with the same number of points is read again
+    for s in p.strokes.iter().filter(|s| !s.highlighter) { add(s.id); add(s.points.len() as u64); for q in s.points.first().into_iter().chain(s.points.last()) { add(q[0].to_bits() as u64); add(q[1].to_bits() as u64); } }
     for f in pdfs(p) { for b in f.bytes() { add(b as u64); } }
     h
 }

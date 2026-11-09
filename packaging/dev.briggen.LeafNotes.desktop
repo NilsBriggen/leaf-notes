@@ -2,7 +2,8 @@
 Type=Application
 Name=Leaf Notes
 Comment=Notes with pen, maths, recordings and flashcards
-Exec=leafnotes
+Exec=leafnotes %F
+MimeType=application/pdf;text/markdown;image/png;image/jpeg;
 Icon=dev.briggen.LeafNotes
 Categories=Office;
 Keywords=notes;notebook;handwriting;pen;study;flashcards;maths;

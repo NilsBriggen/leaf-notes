@@ -13,7 +13,7 @@ impl NotesApp {
 
     pub(crate) fn history_window(&mut self, ctx: &egui::Context) {
         let Some((id, versions, mut sel)) = self.st.history.take() else { return };
-        let (mut open, mut restore) = (true, None);
+        let (mut open, mut restore, mut as_copy) = (true, None, None);
         egui::Window::new(tr("Page history")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 780.0), 520.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
             if versions.is_empty() {
                 ui.label(RichText::new(tr("No older versions yet. Leaf Notes keeps the previous version each time a page changes, at most every 10 minutes.")).weak());
@@ -34,13 +34,47 @@ impl NotesApp {
                 ui.vertical(|ui| {
                     let p = &versions[sel].1;
                     ui.label(RichText::new(if p.title.is_empty() { tr("Untitled page") } else { &p.title }).size(17.0).strong());
-                    ScrollArea::vertical().id_salt("history-preview").max_height(380.0).show(ui, |ui| { ui.label(p.plain_text()); });
+                    ScrollArea::vertical().id_salt("history-preview").max_height(380.0).show(ui, |ui| {
+                        // the handwriting too, small, so versions of a pen page can be told apart
+                        if !p.strokes.is_empty() {
+                            let (lo, hi) = p.strokes.iter().flat_map(|s| s.points.iter()).fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), q| ([lo[0].min(q[0]), lo[1].min(q[1])], [hi[0].max(q[0]), hi[1].max(q[1])]));
+                            let w = ui.available_width().min(480.0);
+                            let k = (w / (hi[0] - lo[0] + 20.0)).min(1.0);
+                            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ((hi[1] - lo[1] + 20.0) * k).min(400.0)), egui::Sense::hover());
+                            let painter = ui.painter_at(rect);
+                            painter.rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                            for s in &p.strokes {
+                                let pts: Vec<Pos2> = s.points.iter().map(|q| rect.min + Vec2::new((q[0] - lo[0] + 10.0) * k, (q[1] - lo[1] + 10.0) * k)).collect();
+                                painter.add(egui::Shape::line(pts, EStroke::new((s.width * k).max(1.0), Color32::from_rgba_unmultiplied(s.color[0], s.color[1], s.color[2], s.color[3]))));
+                            }
+                        }
+                        ui.label(p.plain_text());
+                    });
                     ui.add_space(6.0);
-                    if ui.button(tr("↺  Restore this version")).clicked() { restore = Some(sel); }
+                    ui.horizontal(|ui| {
+                        if ui.button(tr("↺  Restore this version")).clicked() { restore = Some(sel); }
+                        // or keep today's page and get the old one next to it
+                        if ui.button(tr("Restore as a new page")).clicked() { as_copy = Some(sel); }
+                    });
                     ui.label(RichText::new(tr("The page as it is now goes to Undo, so you can switch back.")).size(11.5).weak());
                 });
             });
         });
+        if let Some(i) = as_copy {
+            if let Some((a, b, c)) = self.locate(id) {
+                let mut p = versions[i].1.clone();
+                p.id = new_id();
+                p.other_of = None;
+                p.title = tf!("{title} (from {when})", title = p.title, when = chrome::format_date(versions[i].0, false));
+                for b in &mut p.blocks { b.id = new_id(); }
+                for s in &mut p.strokes { s.id = new_id(); }
+                for k in &mut p.cards { k.id = new_id(); }
+                self.store.notebooks[a].sections[b].pages.insert(c + 1, p);
+                self.go_to(a, b, c + 1);
+                self.st.say("The old version is now a page of its own, next to the current one.");
+            }
+            return;
+        }
         if let Some(i) = restore {
             let old = versions[i].1.clone();
             if let Some(cur) = self.find_page(id).cloned() {

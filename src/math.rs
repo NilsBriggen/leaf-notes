@@ -231,6 +231,26 @@ impl Parser {
 
 fn parse_row(src: &str) -> Node { Node::Row(Parser { s: src.chars().collect(), i: 0 }.row(true).0) }
 
+/// Commands in `src` this renderer doesn't know (shown in red; usually a typo).
+pub fn unknown_commands(src: &str) -> Vec<String> {
+    fn walk(n: &Node, out: &mut Vec<String>) {
+        match n {
+            Node::Sym(s, _) if s.len() > 1 && s.starts_with('\\') && !s.contains(' ') => out.push(s.clone()),
+            Node::Row(v) => for x in v { walk(x, out) },
+            Node::Frac(a, b, _) => { walk(a, out); walk(b, out) }
+            Node::Sqrt(a, b) => { walk(a, out); if let Some(b) = b { walk(b, out) } }
+            Node::Script { base, sup, sub } => { walk(base, out); for x in [sup, sub].into_iter().flatten() { walk(x, out) } }
+            Node::Fenced(_, a, _) | Node::Accent(a, _) => walk(a, out),
+            Node::Matrix { rows, .. } => for r in rows { for x in r { walk(x, out) } },
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    walk(&parse(src), &mut out);
+    out.dedup();
+    out
+}
+
 /// Parse a LaTeX math expression. Top-level `\\` and `&` lay out as aligned lines.
 pub fn parse(src: &str) -> Node {
     let src = src.trim().trim_start_matches("$$").trim_end_matches("$$").trim_matches('$');
@@ -299,6 +319,8 @@ fn layout(p: &Painter, n: &Node, size: f32, color: Color32) -> MBox {
         Node::Sym(s, it) => {
             let pad = if matches!(s.as_str(), "=" | "+" | "−" | "-" | "<" | ">" | "≤" | "≥" | "≠" | "≈" | "≡" | "→" | "⇒" | "⇔" | "×" | "·" | "±" | "∈" | "⊂" | "⊆" | "∼" | "∝" | "↦") { size * 0.18 } else { 0.0 };
             let s = if s == "-" { "−" } else { s.as_str() };
+            // a command this renderer doesn't know (a typo, most likely) stands out instead of passing for part of the formula
+            let color = if s.len() > 1 && s.starts_with('\\') { Color32::from_rgb(214, 70, 60) } else { color };
             let mut b = text_box(p, s, size, *it, color);
             if pad > 0.0 { let mut o = MBox { w: b.w + 2.0 * pad, asc: b.asc, desc: b.desc, items: vec![] }; o.append(b, pad, 0.0); b = o; }
             b
@@ -524,6 +546,11 @@ mod tests {
         let deep = "{".repeat(5000) + "x" + &"}".repeat(5000);
         assert!(matches!(parse(&deep), Node::Sym(..)));
         assert!(matches!(parse(&"\\sqrt".repeat(3000)), Node::Sym(..)));
+    }
+    #[test]
+    fn tells_unknown_commands() {
+        assert_eq!(unknown_commands(r"\alpha + \alhpa"), vec![r"\alhpa".to_string()]);
+        assert!(unknown_commands(r"\frac{a}{b}").is_empty());
     }
     #[test]
     fn parses_structures() {

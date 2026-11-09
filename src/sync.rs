@@ -34,6 +34,8 @@ pub struct SyncSettings {
     /// Google Drive: the long-lived sign-in (refresh token) and whose Drive it is.
     #[serde(default)] pub google_token: String,
     #[serde(default)] pub google_email: String,
+    /// Recordings bigger than this many MB stay on this device (0: no limit), for small data plans and quotas.
+    #[serde(default)] pub max_recording_mb: u32,
 }
 
 impl SyncSettings {
@@ -120,6 +122,7 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
         let (mut up, mut down) = (0, 0);
         for f in list_files(&files) {
             if have.contains(&f) || failed.iter().any(|(n, _)| *n == f) { continue; }
+            if s.max_recording_mb > 0 && f.ends_with(".wav") && std::fs::metadata(files.join(&f)).is_ok_and(|m| m.len() > s.max_recording_mb as u64 * 1_000_000) { continue; }
             if sent.contains(&f) { have.push(f); continue; }
             match remote.put_file(&f, &files.join(&f)) { Ok(()) => { sent.push(f.clone()); have.push(f); up += 1; } Err(e) => failed.push((f, e)) }
         }

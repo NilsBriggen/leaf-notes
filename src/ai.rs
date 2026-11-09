@@ -127,12 +127,19 @@ pub fn transcribe(s: &AiSettings, samples: &[i16], rate: u32) -> Result<Vec<(f32
         body.extend(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.wav\"\r\nContent-Type: audio/wav\r\n\r\n").bytes());
         body.extend(crate::audio::wav_bytes(part));
         body.extend(format!("\r\n--{boundary}--\r\n").bytes());
-        let mut resp = agent.post(&url).header("authorization", format!("Bearer {}", s.api_key.trim()))
-            .header("content-type", format!("multipart/form-data; boundary={boundary}")).send(&body[..])
-            .map_err(|e| format!("Could not reach {url}: {e}"))?;
+        // a part that fails after others worked: keep those, and say where it stopped
+        let stop = |e: String, out: Vec<(f32, String)>| -> Result<Vec<(f32, String)>, String> {
+            if out.is_empty() { return Err(e); }
+            let mut out = out;
+            out.push((offset, crate::tf!("[The transcript stops here, at {m} min: {e}]", m = format!("{:.0}", offset / 60.0), e = e)));
+            Ok(out)
+        };
+        let sent = agent.post(&url).header("authorization", format!("Bearer {}", s.api_key.trim()))
+            .header("content-type", format!("multipart/form-data; boundary={boundary}")).send(&body[..]);
+        let mut resp = match sent { Ok(r) => r, Err(e) => return stop(format!("Could not reach {url}: {e}"), out) };
         let status = resp.status();
-        let v: Value = resp.body_mut().read_json().map_err(|e| format!("Bad reply ({status}): {e}"))?;
-        if !status.is_success() { return Err(format!("{status}: {}", v["error"]["message"].as_str().unwrap_or("transcription failed"))); }
+        let v: Value = match resp.body_mut().read_json() { Ok(v) => v, Err(e) => return stop(format!("Bad reply ({status}): {e}"), out) };
+        if !status.is_success() { return stop(format!("{status}: {}", v["error"]["message"].as_str().unwrap_or("transcription failed")), out); }
         match v["segments"].as_array() {
             Some(segs) => for seg in segs {
                 let t = seg["start"].as_f64().unwrap_or(0.0) as f32 + offset;

@@ -31,15 +31,21 @@ jobs:
       - name: Package AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          # lets AppImageUpdate (and app stores using it) fetch only what changed from the latest release
+          LDAI_UPDATE_INFORMATION: "gh-releases-zsync|NilsBriggen|leaf-notes|latest|LeafNotes-*-x86_64.AppImage.zsync"
         run: |
           wget -q -O /tmp/linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x /tmp/linuxdeploy
           /tmp/linuxdeploy --appdir AppDir -e target/release/leafnotes -d packaging/leafnotes.desktop -i packaging/leafnotes.png --output appimage
           mv ./*.AppImage "LeafNotes-${{ env.VERSION }}-x86_64.AppImage"
+          if ls ./*.AppImage.zsync >/dev/null 2>&1; then mv ./*.AppImage.zsync "LeafNotes-${{ env.VERSION }}-x86_64.AppImage.zsync"; fi
       - uses: actions/upload-artifact@v4
         with:
           name: LeafNotes-linux
-          path: LeafNotes-${{ env.VERSION }}-x86_64.AppImage
+          path: |
+            LeafNotes-${{ env.VERSION }}-x86_64.AppImage
+            LeafNotes-${{ env.VERSION }}-x86_64.AppImage.zsync
+          if-no-files-found: warn
 
   msi:
     # windows-2022 comes with the WiX 3 toolset that cargo-wix uses

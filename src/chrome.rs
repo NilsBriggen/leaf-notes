@@ -111,6 +111,19 @@ fn group(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui)) {
 
 
 /// A moment as the clock on this device's wall shows it (local time, not UTC).
+/// "2026-11-09" (local date), for file names.
+pub(crate) fn day_name(secs: u64) -> String {
+    let d = (secs as i64 + local_offset(secs)).max(0) / 86_400;
+    let z = d + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (day, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    format!("{:04}-{m:02}-{day:02}", yoe + era * 400 + (m <= 2) as i64)
+}
+
 pub(crate) fn format_date(secs: u64, time: bool) -> String {
     format_utc((secs as i64 + local_offset(secs)).max(0) as u64, time)
 }
@@ -162,6 +175,26 @@ fn format_utc(secs: u64, time: bool) -> String {
     if time { s += &format!("  ·  {:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60); }
     s
 }
+
+/// The day a task is due, from "@2026-11-20" in its text (days since 1970).
+pub(crate) fn due_day(text: &str) -> Option<i64> {
+    let at = text.find('@')?;
+    let d = text.get(at + 1..at + 11)?;
+    let (y, m, day) = (d.get(0..4)?.parse::<i64>().ok()?, d.get(5..7)?.parse::<i64>().ok()?, d.get(8..10)?.parse::<i64>().ok()?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || d.as_bytes()[4] != b'-' { return None; }
+    // days-from-civil (Howard Hinnant)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
+    Some(era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468)
+}
+
+/// A page being dragged in the pages column: (its section's id, its place there).
+struct DragPage(u64, usize);
+
+/// The Ctrl+K list's commands (in `run_command`'s order).
+const COMMANDS: [&str; 11] = ["New page", "New deck", "Review due cards", "All tasks", "Settings", "Recently deleted", "Page history", "Keyboard shortcuts", "Dark mode on/off", "Export page as PDF", "New lecture"];
 
 /// A search result: (only a near miss, where the page is, title, notebook › section, the page's text, match start, match end).
 pub(crate) type SearchHit = (bool, (usize, usize, usize), String, String, String, usize, usize);
@@ -379,6 +412,16 @@ impl NotesApp {
                         egui::Button::new(RichText::new(tr(if compact { "●" } else { "●  Record" })).color(red)).frame_when_inactive(false).corner_radius(17).min_size(Vec2::new(0.0, 34.0))
                     };
                     if ui.add(rec_btn).tip("Record audio while you take notes; later, tap any note to hear what was said then").clicked() { self.st.rec_toggle = true; }
+                    // "this matters" during a lecture: a small marked note at this moment, to find in the recording later
+                    if self.st.recorder.is_some() && ui.add(egui::Button::new(RichText::new("⚑").size(16.0)).frame_when_inactive(false)).tip("Mark this moment (a note linked to it)").clicked() {
+                        let at = self.st.recorder.as_ref().map_or(0.0, |r| now_f() - r.3);
+                        let y = self.next_free_y();
+                        let mut b = block(24.0, y, 260.0, Kind::Text { text: tf!("⚑ Marked at {t}", t = format!("{:02}:{:02}", at as u64 / 60, at as u64 % 60)), heading: 0 });
+                        b.tag = Tag::Important;
+                        let snap = self.page().clone();
+                        self.st.snap(&snap);
+                        self.page().blocks.push(b);
+                    }
                 });
             });
             if two_rows {
@@ -566,6 +609,8 @@ impl NotesApp {
             let r = rbtn(ui, "▦", "Page on… ▾", false).tip("A new page on the background you pick");
             egui::Popup::menu(&r).show(|ui| {
                 for (p, icon, name) in PAPERS { if ui.button(tf!("{icon}  {name}", icon = icon, name = tr(name))).clicked() { self.new_page(Some(p)); ui.close(); } }
+                ui.separator();
+                for (i, (name, ..)) in crate::TEMPLATES.iter().enumerate() { if ui.button(format!("▦  {}", tr(name))).clicked() { self.new_page_template(i); ui.close(); } }
             });
         });
     }
@@ -732,9 +777,26 @@ impl NotesApp {
                     self.st.snap(&snap);
                     self.st.selected = ids;
                 }
+                if rbtn(ui, "⎘", "Copy", false).tip("Copy the selected ink (Ctrl+C); paste with Ctrl+V, also on another page").clicked() { self.copy_ink(false); }
                 if rbtn(ui, "🗑", "Delete", false).clicked() { self.delete_selected_ink(); }
+                // recolour the selection with one tap (highlights get the highlighter colours)
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        for c in PEN_COLORS {
+                            if swatch(ui, c, false).clicked() {
+                                let sel = self.st.selected.clone();
+                                let page = self.page();
+                                let snap = page.clone();
+                                for s in page.strokes.iter_mut().filter(|s| sel.contains(&s.id)) { s.color = if s.highlighter { [c[0], c[1], c[2], s.color[3]] } else { c }; }
+                                self.st.snap(&snap);
+                            }
+                        }
+                    });
+                });
             });
         }); }
+        if !self.st.ink_clip.is_empty() && !any && self.st.tool == Tool::Lasso { group(ui, "Selection", |ui| { if rbtn(ui, "⎗", "Paste", false).tip("Paste the copied ink (Ctrl+V)").clicked() { self.paste_ink(); } }); }
         group(ui, "Convert", |ui| {
             if rbtn(ui, "✎→A", "Ink to text", false).tip("Turn handwriting (selected, or all on the page) into typed text — works offline").clicked() { self.ink_convert(false); }
             if rbtn(ui, "✎→∑", "Ink to math", false).tip("Turn handwritten math into a LaTeX equation — works offline").clicked() { self.ink_convert(true); }
@@ -958,7 +1020,8 @@ impl NotesApp {
             let state = self.store.study.entry(key).or_default();
             sd.queue.remove(0);
             match k {
-                0 => { state.bx = 0; state.due = now_secs(); let at = sd.queue.len().min(3); sd.queue.insert(at, i); if !sd.missed.contains(&i) { sd.missed.push(i); } }
+                // a slip on a well-known card costs two boxes, not all of them; it's due again in ten minutes
+                0 => { state.bx = state.bx.saturating_sub(2); state.due = now_secs() + 600; let at = sd.queue.len().min(3); sd.queue.insert(at, i); if !sd.missed.contains(&i) { sd.missed.push(i); } }
                 n => { state.bx = (state.bx + n as u8).min(5); state.due = now_secs() + STUDY_DAYS[state.bx as usize] * 86_400; }
             }
             sd.tally[k] += 1;
@@ -1043,6 +1106,8 @@ impl NotesApp {
                     },
                     _ => {}
                 }
+                // a whole note tagged To Do is a task too (index MAX: tick it by tagging it Done)
+                if bl.tag == Tag::Todo { out.push(((a, b, c), title.clone(), bl.id, usize::MAX, bl.kind.summary().lines().next().unwrap_or("").to_string(), false)); }
             }
         }}}
         out
@@ -1055,7 +1120,10 @@ impl NotesApp {
         });
         ui.label(RichText::new(tr("Open to-dos from every notebook. Tick them off here.")).size(11.5).weak());
         ui.separator();
-        let tasks = self.open_tasks();
+        let mut tasks = self.open_tasks();
+        // tasks with a date ("@2026-11-20") first, soonest first
+        tasks.sort_by_key(|t| due_day(&t.4).unwrap_or(i64::MAX));
+        let today = (now_secs() / 86_400) as i64;
         let mut tick = None;
         let mut go = None;
         egui::ScrollArea::vertical().id_salt("tasks-scroll").auto_shrink([false; 2]).show(ui, |ui| {
@@ -1070,7 +1138,11 @@ impl NotesApp {
                 ui.horizontal(|ui| {
                     let mut d = false;
                     if ui.checkbox(&mut d, "").changed() { tick = Some((*at, *bid, *idx)); }
-                    ui.add(egui::Label::new(RichText::new(text).size(13.5)).wrap());
+                    if let Some(day) = due_day(text) {
+                        let (label, col) = if day < today { (tr("overdue"), Color32::from_rgb(214, 70, 60)) } else if day == today { (tr("today"), accent(ui)) } else { ("", ui.visuals().weak_text_color()) };
+                        if !label.is_empty() { ui.label(RichText::new(label).size(11.0).color(col)); }
+                    }
+                    if ui.add(egui::Label::new(RichText::new(text).size(13.5)).wrap().sense(Sense::click())).tip("Open this page").clicked() { go = Some(*at); }
                 });
             }
         });
@@ -1079,6 +1151,7 @@ impl NotesApp {
             let snap = page.clone();
             if let Some(bl) = page.blocks.iter_mut().find(|bl| bl.id == bid) {
                 match &mut bl.kind {
+                    _ if idx == usize::MAX => bl.tag = Tag::Done,
                     Kind::Checklist { items } => if let Some(it) = items.get_mut(idx) { it.0 = true; },
                     Kind::Text { text, .. } => {
                         let lines: Vec<String> = text.lines().enumerate().map(|(i, l)| if i == idx { l.replacen("[ ]", "[x]", 1) } else { l.to_string() }).collect();
@@ -1187,6 +1260,12 @@ impl NotesApp {
                     r.context_menu(|ui| { if ui.button(tr("Remove from favourites")).clicked() { self.st.p.favorites.retain(|f| *f != id); self.st.dirty = true; ui.close(); } });
                 }
             }
+            // pages kept twice by sync (changed on two devices at once): easy to find, not only by stumbling on them
+            let conflicts: Vec<(usize, usize, usize)> = self.store.notebooks.iter().enumerate().flat_map(|(a, n)| n.sections.iter().enumerate().flat_map(move |(b, s)| s.pages.iter().enumerate().filter(|(_, p)| p.other_of.is_some()).map(move |(c, _)| (a, b, c)))).collect();
+            if let Some(&(a, b, c)) = conflicts.first() {
+                if ui.add(egui::Button::new(RichText::new(tf!("⚠  Sync conflicts · {n}", n = conflicts.len())).size(13.0).color(Color32::from_rgb(214, 120, 40))).frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
+                    .tip("Pages changed on two devices at once: open one to compare and keep a version").clicked() { self.go_to(a, b, c); }
+            }
             // what you had open lately (not the favourites, not this page)
             let here = self.store.notebooks[self.nb].sections[self.sec].pages.get(self.pg).map(|p| p.id);
             let recent: Vec<(u64, String, (usize, usize, usize))> = self.st.p.recent.iter().filter(|id| Some(**id) != here && !self.st.p.favorites.contains(id)).filter_map(|id| self.locate(*id).map(|at| {
@@ -1211,11 +1290,18 @@ impl NotesApp {
             let names: Vec<(u64, String)> = self.store.notebooks.iter().map(|n| (n.id, n.name.clone())).collect();
             let nb = &mut self.store.notebooks[self.nb];
             let (mut clicked, mut recolor, mut swap, mut move_to, mut lock_act) = (None, None, None, None, None);
+            let mut dup_sec: Option<usize> = None;
+            let mut drop_in: Option<(u64, usize, u64)> = None;
             let count = nb.sections.len();
             egui::ScrollArea::vertical().id_salt("sections-scroll").auto_shrink([false, true]).show(ui, |ui| {
                 for (i, s) in nb.sections.iter().enumerate() {
                     let r = nav_item(ui, &mut self.st, s.id, &s.name, Some(c3(s.color)), i == self.sec, 0, None);
                     if r.clicked() { clicked = Some(i); }
+                    // a page dragged here from the pages column moves into this section
+                    if !s.sealed() {
+                        if r.dnd_hover_payload::<DragPage>().is_some_and(|x| x.0 != s.id) { ui.painter().rect_stroke(r.rect, 8.0, EStroke::new(2.0, accent(ui)), egui::StrokeKind::Inside); }
+                        if let Some(x) = r.dnd_release_payload::<DragPage>() { if x.0 != s.id { drop_in = Some((x.0, x.1, s.id)); } }
+                    }
                     r.context_menu(|ui| {
                         if ui.button(tr("Rename")).clicked() { self.st.rename = Some((s.id, s.name.clone())); ui.close(); }
                         ui.horizontal(|ui| for c in PALETTE {
@@ -1225,6 +1311,7 @@ impl NotesApp {
                         });
                         if i > 0 && ui.button(tr("Move up")).clicked() { swap = Some((i, i - 1)); ui.close(); }
                         if i + 1 < count && ui.button(tr("Move down")).clicked() { swap = Some((i, i + 1)); ui.close(); }
+                        if s.lock.is_none() && ui.button(tr("Duplicate section")).clicked() { dup_sec = Some(i); ui.close(); }
                         if nb_count > 1 {
                             ui.menu_button(tr("Move to notebook"), |ui| for (id, name) in &names {
                                 if *id != nb.id && ui.button(name).clicked() { move_to = Some((i, *id)); ui.close(); }
@@ -1244,6 +1331,26 @@ impl NotesApp {
                 }
             });
             if let Some((i, c)) = recolor { nb.sections[i].color = c; self.st.dirty = true; }
+            if let Some((from_sec, i, to_sec)) = drop_in {
+                let page = self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).find(|s| s.id == from_sec).filter(|s| i < s.pages.len()).map(|s| s.pages.remove(i));
+                if let Some(p) = page {
+                    let title = p.title.clone();
+                    if let Some(s) = self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).find(|s| s.id == to_sec) { s.pages.push(p); }
+                    self.clamp();
+                    self.st.dirty = true;
+                    self.st.say(tf!("Moved “{title}”.", title = title));
+                }
+            }
+            let nb = &mut self.store.notebooks[self.nb];
+            if let Some(i) = dup_sec {
+                // a copy with its own ids throughout (study progress of its cards starts fresh)
+                let mut s = nb.sections[i].clone();
+                s.id = new_id();
+                s.name = tf!("{name} (copy)", name = s.name);
+                for p in &mut s.pages { p.id = new_id(); for b in &mut p.blocks { b.id = new_id(); } for k in &mut p.strokes { k.id = new_id(); } for c in &mut p.cards { c.id = new_id(); } }
+                nb.sections.insert(i + 1, s);
+                self.st.dirty = true;
+            }
             match lock_act {
                 Some((id, 0)) => self.st.lock_prompt = Some(locks::LockPrompt { section: id, ..Default::default() }),
                 Some((id, 1)) => { self.relock(id); self.st.say("Section locked."); }
@@ -1276,6 +1383,8 @@ impl NotesApp {
                     let t = ui.add(egui::Button::new("▾").frame_when_inactive(false)).tip("New page on a background, or a flashcard deck");
                     egui::Popup::menu(&t).show(|ui| {
                         for (p, icon, name) in PAPERS { if ui.button(tf!("{icon}  {name}", icon = icon, name = tr(name))).clicked() { self.new_page(Some(p)); ui.close(); } }
+                        ui.separator();
+                        for (i, (name, ..)) in crate::TEMPLATES.iter().enumerate() { if ui.button(format!("▦  {}", tr(name))).clicked() { self.new_page_template(i); ui.close(); } }
                         ui.separator();
                         if ui.button(tr("▤  Flashcard deck")).clicked() { self.new_deck("New deck", vec![]); ui.close(); }
                     });
@@ -1327,13 +1436,21 @@ impl NotesApp {
             if ui.button(tr("+  New notebook")).clicked() { action = 1; ui.close(); }
             if ui.button(tr("✎  Rename this notebook")).clicked() { action = 2; ui.close(); }
             if ui.button(tr("🗑  Recently deleted")).clicked() { action = 3; ui.close(); }
+            // this notebook's colour and place in the list
+            ui.horizontal(|ui| for c in PALETTE {
+                let (rect, cr) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+                ui.painter().rect_filled(rect, 4.0, c3(c));
+                if cr.clicked() { action = 10 + PALETTE.iter().position(|x| *x == c).unwrap_or(0); ui.close(); }
+            });
+            if self.nb > 0 && ui.button(tr("Move up")).clicked() { action = 5; ui.close(); }
+            if self.nb + 1 < self.store.notebooks.len() && ui.button(tr("Move down")).clicked() { action = 6; ui.close(); }
             if self.store.notebooks.len() > 1 && ui.button(RichText::new(tr("Delete this notebook")).color(Color32::from_rgb(200, 60, 50))).clicked() { action = 4; ui.close(); }
         });
         if let Some(i) = pick { self.open_section(i, 0); }
         match action {
             1 => {
                 let c = PALETTE[self.store.notebooks.len() % PALETTE.len()];
-                let n = Notebook { id: new_id(), name: "New notebook".into(), color: c, sections: vec![] };
+                let n = Notebook { id: new_id(), name: tr("New notebook").into(), color: c, sections: vec![] };
                 self.st.rename = Some((n.id, n.name.clone()));
                 self.store.notebooks.push(n);
                 self.go_to(self.store.notebooks.len() - 1, 0, 0);
@@ -1341,6 +1458,8 @@ impl NotesApp {
             2 => self.st.rename = Some((id, name)),
             3 => self.st.show_trash = true,
             4 => self.delete(id),
+            5 | 6 => { let (a, b) = if action == 5 { (self.nb, self.nb - 1) } else { (self.nb, self.nb + 1) }; self.store.notebooks.swap(a, b); self.nb = b; self.st.dirty = true; }
+            c if c >= 10 => { self.store.notebooks[self.nb].color = PALETTE[(c - 10).min(PALETTE.len() - 1)]; self.st.dirty = true; }
             _ => {}
         }
     }
@@ -1359,6 +1478,8 @@ impl NotesApp {
         // a closed locked section can't take pages (saving would drop them next to its placeholder)
         let targets: Vec<(u64, String)> = self.store.notebooks.iter().flat_map(|n| n.sections.iter().filter(|s| !s.sealed()).map(move |s| (s.id, format!("{} › {}", n.name, s.name)))).collect();
         let (nb, sec) = (self.nb, self.sec);
+        let sec_id = self.store.notebooks[nb].sections[sec].id;
+        let mut drop_to: Option<(usize, usize)> = None;
         let mut clicked = None;
         let mut act: Option<(usize, u8)> = None; // 1 indent, 2 up, 3 down, 4 duplicate, 5 copy
         let mut move_to = None;
@@ -1380,6 +1501,13 @@ impl NotesApp {
                 let r = nav_item(ui, &mut self.st, p.id, title, None, i == self.pg, p.level, sub);
                 if r.clicked() { clicked = Some(i); }
                 if i == self.pg && self.st.reveal { r.scroll_to_me(None); self.st.reveal = false; }
+                // with a mouse, drag a page up or down the list, or onto a section (on touch a drag scrolls)
+                if self.st.input == Input::Mouse && p.kind != PageKind::Locked && self.st.rename.is_none() {
+                    let d = r.interact(Sense::drag());
+                    d.dnd_set_drag_payload(DragPage(sec_id, i));
+                    if d.dnd_hover_payload::<DragPage>().is_some_and(|x| x.0 == sec_id && x.1 != i) { ui.painter().hline(r.rect.x_range(), r.rect.top(), EStroke::new(2.0, accent(ui))); }
+                    if let Some(x) = d.dnd_release_payload::<DragPage>() { if x.0 == sec_id && x.1 != i { drop_to = Some((x.1, i)); } }
+                }
                 if p.kind == PageKind::Locked { continue; } // the placeholder of a closed locked section has nothing to rename, move or delete
                 r.context_menu(|ui| {
                     if ui.button(tr("Rename")).clicked() { self.st.rename = Some((p.id, title.to_string())); ui.close(); }
@@ -1413,6 +1541,15 @@ impl NotesApp {
             Some((i, 7)) => { self.go_to(nb, sec, i); self.show_history(); }
             _ => {}
         }
+        // dropped onto another row: it goes there (the open page stays open)
+        if let Some((from, to)) = drop_to.filter(|(f, _)| *f < self.store.notebooks[nb].sections[sec].pages.len()) {
+            let pages = &mut self.store.notebooks[nb].sections[sec].pages;
+            let open = pages.get(self.pg).map(|p| p.id);
+            let p = pages.remove(from);
+            pages.insert(to.min(pages.len()), p);
+            if let Some(id) = open { if let Some(k) = pages.iter().position(|p| p.id == id) { self.pg = k; } }
+            self.st.dirty = true;
+        }
         if let Some((i, to)) = move_to {
             let p = self.store.notebooks[nb].sections[sec].pages.remove(i);
             let title = p.title.clone();
@@ -1437,9 +1574,18 @@ impl NotesApp {
                 if ui.add(egui::Button::new(RichText::new(label).size(12.0)).selected(self.st.tag_filter == t).corner_radius(10)).clicked() { self.st.tag_filter = t; }
             }
         });
+        // where to look: everywhere, this notebook (course), or this section
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (k, label) in [(0u8, "Everywhere"), (1, "This notebook"), (2, "This section")] {
+                if ui.add(egui::Button::new(RichText::new(tr(label)).size(11.5)).selected(self.st.search_scope == k).corner_radius(10)).clicked() { self.st.search_scope = k; self.st.search_cache = None; }
+            }
+        });
         ui.separator();
         let q = self.st.search.trim().to_lowercase();
         let filter = self.st.tag_filter;
+        let (scope, here) = (self.st.search_scope, (self.nb, self.sec));
+        let in_scope = move |ni: usize, si: usize| match scope { 1 => ni == here.0, 2 => (ni, si) == here, _ => true };
         let acc = accent(ui);
         let mark = if ui.visuals().dark_mode { Color32::from_rgba_unmultiplied(200, 170, 0, 90) } else { Color32::from_rgb(255, 236, 140) };
         let mut go = None;
@@ -1449,7 +1595,7 @@ impl NotesApp {
         let fresh = self.st.search_cache.as_ref().is_some_and(|(cq, at, _)| *cq == q && now_f() - at < 1.0);
         if filter.is_none() && !fresh {
             let mut hits: Vec<SearchHit> = vec![];
-            for (ni, n) in self.store.notebooks.iter().enumerate() { for (si, s) in n.sections.iter().enumerate() { for (pi, p) in s.pages.iter().enumerate() {
+            for (ni, n) in self.store.notebooks.iter().enumerate() { for (si, s) in n.sections.iter().enumerate().filter(|(si, _)| in_scope(ni, *si)) { for (pi, p) in s.pages.iter().enumerate() {
                 // also handwriting and PDF text read in the background
                 let mut text = p.plain_text();
                 if let Some(extra) = self.st.index.text(p.id) { text.push('\n'); text.push_str(extra); }
@@ -1462,6 +1608,7 @@ impl NotesApp {
             self.st.search_cache = Some((q.clone(), now_f(), hits));
         }
         let hits: Vec<SearchHit> = if filter.is_none() { self.st.search_cache.as_ref().map(|c| c.2.clone()).unwrap_or_default() } else { vec![] };
+        if filter.is_none() && !q.is_empty() { ui.label(RichText::new(tf!("{n} page(s)", n = hits.len())).size(11.0).weak()); }
         egui::ScrollArea::vertical().id_salt("search-scroll").auto_shrink([false; 2]).show(ui, |ui| {
             for (ni, n) in self.store.notebooks.iter().enumerate() {
                 for (si, s) in n.sections.iter().enumerate() {
@@ -1521,7 +1668,7 @@ impl NotesApp {
             }
             self.st.dirty = true;
         }
-        if let Some((a, b, c)) = go { self.go_to(a, b, c); if filter.is_none() { self.st.search.clear(); } }
+        if let Some((a, b, c)) = go { self.go_to(a, b, c); if filter.is_none() { self.st.find_text = Some(q.clone()).filter(|q| !q.is_empty()); self.st.search.clear(); } }
     }
 
     pub(crate) fn ai_pane(&mut self, ui: &mut egui::Ui) {
@@ -1558,6 +1705,11 @@ impl NotesApp {
                     ("Quiz me", "Write 3 short quiz questions about this page. Put the answers at the end."), ("Explain", "Explain the main idea of this page simply, with one example.")] {
                     if ui.add(egui::Button::new(RichText::new(tr(label)).size(12.0)).corner_radius(10)).clicked() { self.chat(prompt.into()); }
                 }
+                // the person's own prompts (Settings ▸ AI)
+                for p in self.st.p.prompts.clone().lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from) {
+                    let label: String = p.chars().take(24).collect();
+                    if ui.add(egui::Button::new(RichText::new(label).size(12.0)).corner_radius(10)).tip(&p).clicked() { self.chat(p); }
+                }
             });
             ui.add_space(4.0);
             let mut insert = None;
@@ -1579,7 +1731,10 @@ impl NotesApp {
                             let _ = rich::view(ui, text, 13.5, 0, &colors);
                             if !text.starts_with('⚠') {
                                 ui.horizontal(|ui| {
-                                    if ui.small_button(tr("↧ Insert")).tip("Add to the page as notes").clicked() { insert = Some(i); }
+                                    ui.menu_button(RichText::new(tr("↧ Insert")).small(), |ui| {
+                                        if ui.button(tr("At the end of the page")).clicked() { insert = Some(i); ui.close(); }
+                                        if self.st.last_text.is_some() && ui.button(tr("Below the note I was writing in")).clicked() { insert = Some(i); self.st.insert_near = true; ui.close(); }
+                                    });
                                     if ui.small_button(tr("⧉ Copy")).clicked() { ui.ctx().copy_text(text.clone()); }
                                 });
                             }
@@ -1626,7 +1781,15 @@ impl NotesApp {
         let cached = self.st.switch_cache.take().filter(|(cq, _)| *cq == ql).map(|(_, h)| h);
         let mut hits: Vec<(f32, String, String, (usize, usize, usize))> = vec![];
         if let Some(h) = &cached { hits = h.clone(); }
-        if cached.is_none() { for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
+        // ">" lists commands; they also show up when the words match their name
+        let (cmd_only, cq) = match ql.strip_prefix('>') { Some(r) => (true, r.trim().to_string()), None => (false, ql.clone()) };
+        if cached.is_none() {
+            for (i, name) in COMMANDS.iter().enumerate() {
+                let n = tr(name).to_lowercase();
+                if (cmd_only && (cq.is_empty() || n.contains(&cq))) || (!cmd_only && cq.len() >= 2 && n.contains(&cq)) { hits.push((if cmd_only { 5.0 } else { 0.4 }, format!("› {}", tr(name)), tr("Command").to_string(), (usize::MAX, i, 0))); }
+            }
+        }
+        if cached.is_none() && !cmd_only { for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
             let title = if p.title.trim().is_empty() { tr("Untitled page").to_string() } else { p.title.clone() };
             let path = format!("{} › {}", n.name, s.name);
             let score = if ql.is_empty() {
@@ -1641,8 +1804,12 @@ impl NotesApp {
             };
             hits.push((score, title, path, (a, b, c)));
         }}}
+        }
+        if cached.is_none() {
         hits.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.cmp(&y.1)));
-        hits.truncate(12); }
+        hits.truncate(12);
+        // always a way to make the page you're looking for, unless one has exactly that name
+        if !ql.is_empty() && !cmd_only && !hits.iter().any(|h| h.1.trim().eq_ignore_ascii_case(q.trim())) { hits.push((0.0, tf!("+  Create a page called “{trim}”", trim = q.trim()), String::new(), (usize::MAX - 1, 0, 0))); } }
         self.st.switch_cache = Some((ql.clone(), hits.clone()));
         let (down, up, enter) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::ArrowUp), i.consume_key(Modifiers::NONE, Key::Enter)));
         if down { sel = (sel + 1).min(hits.len().saturating_sub(1)); }
@@ -1652,7 +1819,7 @@ impl NotesApp {
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)).corner_radius(16);
         let modal = egui::Modal::new(egui::Id::unique("switcher")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 520.0));
-            let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tr("Jump to a page…")).font(FontId::proportional(18.0)).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
+            let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tr("Jump to a page… (> for commands)")).font(FontId::proportional(18.0)).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
             if !r.has_focus() { r.request_focus(); }
             if r.changed() { sel = 0; }
             ui.separator();
@@ -1664,15 +1831,35 @@ impl NotesApp {
                 ui.painter().text(rect.min + Vec2::new(12.0, 31.0), Align2::LEFT_CENTER, path, FontId::proportional(11.5), ui.visuals().weak_text_color());
                 if resp.clicked() { go = Some(*at); }
             }
-            if !ql.is_empty() && hits.is_empty() {
-                if ui.button(tf!("+  Create a page called “{trim}”", trim = q.trim())).clicked() { create = true; }
-                if enter { create = true; }
-            }
+            let _ = &mut create;
             if !self.st.touch_ui { ui.label(RichText::new(tr("↑↓ to choose · Enter to open · Esc to close")).size(10.5).weak()); }
         });
-        if let Some((a, b, c)) = go { self.go_to(a, b, c); return; }
+        match go {
+            Some((usize::MAX, i, _)) => { self.run_command(i); return; }
+            Some((x, ..)) if x == usize::MAX - 1 => { let t = q.trim().to_string(); self.open_title(&t); return; }
+            Some((a, b, c)) => { self.go_to(a, b, c); return; }
+            None => {}
+        }
         if create { let t = q.clone(); self.open_title(&t); return; }
         if !modal.should_close() { self.st.switcher = Some((q, sel)); }
+    }
+
+    /// What the Ctrl+K list's commands do (see COMMANDS).
+    fn run_command(&mut self, i: usize) {
+        match i {
+            0 => { self.new_page(None); }
+            1 => self.new_deck("New deck", vec![]),
+            2 => self.start_review(),
+            3 => self.st.tasks = true,
+            4 => self.st.show_settings = true,
+            5 => self.st.show_trash = true,
+            6 => self.show_history(),
+            7 => self.st.show_shortcuts = true,
+            8 => { self.st.p.dark ^= true; self.st.p.follow_system = false; self.st.dirty = true; self.st.theme_dirty = true; }
+            9 => self.export_pdf(true),
+            10 => self.start_lecture(false),
+            _ => {}
+        }
     }
 
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
@@ -1689,6 +1876,29 @@ impl NotesApp {
         if self.st.study.is_some() { self.study_window(ctx); }
         if self.st.mic_prompt { self.mic_window(ctx); }
         if self.st.restore_ask.is_some() { self.restore_window(ctx); }
+        if let Some(mut r) = self.st.ink_review.take() {
+            // the recognizer (or AI) can misread: correct it here before it replaces the handwriting
+            let mut done = None;
+            let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)).corner_radius(16);
+            let m = egui::Modal::new(egui::Id::unique("ink-review")).frame(frame).show(ctx, |ui| {
+                ui.set_width(crate::fit_w(ui.ctx(), 460.0));
+                ui.label(RichText::new(tr(if r.math { "Read as maths" } else { "Read as text" })).font(rich::serif(20.0)));
+                ui.label(RichText::new(tr("Correct anything misread, then choose what to do.")).weak());
+                ui.add(egui::TextEdit::multiline(&mut r.text).desired_rows(4).desired_width(f32::INFINITY).font(if r.math { egui::TextStyle::Monospace } else { egui::TextStyle::Body }));
+                if r.math && !r.text.trim().is_empty() { math::math_label(ui, &r.text, 20.0); }
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(RichText::new(tr("Replace the ink")).color(Color32::WHITE)).fill(accent_base())).clicked() { done = Some(Some(false)); }
+                    if ui.button(tr("Add it, keep the ink")).clicked() { done = Some(Some(true)); }
+                    if ui.button(tr("Cancel")).clicked() { done = Some(None); }
+                });
+            });
+            match done {
+                Some(Some(keep)) => self.apply_ink(r, keep),
+                Some(None) => {}
+                None if m.should_close() => {}
+                None => self.st.ink_review = Some(r),
+            }
+        }
         if let Some(id) = self.st.transcribe_ask {
             // how much goes where, before a long lecture is uploaded (it can cost money)
             let secs = self.store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).flat_map(|p| &p.recordings).find(|r| r.id == id).map_or(0.0, |r| r.secs);
@@ -1868,6 +2078,8 @@ mod tests {
         let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::i18n::set("en");
         assert_eq!(super::format_utc(1_793_793_555, false), "Wednesday, November 4, 2026");
+        assert_eq!(super::due_day("hand in @2026-11-04 please"), Some(1_793_793_555 / 86_400));
+        assert_eq!(super::due_day("mail me @ noon"), None);
         // local time: never more than 14 hours from UTC
         assert!(super::local_offset(1_793_793_555).abs() <= 14 * 3600);
     }

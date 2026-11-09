@@ -46,6 +46,30 @@ fn winansi(s: &str) -> Vec<u8> {
     }).flat_map(|b| match b { b'(' | b')' | b'\\' => vec![b'\\', b], b => vec![b] }).collect()
 }
 
+/// A page as Markdown, with its pictures and a picture of its handwriting in "<name>_files" next to it
+/// (the plain export only writes "[image]" and "[N handwritten strokes]" there).
+pub fn markdown_with_files(page: &Page, files: &Path, out: &Path) -> Result<(), String> {
+    let mut md = page.plain_text();
+    let dir_name = format!("{}_files", out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+    let dir = out.with_file_name(&dir_name);
+    // pictures in the order plain_text writes them
+    let mut blocks: Vec<&Block> = page.blocks.iter().collect();
+    blocks.sort_by(|a, b| (a.pos[1] / 40.0).floor().total_cmp(&(b.pos[1] / 40.0).floor()).then(a.pos[0].total_cmp(&b.pos[0])));
+    for b in blocks {
+        let Kind::Image { file } = &b.kind else { continue };
+        if !safe_name(file) { continue; }
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        if std::fs::copy(files.join(file), dir.join(file)).is_ok() { md = md.replacen("[image]", &format!("![](<{dir_name}/{file}>)"), 1); }
+    }
+    let ink: Vec<&Stroke> = page.strokes.iter().filter(|s| !s.highlighter).collect();
+    if let Some(png) = rasterize(&ink) {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("handwriting.png"), png).map_err(|e| e.to_string())?;
+        md = md.replace(&format!("[{} handwritten strokes]", page.strokes.len()), &format!("![handwriting](<{dir_name}/handwriting.png>)"));
+    }
+    crate::storage::write_atomic(out, md.as_bytes()).map_err(|e| e.to_string())
+}
+
 /// How many characters of the page's typed notes the printout export can't print (they come out as '?').
 pub fn unprintable(page: &Page) -> usize {
     page.blocks.iter().map(|b| note_text(&b.kind).chars().filter(|c| !c.is_control() && winansi(&c.to_string()) == b"?" && *c != '?').count()).sum()

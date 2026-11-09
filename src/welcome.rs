@@ -74,6 +74,7 @@ impl NotesApp {
                     text(ui, "Your notes live in notebooks. A notebook has sections (like the tabs of a binder), and each section has pages.");
                     text(ui, "Pick a notebook at the top left, a section below it, and a page in the next column.");
                     text(ui, "Everything stays on this device and works offline.");
+                    text(ui, "Ctrl+K jumps to any page; type [[ in a note to link another page.");
                 }
                 1 => {
                     big(ui, "Type or write");
