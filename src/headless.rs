@@ -114,15 +114,22 @@ mod clickthrough {
     use eframe::egui::{self, accesskit};
     use std::collections::HashMap;
 
-    struct Harness { ctx: egui::Context, app: crate::NotesApp, frame: eframe::Frame, t: f64, nodes: HashMap<accesskit::NodeId, (String, egui::Rect)> }
+    /// The app, its accessibility tree (control names and where they are), and, for pictures, the
+    /// drawn frame. `touch`: taps come as touches, so the app lays itself out for fingers.
+    struct Harness {
+        ctx: egui::Context, app: crate::NotesApp, frame: eframe::Frame, t: f64, nodes: HashMap<accesskit::NodeId, (String, egui::Rect)>,
+        size: egui::Vec2, touch: bool, pixels: Option<(HashMap<egui::TextureId, super::Tex>, Vec<egui::epaint::ClippedPrimitive>, f32)>,
+    }
 
     impl Harness {
-        fn new() -> Harness {
+        fn new() -> Harness { Harness::sized(egui::vec2(1280.0, 800.0), None, false) }
+        fn sized(size: egui::Vec2, ppp: Option<f32>, touch: bool) -> Harness {
             crate::i18n::set("en");
             let ctx = egui::Context::default();
             ctx.enable_accesskit();
             let app = crate::NotesApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(std::env::temp_dir().join("ln-click.png")));
-            let mut h = Harness { ctx, app, frame: eframe::Frame::_new_kittest(), t: 0.0, nodes: HashMap::new() };
+            let mut h = Harness { ctx, app, frame: eframe::Frame::_new_kittest(), t: 0.0, nodes: HashMap::new(), size, touch, pixels: ppp.map(|p| (HashMap::new(), vec![], p)) };
+            if touch { h.app.st.input = crate::Input::Finger; }
             h.run(vec![]);
             h.run(vec![]);
             h
@@ -130,8 +137,15 @@ mod clickthrough {
         fn run(&mut self, events: Vec<egui::Event>) {
             use eframe::App;
             self.t += 1.0 / 60.0;
-            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(self.t), events, focused: true, ..Default::default() };
+            let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)), time: Some(self.t), events, focused: true, ..Default::default() };
+            if let Some((_, _, ppp)) = &self.pixels { raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(*ppp); }
             let mut out = self.ctx.run_ui(raw, |ui| self.app.ui(ui, &mut self.frame));
+            if let Some((tex, prims, ppp)) = &mut self.pixels {
+                for (id, deltas) in &out.textures_delta.set { for d in deltas { super::apply(tex, *id, d); } }
+                *prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
+                *ppp = out.pixels_per_point;
+                for id in &out.textures_delta.free { tex.remove(id); }
+            }
             out.textures_delta.clear();
             if let Some(u) = out.platform_output.accesskit_update {
                 for (id, node) in u.nodes {
@@ -143,14 +157,32 @@ mod clickthrough {
         }
         /// Click the control with this name (the topmost-left one if there are several).
         fn click(&mut self, label: &str) {
-            let rect = self.nodes.values().filter(|(l, _)| l == label).map(|(_, r)| *r).min_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap())
-                .unwrap_or_else(|| panic!("no control named {label:?}; there are: {:?}", self.nodes.values().map(|v| &v.0).collect::<Vec<_>>()));
+            if !self.try_click(label) { panic!("no control named {label:?}; there are: {:?}", self.nodes.values().map(|v| &v.0).collect::<Vec<_>>()); }
+        }
+        /// Click a control by its name (or its translation, or the start of it); false if there's none.
+        fn try_click(&mut self, label: &str) -> bool {
+            let names = [label, crate::tr(label)];
+            let top_left = |a: &egui::Rect, b: &egui::Rect| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap();
+            let exact = self.nodes.values().filter(|(l, _)| names.contains(&l.as_str())).map(|(_, r)| *r).min_by(top_left);
+            let Some(rect) = exact.or_else(|| self.nodes.values().filter(|(l, _)| names.iter().any(|n| l.starts_with(n))).map(|(_, r)| *r).min_by(top_left)) else { return false };
             let p = rect.center();
             let button = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+            let touch = |phase| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos: p, force: None };
             self.run(vec![egui::Event::PointerMoved(p)]);
-            self.run(vec![button(true)]);
-            self.run(vec![button(false)]);
+            if self.touch { self.run(vec![touch(egui::TouchPhase::Start), button(true)]); self.run(vec![touch(egui::TouchPhase::End), button(false)]); }
+            else { self.run(vec![button(true)]); self.run(vec![button(false)]); }
             self.run(vec![]);
+            true
+        }
+        /// Save the last frame as a PNG (only for a harness made with a pixel density).
+        fn shot(&self, path: &std::path::Path) {
+            use eframe::App;
+            let Some((tex, prims, ppp)) = &self.pixels else { return };
+            let (w, h) = ((self.size.x * ppp).round() as usize, (self.size.y * ppp).round() as usize);
+            let mut px = vec![self.app.clear_color(&self.ctx.global_style().visuals); w * h];
+            for p in prims { super::paint(&mut px, w, h, *ppp, p, tex); }
+            let bytes: Vec<u8> = px.iter().flat_map(|c| [c[0], c[1], c[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).into_iter().chain([255])).collect();
+            image::save_buffer(path, &bytes, w as u32, h as u32, image::ColorType::Rgba8).unwrap();
         }
     }
 
@@ -238,6 +270,27 @@ mod clickthrough {
     }
 
     #[test]
+    fn the_toolbar_keeps_its_height() {
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for touch in [false, true] {
+            let mut h = Harness::sized(egui::vec2(1280.0, 800.0), None, touch);
+            let top = |h: &Harness| h.nodes.values().find(|(l, _)| l == "+ Page").map(|(_, r)| r.top()).expect("the page list's + Page");
+            let home = top(&h);
+            for tab in ["Insert", "AI", "Study ·", "View", "Draw"] { h.click(tab); assert_eq!(top(&h), home, "the {tab} tab (touch: {touch})"); }
+            // a pen's button switches to the eraser mid-stroke; a pen that reports pressure adds its slider: the page stays put
+            for tool in [crate::Tool::Pen, crate::Tool::Eraser, crate::Tool::Highlighter, crate::Tool::Lasso, crate::Tool::Type] {
+                h.app.st.tool = tool;
+                for _ in 0..6 { h.run(vec![]); }
+                assert_eq!(top(&h), home, "with {tool:?} in hand (touch: {touch})");
+            }
+            (h.app.st.p.pressure, h.app.st.force, h.app.st.tool) = (true, Some(0.5), crate::Tool::Pen);
+            h.run(vec![]);
+            h.run(vec![]);
+            assert_eq!(top(&h), home, "with pen pressure (touch: {touch})");
+        }
+    }
+
+    #[test]
     fn two_finger_tap_undoes() {
         let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = Harness::new();
@@ -257,5 +310,65 @@ mod clickthrough {
         h.run(vec![touch(1, 900.0, egui::TouchPhase::Move), egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(2), phase: egui::TouchPhase::Move, pos: egui::pos2(1000.0, 500.0), force: None }]);
         h.run(vec![touch(1, 900.0, egui::TouchPhase::End), touch(2, 1000.0, egui::TouchPhase::End)]);
         assert_eq!(blocks(&h), before + 1);
+    }
+
+    fn settings(h: &mut Harness, tab: u8) {
+        h.app.st.show_settings = true;
+        h.app.st.settings_tab = tab;
+    }
+
+    fn tour(h: &mut Harness, step: usize) {
+        h.try_click("?");
+        h.try_click("Show the welcome tour");
+        h.run(vec![]);
+        for _ in 0..step { h.try_click("Next"); }
+    }
+
+    /// Draws the main screens at laptop, narrow and phone sizes, light and dark, English and German, to
+    /// look the layout over (not a check). By hand, one at a time:
+    /// LEAFNOTES_DATA=<empty dir> LEAFNOTES_SHOTS=<dir> [LEAFNOTES_SHOTS_ONLY=ph,lapd] cargo test --release render_gallery -- --ignored
+    #[test]
+    #[ignore]
+    fn render_gallery() {
+        let Some(dir) = std::env::var_os("LEAFNOTES_SHOTS").map(std::path::PathBuf::from) else { return };
+        let only = std::env::var("LEAFNOTES_SHOTS_ONLY").unwrap_or_default();
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::create_dir_all(&dir).unwrap();
+        type Scene = (&'static str, fn(&mut Harness));
+        let scenes: Vec<Scene> = vec![
+            ("home", |_| {}),
+            ("nav", |h| { if h.app.st.narrow { h.try_click("☰"); } }),
+            ("tab-insert", |h| { h.try_click("Insert"); }), ("tab-draw", |h| { h.try_click("Draw"); }), ("tab-ai", |h| { h.try_click("AI"); }),
+            ("tab-study", |h| { h.try_click("Study"); }), ("tab-view", |h| { h.try_click("View"); }),
+            ("set0", |h| settings(h, 0)), ("set1", |h| settings(h, 1)), ("set2", |h| settings(h, 2)), ("set3", |h| settings(h, 3)), ("set4", |h| settings(h, 4)), ("set5", |h| settings(h, 5)),
+            ("google", |h| { h.try_click("⚙"); h.try_click("Sync"); h.try_click("Google Drive"); h.try_click("Sign in with Google"); }),
+            ("switcher", |h| { key(h, egui::Key::K, egui::Modifiers::COMMAND); h.run(vec![egui::Event::Text("fou".into())]); }),
+            ("commands", |h| { key(h, egui::Key::K, egui::Modifiers::COMMAND); h.run(vec![egui::Event::Text(">".into())]); }),
+            ("search", |h| { key(h, egui::Key::F, egui::Modifiers::COMMAND); h.run(vec![]); h.run(vec![egui::Event::Text("sine".into())]); }),
+            ("tour0", |h| tour(h, 0)), ("tour1", |h| tour(h, 1)), ("tour2", |h| tour(h, 2)), ("tour3", |h| tour(h, 3)), ("tour4", |h| tour(h, 4)),
+            ("help", |h| { h.try_click("?"); }),
+            ("shortcuts", |h| { h.app.st.show_shortcuts = true; }),
+            ("bin", |h| { h.app.st.show_trash = true; }),
+            ("history", |h| { h.try_click("⋯"); h.try_click("Page history…"); }),
+            ("table", |h| { h.try_click("Insert"); h.try_click("Table"); }),
+            ("checklist", |h| { h.try_click("Insert"); h.try_click("Checklist"); }),
+            ("study", |h| { h.try_click("Study"); h.try_click("Review due"); }),
+            ("deck", |h| { if h.app.st.narrow { h.try_click("☰"); } h.try_click("Fourier — flashcards"); }),
+        ];
+        let configs = [("lap", 1280.0, 800.0, 1.5, false, false, "en"), ("lapd", 1280.0, 800.0, 1.5, true, false, "en"), ("lapde", 1280.0, 800.0, 1.5, false, false, "de"),
+            ("nar", 900.0, 700.0, 1.0, false, false, "en"), ("ph", 412.0, 880.0, 2.6, false, true, "en"), ("phd", 412.0, 880.0, 2.6, true, true, "en"), ("phde", 412.0, 880.0, 2.6, false, true, "de")];
+        for (tag, w, hgt, ppp, dark, touch, lang) in configs {
+            if !only.is_empty() && !only.split(',').any(|o| o == tag) { continue; }
+            for (name, scene) in &scenes {
+                let mut h = Harness::sized(egui::vec2(w, hgt), Some(ppp), touch);
+                crate::i18n::set(lang);
+                if dark { h.app.st.p.dark = true; h.app.st.theme_dirty = true; }
+                for _ in 0..3 { h.run(vec![]); }
+                scene(&mut h);
+                for _ in 0..6 { h.run(vec![]); }
+                h.shot(&dir.join(format!("{tag}-{name}.png")));
+            }
+        }
+        crate::i18n::set("en");
     }
 }

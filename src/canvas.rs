@@ -75,11 +75,14 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
         }
         if head { ui.horizontal(|ui| {
             let w = (ui.available_width() - 110.0).clamp(160.0, 680.0); // room for the star and ⋯ at any size
-            let r = ui.add(egui::TextEdit::singleline(&mut page.title).id(egui::Id::unique("page-title")).font(rich::serif(if touch { 20.0 } else { 24.0 }))
+            let r = ui.add(egui::TextEdit::multiline(&mut page.title).desired_rows(1).id(egui::Id::unique("page-title")).font(rich::serif(if touch { 20.0 } else { 24.0 }))
                 .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(RichText::new(tr("Untitled page")).font(rich::serif(if touch { 20.0 } else { 24.0 }))).desired_width(w).margin(egui::Margin::ZERO));
             if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
             if r.changed() { st.dirty = true; }
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && page.blocks.is_empty() {
+            // one line that wraps on narrow screens: Enter finishes the title rather than starting a new line
+            let enter = page.title.contains('\n');
+            if enter { page.title.retain(|c| c != '\n' && c != '\r'); r.surrender_focus(); }
+            if enter && page.blocks.is_empty() {
                 // Enter in an empty page's title drops straight into the first note
                 let b = block(24.0, 8.0, st.p.note_width, Kind::Text { text: String::new(), heading: 0 });
                 st.focus_id = Some(egui::Id::unique(("ed", b.id)));

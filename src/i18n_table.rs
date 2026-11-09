@@ -1021,6 +1021,7 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     // round 2
     ("Browser stuck on a page that won't load after signing in? Copy its address and paste it here:", "Bleibt der Browser nach der Anmeldung auf einer Seite hängen, die nicht lädt? Kopiere ihre Adresse und füge sie hier ein:", "Le navigateur reste bloqué sur une page qui ne charge pas après la connexion ? Copie son adresse et colle-la ici :"),
     ("Finish", "Abschließen", "Terminer"),
+    ("COMMANDS", "BEFEHLE", "COMMANDES"),
     ("That address has no sign-in code in it — copy the whole address from the browser's address bar.", "In dieser Adresse steckt kein Anmeldecode – kopiere die ganze Adresse aus der Adressleiste des Browsers.", "Cette adresse ne contient pas de code de connexion — copie l'adresse complète depuis la barre d'adresse du navigateur."),
     ("That address is from another sign-in — sign in again.", "Diese Adresse gehört zu einer anderen Anmeldung – melde dich erneut an.", "Cette adresse vient d'une autre connexion — reconnecte-toi."),
 ];

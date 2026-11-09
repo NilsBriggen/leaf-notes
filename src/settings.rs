@@ -135,19 +135,22 @@ impl NotesApp {
                                 ui.label(RichText::new(tr("· or run one free on this computer with")).size(12.0).weak());
                                 ui.hyperlink_to(RichText::new("Ollama").size(12.0), "https://ollama.com");
                             });
+                            egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             egui::Grid::new("ai_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                                 ui.label(tr("Service"));
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.radio_value(&mut a.provider, ai::Provider::Anthropic, tr("Anthropic API"));
                                     ui.radio_value(&mut a.provider, ai::Provider::OpenAiCompatible, tr("OpenAI-compatible"));
                                 });
                                 ui.end_row();
-                                ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(300.0)); ui.end_row();
-                                ui.label(tr("API key")); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text(tr("paste your key")).desired_width(300.0)); ui.end_row();
-                                ui.label(tr("Model")); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(300.0)); ui.end_row();
+                                ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(ui.available_width().min(300.0))); ui.end_row();
+                                ui.label(tr("API key")); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text(tr("paste your key")).desired_width(ui.available_width().min(300.0))); ui.end_row();
+                                ui.label(tr("Model")); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(ui.available_width().min(300.0))); ui.end_row();
                                 if a.provider == ai::Provider::OpenAiCompatible {
-                                    ui.label(tr("Speech to text")); ui.add(egui::TextEdit::singleline(&mut a.transcribe_model).desired_width(300.0)).tip("Used to turn recordings into text, e.g. whisper-1 (OpenAI) or whisper-large-v3 (Groq)"); ui.end_row();
+                                    ui.label(tr("Speech to text")); ui.add(egui::TextEdit::singleline(&mut a.transcribe_model).desired_width(ui.available_width().min(300.0))).tip("Used to turn recordings into text, e.g. whisper-1 (OpenAI) or whisper-large-v3 (Groq)"); ui.end_row();
                                 }
+                            });
                             });
                             ui.label(RichText::new(tf!("Your key is kept in {place}.", place = crate::keys::place())).size(11.5).weak());
                             row_below(ui, "Your own prompts", "One per line; each becomes a button in the assistant (e.g. “Make 5 exam questions from this page”).", |ui| {
@@ -180,16 +183,16 @@ impl NotesApp {
                             });
                             match s.via {
                                 sync::Via::Folder => row_below(ui, "Folder", "A folder that Dropbox, OneDrive, Google Drive, iCloud or Syncthing keeps in sync. Leaf Notes puts a LeafNotes folder inside it.", |ui| {
-                                    ui.add(egui::TextEdit::singleline(&mut s.folder).hint_text(tr("e.g. /home/you/Dropbox")).desired_width(320.0));
+                                    ui.add(egui::TextEdit::singleline(&mut s.folder).hint_text(tr("e.g. /home/you/Dropbox")).desired_width(ui.available_width().min(320.0)));
                                     #[cfg(not(target_os = "android"))]
                                     if ui.button(tr("Choose…")).clicked() { if let Some(d) = rfd::FileDialog::new().pick_folder() { s.folder = d.display().to_string(); } }
                                 }),
                                 sync::Via::WebDav => {
                                     ui.label(RichText::new(tr("Works with Nextcloud, ownCloud, Koofr, Box and most NAS boxes. Nextcloud: https://your-cloud/remote.php/dav/files/USERNAME/ with an app password (Settings ▸ Security).")).size(12.0).weak());
                                     egui::Grid::new("dav_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                                        ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut s.url).hint_text(tr("https://")).desired_width(320.0)); ui.end_row();
-                                        ui.label(tr("User name")); ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(320.0)); ui.end_row();
-                                        ui.label(tr("Password")); ui.add(egui::TextEdit::singleline(&mut s.password).password(true).desired_width(320.0)); ui.end_row();
+                                        ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut s.url).hint_text(tr("https://")).desired_width(ui.available_width().min(320.0))); ui.end_row();
+                                        ui.label(tr("User name")); ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(ui.available_width().min(320.0))); ui.end_row();
+                                        ui.label(tr("Password")); ui.add(egui::TextEdit::singleline(&mut s.password).password(true).desired_width(ui.available_width().min(320.0))); ui.end_row();
                                     });
                                 }
                                 sync::Via::Google => {

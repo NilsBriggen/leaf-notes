@@ -232,13 +232,20 @@ pub(crate) fn row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOn
     let (title, desc) = (tr(title), tr(desc));
     egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
+        if ui.available_width() < 420.0 {
+            ui.label(RichText::new(title).size(14.0).color(ui.visuals().strong_text_color()));
+            ui.label(RichText::new(desc).size(12.0).weak());
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| { ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); control(ui) });
+            return;
+        }
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.set_max_width((ui.available_width() - 230.0).max(160.0));
                 ui.label(RichText::new(title).size(14.0).color(ui.visuals().strong_text_color()));
                 ui.label(RichText::new(desc).size(12.0).weak());
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| { ui.horizontal_wrapped(control); });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| { ui.horizontal_wrapped(|ui| { ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); control(ui) }); });
         });
     });
 }
@@ -495,7 +502,12 @@ impl NotesApp {
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 ui.spacing_mut().scroll.bar_width = 4.0;
                 ui.horizontal_top(|ui| {
-                let w = ui.available_width() - 30.0;
+                // every group is two rows tall (see `group`); the scroll bar's room is kept even when it isn't needed
+                let (row, gap, bar) = (ui.spacing().interact_size.y, ui.spacing().item_spacing.y, ui.spacing().scroll);
+                let groups = (row * 2.0 + 6.0).max(52.0) + if row < 30.0 { 13.0 + gap } else { 0.0 };
+                ui.set_min_height(groups + bar.bar_width + bar.bar_inner_margin + bar.bar_outer_margin);
+                let fold = 16.0 + 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
+                let w = ui.available_width() - fold;
                 egui::ScrollArea::horizontal().id_salt(("ribbon-scroll", self.st.tab as u8)).max_width(w).auto_shrink([false, true]).show(ui, |ui| {
                     // the ribbon scrolls sideways: text inside it must never wrap into a tall column
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -696,6 +708,8 @@ impl NotesApp {
             let before = *self.st.pen();
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
+                // the touch padding would make the first row taller than the toolbar's two rows
+                ui.spacing_mut().button_padding.y = ui.spacing().button_padding.y.min(5.0);
                 ui.horizontal(|ui| {
                     let kind = self.st.pen().kind;
                     egui::ComboBox::from_id_salt("pen-kind").width(118.0).selected_text(tr(kind.name())).show_ui(ui, |ui| {
@@ -705,6 +719,13 @@ impl NotesApp {
                     let pen = self.st.pen();
                     let mut c = pen.color;
                     if ui.color_edit_button_srgba_unmultiplied(&mut c).tip("Colour and see-through-ness").changed() { pen.color = c; remember_color(&mut self.st.p.recent_colors, c); }
+                    // a few colours a tap away (and the last ones picked), instead of the colour picker every time
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    let recent = self.st.p.recent_colors.clone();
+                    for c in PEN_COLORS.iter().copied().chain(recent) {
+                        let cur = self.st.pen().color;
+                        if swatch(ui, c, cur == c).clicked() { self.st.pen().color = c; }
+                    }
                     // removing a pen shouldn't need a right-click (or a long-press) to find
                     if self.st.p.pens.len() > 1 && ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Remove this pen from My pens").clicked() {
                         let i = self.st.p.pen;
@@ -721,19 +742,13 @@ impl NotesApp {
                     let l = ui.label(RichText::new(tr("Smooth")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 50.0;
                     ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).labelled_by(l.id).tip("Smoothing: irons out shaky lines (see the sample). More smoothing makes the line trail the pen a little.");
-                });
-                // a few colours a tap away (and the last ones picked), instead of the colour picker every time
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    let recent = self.st.p.recent_colors.clone();
-                    for c in PEN_COLORS.iter().copied().chain(recent) {
-                        let cur = self.st.pen().color;
-                        if swatch(ui, c, cur == c).clicked() { self.st.pen().color = c; }
+                    // only once a pen has reported pressure; in this row, so the toolbar doesn't grow when it does
+                    if self.st.p.pressure && self.st.force.is_some() {
+                        let l = ui.label(RichText::new(tr("Pressure")).size(11.5).weak());
+                        ui.spacing_mut().slider_width = 60.0;
+                        ui.add(egui::Slider::new(&mut self.st.p.pressure_curve, 0.4..=2.5).show_value(false)).labelled_by(l.id).tip("How hard you need to press: left makes light touches bolder, right needs a firmer hand");
                     }
                 });
-                if self.st.p.pressure && self.st.force.is_some() {
-                    labelled_slider(ui, "Pressure", 150.0, &mut self.st.p.pressure_curve, 0.4..=2.5, "How hard you need to press: left makes light touches bolder, right needs a firmer hand");
-                }
             });
             // a deliberately shaky line, run through the same smoothing as real ink
             let (stab, pen) = (self.st.p.stabilizer, *self.st.pen());
@@ -824,7 +839,7 @@ impl NotesApp {
         });
         group(ui, "Equation from words", |ui| {
             ui.vertical(|ui| {
-                ui.add_space(4.0);
+                ui.spacing_mut().item_spacing.y = 4.0; // two rows that fit the toolbar's height, also on touch screens
                 let r = ui.add(egui::TextEdit::singleline(&mut self.st.eq_prompt).hint_text(tr("e.g. area of a circle")).desired_width(170.0));
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 if ui.button(tr("∑ Insert equation")).clicked() || enter { self.equation_from_words(); }
@@ -1238,7 +1253,10 @@ impl NotesApp {
     }
 
     pub(crate) fn nav(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("sections").show_separator_line(false).resizable(false).exact_size(204.0).frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 14, right: 10, top: 2, bottom: 12 })).show(ui, |ui| {
+        let full = ui.available_width();
+        let phone = full < 560.0;
+        let sec_w = if phone { 150.0 } else { 204.0 };
+        egui::Panel::left("sections").show_separator_line(false).resizable(false).exact_size(sec_w).frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 14, right: 10, top: 2, bottom: 12 })).show(ui, |ui| {
             self.notebook_switcher(ui);
             ui.add_space(6.0);
             let jump = ui.add(egui::Button::new(RichText::new(tr("↗  Jump to a page…")).size(13.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
@@ -1373,8 +1391,9 @@ impl NotesApp {
         self.take_pending_delete();
         self.clamp();
         let sec_color = c3(self.store.notebooks[self.nb].sections[self.sec].color);
-        egui::Panel::left("pages").resizable(true).default_size(236.0).size_range(170.0..=400.0).show_separator_line(false)
-            .frame(crate::card(ui).inner_margin(egui::Margin { left: 10, right: 10, top: 12, bottom: 10 }).outer_margin(egui::Margin { left: 0, right: 6, top: 0, bottom: 12 })).show(ui, |ui| {
+        let pages = egui::Panel::left("pages").show_separator_line(false);
+        let pages = if phone { pages.resizable(false).exact_size(full - sec_w - 6.0) } else { pages.resizable(true).default_size(236.0).size_range(170.0..=400.0) };
+        pages.frame(crate::card(ui).inner_margin(egui::Margin { left: 10, right: 10, top: 12, bottom: 10 }).outer_margin(egui::Margin { left: 0, right: 6, top: 0, bottom: 12 })).show(ui, |ui| {
             if self.st.tasks { self.tasks_panel(ui); return; }
             if !self.st.search.trim().is_empty() || self.st.tag_filter.is_some() { self.search_panel(ui); return; }
             let name = self.store.notebooks[self.nb].sections[self.sec].name.clone();
@@ -1820,20 +1839,27 @@ impl NotesApp {
         let mut go = if enter { hits.get(sel).map(|h| h.3) } else { None };
         let mut create = false;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)).corner_radius(16);
-        let modal = egui::Modal::new(egui::Id::unique("switcher")).frame(frame).show(ctx, |ui| {
+        let id = egui::Id::unique("switcher");
+        let top = self.st.bars[0] + if self.st.narrow { 12.0 } else { (ctx.content_rect().height() * 0.12).min(120.0) };
+        let room = ctx.content_rect().height() - top - self.st.bars[1] - 140.0; // the bottom bar holds the soft keyboard on Android
+        let area = egui::Modal::default_area(id).anchor(Align2::CENTER_TOP, Vec2::new(0.0, top));
+        let modal = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 520.0));
             let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tr("Jump to a page… (> for commands)")).font(FontId::proportional(18.0)).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
             if !r.has_focus() { r.request_focus(); }
             if r.changed() { sel = 0; }
             ui.separator();
-            ui.label(RichText::new(tr("PAGES")).size(10.5).weak());
+            ui.label(RichText::new(tr(if cmd_only { "COMMANDS" } else { "PAGES" })).size(10.5).weak());
+            egui::ScrollArea::vertical().max_height(room.max(132.0)).show(ui, |ui| {
             for (i, (_, title, path, at)) in hits.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
                 if i == sel || resp.hovered() { ui.painter().rect_filled(rect, 8.0, if i == sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
                 ui.painter().text(rect.min + Vec2::new(12.0, 13.0), Align2::LEFT_CENTER, title, FontId::proportional(14.5), ui.visuals().strong_text_color());
                 ui.painter().text(rect.min + Vec2::new(12.0, 31.0), Align2::LEFT_CENTER, path, FontId::proportional(11.5), ui.visuals().weak_text_color());
                 if resp.clicked() { go = Some(*at); }
+                if i == sel && (down || up) { ui.scroll_to_rect(rect, None); }
             }
+            });
             let _ = &mut create;
             if !self.st.touch_ui { ui.label(RichText::new(tr("↑↓ to choose · Enter to open · Esc to close")).size(10.5).weak()); }
         });
