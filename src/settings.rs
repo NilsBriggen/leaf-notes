@@ -197,13 +197,24 @@ impl NotesApp {
                                         ui.label(RichText::new(tr("Google Drive sign-in isn't set up in this build yet.")).weak());
                                     } else if s.google_token.is_empty() {
                                         ui.label(RichText::new(tr("Your notes go to a “Leaf Notes” folder in your Google Drive. Leaf Notes can only see the files it made itself, nothing else in your Drive.")).size(12.0).weak());
-                                        ui.horizontal(|ui| {
+                                        // wraps: on a phone the waiting line is wider than the window
+                                        ui.horizontal_wrapped(|ui| {
                                             match &self.st.google_rx {
-                                                Some((url, _)) => {
+                                                Some((url, _, paste)) => {
                                                     ui.spinner();
                                                     ui.label(tr("Finish signing in in your browser…"));
                                                     ui.hyperlink_to(tr("Open the page again"), url);
                                                     if ui.button(tr("Cancel")).clicked() { g_cancel = true; }
+                                                    // the browser can't always get back to the app (Android may have paused it): its address works too
+                                                    ui.end_row();
+                                                    ui.label(RichText::new(tr("Browser stuck on a page that won't load after signing in? Copy its address and paste it here:")).size(12.0).weak());
+                                                    ui.end_row();
+                                                    let field = ui.add(egui::TextEdit::singleline(&mut self.st.google_paste).hint_text("http://127.0.0.1:…").desired_width(ui.available_width().min(320.0)));
+                                                    let go = ui.button(tr("Finish")).clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                                                    if go && !self.st.google_paste.trim().is_empty() {
+                                                        if self.st.google_paste.contains("code=") { let _ = paste.send(std::mem::take(&mut self.st.google_paste)); }
+                                                        else { self.st.sync_err = tr("That address has no sign-in code in it — copy the whole address from the browser's address bar.").into(); }
+                                                    }
                                                 }
                                                 None => {
                                                     if ui.add(egui::Button::new(RichText::new(tr("Sign in with Google")).color(Color32::WHITE)).fill(accent_base()).corner_radius(8)).clicked() { g_start = true; }
@@ -241,11 +252,12 @@ impl NotesApp {
                             }
                             if g_start {
                                 match sync::google_start() {
-                                    Ok((url, sign_in)) => {
+                                    Ok((url, sign_in, paste)) => {
                                         ctx.open_url(egui::OpenUrl::new_tab(&url));
                                         let (tx, rx) = std::sync::mpsc::channel();
                                         std::thread::spawn(move || { let _ = tx.send(sync::google_finish(sign_in)); });
-                                        self.st.google_rx = Some((url, rx));
+                                        self.st.google_rx = Some((url, rx, paste));
+                                        self.st.google_paste.clear();
                                         self.st.sync_err.clear();
                                     }
                                     Err(e) => self.st.sync_err = e,

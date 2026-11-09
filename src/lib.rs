@@ -193,6 +193,8 @@ impl Default for Prefs {
 }
 
 /// Everything except the notebooks themselves, so page and UI state can be borrowed together.
+/// A Google sign-in waiting for the browser: the address it opened, the result (refresh token, email), and where a pasted address goes.
+type GoogleWait = (String, Receiver<Result<(String, String), String>>, std::sync::mpsc::Sender<String>);
 struct St {
     ai: ai::AiSettings,
     p: Prefs,
@@ -411,7 +413,9 @@ struct St {
     /// First sync with a place that already has notes: how many pages it has (asks how to join).
     sync_ask: Option<usize>,
     /// A Google sign-in waiting for the browser: the sign-in page, and where the result arrives.
-    google_rx: Option<(String, Receiver<Result<(String, String), String>>)>,
+    /// a Google sign-in waiting for the browser: the address it opened, the result, where a pasted address goes, and the paste field
+    google_rx: Option<GoogleWait>,
+    google_paste: String,
     persist: bool,
 }
 
@@ -676,7 +680,7 @@ impl NotesApp {
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
             status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, update_manual: false, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, tour_fresh: false, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
-            full_save: true, full_at: 0.0, saves: 0, sync_saves: 0, instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
+            full_save: true, full_at: 0.0, saves: 0, sync_saves: 0, instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None, google_paste: String::new(),
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
             #[cfg(target_os = "android")] android: None, #[cfg(target_os = "android")] keyboard_shown: false };
@@ -2049,7 +2053,7 @@ impl eframe::App for NotesApp {
             self.st.update_rx = None;
         } }
         if self.st.transcribe.is_some() { ctx.request_repaint_after(std::time::Duration::from_millis(500)); }
-        if let Some((_, rx)) = &self.st.google_rx {
+        if let Some((_, rx, _)) = &self.st.google_rx {
             match rx.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(500)),
                 r => {

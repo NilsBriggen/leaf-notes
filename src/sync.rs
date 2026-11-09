@@ -606,11 +606,12 @@ fn google_access(agent: &ureq::Agent, refresh: &str) -> Result<String, String> {
     }
 }
 
-/// A sign-in in progress: the browser comes back to this little local web server.
-pub struct SignIn { listener: std::net::TcpListener, verifier: String, state: String, redirect: String }
+/// A sign-in in progress: the browser comes back to this little local web server, or the person
+/// pastes the address the browser ended up on (`paste`) when it can't reach the app.
+pub struct SignIn { listener: std::net::TcpListener, verifier: String, state: String, redirect: String, paste: std::sync::mpsc::Receiver<String> }
 
-/// Start signing in: returns the address to open in the browser.
-pub fn google_start() -> Result<(String, SignIn), String> {
+/// Start signing in: returns the address to open in the browser, and where a pasted address goes.
+pub fn google_start() -> Result<(String, SignIn, std::sync::mpsc::Sender<String>), String> {
     use base64::Engine;
     use sha2::Digest;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| tf!("Couldn't start the sign-in: {e}", e = e))?;
@@ -624,7 +625,20 @@ pub fn google_start() -> Result<(String, SignIn), String> {
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()));
     let url = format!("https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope={}&code_challenge={challenge}&code_challenge_method=S256&state={state}&access_type=offline&prompt=consent",
         enc(GOOGLE_ID), enc(&redirect), enc(SCOPE));
-    Ok((url, SignIn { listener, verifier, state, redirect }))
+    let (tx, paste) = std::sync::mpsc::channel();
+    Ok((url, SignIn { listener, verifier, state, redirect, paste }, tx))
+}
+
+/// The code in an address Google sent back: Some(code) for this sign-in, None when it belongs to
+/// another (a stray request, an old tab), an error when Google said no.
+fn redirect_code(address: &str, state: &str) -> Result<Option<String>, String> {
+    let q: HashMap<String, String> = address.split_once('?').map(|(_, q)| q).unwrap_or("").split(['&', '#'])
+        .filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), dec(v))).collect();
+    if q.get("state").map(String::as_str) != Some(state) { return Ok(None); }
+    match q.get("code") {
+        Some(c) => Ok(Some(c.clone())),
+        None => Err(if q.get("error").map(String::as_str) == Some("access_denied") { crate::tr("Sign-in was cancelled.").into() } else { crate::tr("Google didn't sign you in — try again.").into() }),
+    }
 }
 
 /// Wait (up to 5 minutes) for the browser to come back, then trade the code for a lasting sign-in: (refresh token, email).
@@ -636,7 +650,19 @@ pub fn google_finish(s: SignIn) -> Result<(String, String), String> {
         if std::time::Instant::now() > deadline { return Err(crate::tr("Sign-in timed out — try again.").into()); }
         let (mut conn, _) = match s.listener.accept() {
             Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => { std::thread::sleep(Duration::from_millis(200)); continue; }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // the address pasted from a browser that couldn't get back here
+                match s.paste.try_recv() {
+                    Ok(address) => match redirect_code(address.trim(), &s.state)? {
+                        Some(c) => break c,
+                        None => return Err(crate::tr("That address is from another sign-in — sign in again.").into()),
+                    },
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return Err(crate::tr("Sign-in was cancelled.").into()), // Cancel in Settings
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
             Err(e) => return Err(e.to_string()),
         };
         let _ = conn.set_nonblocking(false);
@@ -645,16 +671,14 @@ pub fn google_finish(s: SignIn) -> Result<(String, String), String> {
         let n = conn.read(&mut buf).unwrap_or(0);
         let req = String::from_utf8_lossy(&buf[..n]).to_string();
         let path = req.split_whitespace().nth(1).unwrap_or("");
-        let q: HashMap<String, String> = path.split_once('?').map(|(_, q)| q).unwrap_or("").split('&')
-            .filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), dec(v))).collect();
-        if q.is_empty() { let _ = conn.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); continue; } // favicon etc.
-        let ok = q.get("state") == Some(&s.state) && q.contains_key("code");
+        if !path.contains('?') { let _ = conn.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); continue; } // favicon etc.
+        let found = redirect_code(path, &s.state);
+        let ok = matches!(found, Ok(Some(_)));
         let msg = if ok { "Signed in. You can close this tab and go back to Leaf Notes." } else { "Sign-in didn't finish. Go back to Leaf Notes and try again." };
-        let page = format!("<!doctype html><meta charset=utf-8><title>Leaf Notes</title><body style=\"font:18px sans-serif;margin:15vh auto;max-width:30em;text-align:center\"><h2>Leaf Notes</h2><p>{msg}</p>");
+        let page = format!("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Leaf Notes</title><body style=\"font:18px sans-serif;margin:15vh auto;max-width:30em;text-align:center\"><h2>Leaf Notes</h2><p>{msg}</p>");
         let _ = conn.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len()).as_bytes());
         // not our sign-in (another page or program calling this port): keep waiting for the real one
-        if q.get("state") != Some(&s.state) { continue; }
-        match q.get("code") { Some(c) => break c.clone(), None => return Err(if q.get("error").map(String::as_str) == Some("access_denied") { crate::tr("Sign-in was cancelled.").into() } else { crate::tr("Google didn't sign you in — try again.").into() }) }
+        if let Some(c) = found? { break c; }
     };
     let mut resp = agent(false).post(TOKEN_URL).send_form([("client_id", GOOGLE_ID), ("client_secret", GOOGLE_SECRET), ("code", code.as_str()), ("code_verifier", s.verifier.as_str()), ("redirect_uri", s.redirect.as_str()), ("grant_type", "authorization_code")])
         .map_err(|e| tf!("Couldn't reach Google: {e}", e = e))?;
@@ -695,6 +719,15 @@ fn dec(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sign_in_code_from_a_pasted_address() {
+        let a = "http://127.0.0.1:33669/?state=abc&code=4%2F0Ab_x-y&scope=email%20openid";
+        assert_eq!(redirect_code(a, "abc"), Ok(Some("4/0Ab_x-y".into())));
+        assert_eq!(redirect_code(a, "other"), Ok(None), "another sign-in's address");
+        assert_eq!(redirect_code("http://127.0.0.1:1/favicon.ico", "abc"), Ok(None));
+        assert!(redirect_code("http://127.0.0.1:1/?error=access_denied&state=abc", "abc").is_err());
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ln-sync-{tag}-{}", new_id()));
