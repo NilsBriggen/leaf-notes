@@ -201,6 +201,8 @@ impl Saver {
                 if id.is_some_and(|id| !seen.contains(&id) && trashed.contains(&id)) { let _ = std::fs::remove_file(e.path()); }
             }
         } else {
+            // a page restored later (undo delete, the bin) must be written again even if unchanged
+            self.sigs.retain(|id, _| seen.contains(id));
             for id in self.written.keys().filter(|id| !seen.contains(id)).copied().collect::<Vec<_>>() {
                 self.written.remove(&id);
                 let _ = std::fs::remove_file(page_path(dir, id));
@@ -348,6 +350,23 @@ mod tests {
         saver.save_with(&d, &store, Some(front)).unwrap();
         let Ok(Loaded::Store(s, _)) = load(&d) else { panic!() };
         assert!(s.notebooks[1].sections[0].pages[0].blocks.iter().any(|b| matches!(&b.kind, Kind::Text { text, .. } if text == "elsewhere")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_restored_page_is_written_again_at_once() {
+        let d = tmp();
+        let mut store = sample();
+        let mut saver = Saver::default();
+        saver.save(&d, &store).unwrap();
+        let front = store.notebooks[0].sections[0].pages[0].id;
+        let gone = store.notebooks[1].sections[0].pages.remove(0);
+        saver.save_with(&d, &store, Some(front)).unwrap();
+        assert!(!page_path(&d, gone.id).exists());
+        // undo delete brings it back unchanged: a quick save writes it, not only the next full save
+        store.notebooks[1].sections[0].pages.insert(0, gone.clone());
+        saver.save_with(&d, &store, Some(front)).unwrap();
+        assert!(page_path(&d, gone.id).exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

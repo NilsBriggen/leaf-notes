@@ -1875,7 +1875,7 @@ impl NotesApp {
         if self.st.show_news { self.news_window(ctx); }
         if self.st.show_help { self.help_window(ctx); }
         if self.st.crash.is_some() { self.crash_window(ctx); }
-        if self.st.switcher.is_some() { self.switcher_window(ctx); }
+        if self.st.switcher.is_some() { self.switcher_window(ctx); } else { self.st.switch_cache = None; }
         if self.st.study.is_some() { self.study_window(ctx); }
         if self.st.mic_prompt { self.mic_window(ctx); }
         if self.st.restore_ask.is_some() { self.restore_window(ctx); }

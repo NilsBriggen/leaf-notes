@@ -367,7 +367,6 @@ impl NotesApp {
         if !open {
             self.st.show_settings = false;
             self.st.dirty = true;
-            if self.st.sync_at.is_infinite() { self.st.sync_at = now_f(); } // sync settings were changed without "Connect": try them now
         }
     }
 

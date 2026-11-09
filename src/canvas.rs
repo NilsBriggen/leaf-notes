@@ -29,7 +29,7 @@ impl Capture {
     pub fn done(&self) -> bool { self.wait == u8::MAX }
 }
 
-enum BlockAction { None, Changed, Delete, Duplicate, Card, Unpin }
+enum BlockAction { None, Changed, Rotated, Delete, Duplicate, Card, Unpin }
 
 pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: &str, backlinks: &[(String, (usize, usize, usize))], fav: bool, study: &std::collections::HashMap<String, CardState>) -> Option<PageAction> {
     let mut action = None;
@@ -352,7 +352,10 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     let mut changed = false;
     // the page as it was when the pointer went down: moving, resizing, ticking or retagging a note
     // changes it before the frame ends, so its undo step is taken from here
-    if ui.input(|i| i.pointer.any_pressed()) { st.press_page = Some(page.clone()); }
+    // Alt+arrow nudges and Tab (a new table row) change the page without a click: their undo step is this frame's page
+    let key_change = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+        if *key == Key::Tab || (modifiers.alt && matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown)))));
+    if ui.input(|i| i.pointer.any_pressed()) || key_change { st.press_page = Some(page.clone()); }
     // pictures (and printed PDF pages) first, then the highlighter over them, then the other notes:
     // a highlighter is on the paper, behind the words but on top of what's printed
     for pictures in [true, false] {
@@ -368,6 +371,7 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
                     st.make_card = Some((f, back));
                 }
                 BlockAction::Changed => changed = true,
+                BlockAction::Rotated => { changed = true; st.snap_press = true; }
                 BlockAction::None => {}
             }
         }
@@ -380,7 +384,8 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         st.editing = Some(b.id);
         page.blocks.push(b);
     }
-    if std::mem::take(&mut st.snap_press) { match st.press_page.take() { Some(before) => st.snap(&before), None => st.snap(page) } }
+    // a held Alt+arrow repeats without a new snapshot: one undo step for the whole nudge
+    if std::mem::take(&mut st.snap_press) { if let Some(before) = st.press_page.take().filter(|b| b.id == page.id) { st.snap(&before); } }
     if let Some((after, kind)) = st.insert_below.take() {
         if let Some(b) = page.blocks.iter().find(|b| b.id == after) {
             let h = st.heights.get(&after).copied().unwrap_or(40.0);
@@ -717,7 +722,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                 Tool::Eraser => {
                     let (r, partial) = (st.p.eraser_size, st.p.erase_partial);
                     // everything the eraser passed over since the last frame, not only where it is now
-                    let prev = p - resp.drag_delta() * from_global.scaling;
+                    let prev = p - resp.drag_delta(); // already in page coordinates (egui scales it)
                     let n = ((p - prev).length() / (r * 0.5).max(1.0)).ceil().clamp(1.0, 50.0) as usize;
                     for k in 1..=n {
                         let q = prev + (p - prev) * (k as f32 / n as f32);
@@ -936,7 +941,7 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
 fn block_menu(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction) {
     let mut rotated: Option<String> = None;
     block_menu_items(ui, b, act, &mut rotated);
-    if let Some(to) = rotated { b.kind = Kind::Image { file: to }; *act = BlockAction::Changed; }
+    if let Some(to) = rotated { b.kind = Kind::Image { file: to }; *act = BlockAction::Rotated; }
 }
 
 fn block_menu_items(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction, rotated: &mut Option<String>) {
@@ -947,7 +952,8 @@ fn block_menu_items(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction, rot
         Kind::Image { file } => {
             if ui.button(tr("↗  Open picture")).clicked() { open_path(&files_path(file)); ui.close(); }
             // a sideways phone photo: turned for good (a new file, so other devices get it too)
-            if ui.button(tr("↻  Rotate a quarter turn")).clicked() {
+            let printout = file.strip_suffix(".png").and_then(|f| f.rsplit_once("-page")).is_some();
+            if !printout && ui.button(tr("↻  Rotate a quarter turn")).clicked() {
                 let to = format!("{}.png", new_id());
                 let ok = image::ImageReader::open(files_path(file)).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.decode().ok()).map(|i| i.rotate90().save(files_path(&to)).is_ok()).unwrap_or(false);
                 if ok { *rotated = Some(to); }
@@ -1655,13 +1661,13 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 ui.allocate_exact_size(est, Sense::hover());
                 return changed;
             }
-            let tex = match st.textures.get(file) {
-                Some(t) => t.clone(),
+            let tex = match st.textures.get_mut(file) {
+                Some((t, used)) => { if near { *used = frame; } t.clone() }
                 None => {
                     st.decodes.1 += 1;
                     let t = load();
                     // a picture that isn't here yet (still syncing) is tried again; only an unreadable one is given up on
-                    if t.is_some() || files_path(file).exists() { st.textures.insert(file.clone(), t.clone()); }
+                    if t.is_some() || files_path(file).exists() { st.textures.insert(file.clone(), (t.clone(), frame)); }
                     t
                 }
             };

@@ -335,7 +335,8 @@ struct St {
     /// A tap on a printed PDF page: start a note there (screen position).
     note_at: Option<Pos2>,
     heights: HashMap<u64, f32>,
-    textures: HashMap<String, Option<TextureHandle>>,
+    /// decoded pictures, with when each was last near the screen (unused ones are dropped after a while)
+    textures: HashMap<String, (Option<TextureHandle>, f64)>,
     /// Pictures decoded in this frame (frame time, how many).
     decodes: (f64, u8),
     undo: Vec<(u64, Page)>,
@@ -1618,7 +1619,9 @@ impl NotesApp {
     fn handle_keys(&mut self, ctx: &egui::Context) {
         let typing = ctx.egui_wants_keyboard_input();
         let cmd = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
-        if !typing {
+        // a dialog in front (studying, checking handwriting, …) gets the keys: Ctrl+Z, Backspace and the tool keys mustn't change the page behind it
+        let dialog = self.st.study.is_some() || self.st.ink_review.is_some() || self.st.drop_pdf.is_some() || self.st.restore_ask.is_some() || self.st.transcribe_ask.is_some();
+        if !typing && !dialog {
             // While typing, the text box handles its own undo.
             if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)) || cmd(Key::Y) { self.undo(true); }
             if cmd(Key::Z) { self.undo(false); }
@@ -1686,6 +1689,7 @@ impl NotesApp {
             if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); return; }
             if st.tour.take().is_some() { st.tour_fresh = false; return; }
             if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some() || st.lock_prompt.take().is_some()
+                || st.ink_review.take().is_some() || st.drop_pdf.take().is_some() || st.transcribe_ask.take().is_some() || st.restore_ask.take().is_some()
                 || std::mem::take(&mut st.show_settings) || std::mem::take(&mut st.show_help) || std::mem::take(&mut st.show_news)
                 || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) || std::mem::take(&mut st.mic_prompt) { return; }
             self.st.selected.clear();
@@ -1702,7 +1706,8 @@ impl NotesApp {
         else if st.popup.take().is_some() || st.switcher.take().is_some() {}
         else if st.tour.take().is_some() { st.tour_fresh = false; }
         else if st.capture.is_some() { self.cancel_capture("PDF export cancelled."); }
-        else if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some() {}
+        else if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some()
+            || st.ink_review.take().is_some() || st.drop_pdf.take().is_some() || st.transcribe_ask.take().is_some() || st.restore_ask.take().is_some() {}
         else if std::mem::take(&mut st.show_settings) || std::mem::take(&mut st.show_help) || std::mem::take(&mut st.show_news) || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) {}
         else if st.editing.take().is_some() || !std::mem::take(&mut st.selected).is_empty() {}
         else if st.narrow && st.p.show_ai { st.p.show_ai = false; }
@@ -2045,8 +2050,11 @@ impl eframe::App for NotesApp {
             if (self.st.sync_now || since > 180.0 || (self.st.sync_pending && since > 20.0)) && self.st.sync_ask.is_none() && !self.st.dirty { self.start_sync(None); }
             ctx.request_repaint_after(std::time::Duration::from_secs(if self.st.sync_rx.is_some() { 1 } else { 20 }));
         }
+        if !self.st.show_settings && self.st.sync_at.is_infinite() { self.st.sync_at = now_f(); } // sync settings changed without "Connect"
         self.poll_sync();
         self.poll_transcribe();
+        let t = ctx.input(|i| i.time);
+        self.st.textures.retain(|_, (_, used)| t - *used < 30.0);
         if let Some(rx) = &self.st.update_rx { if let Ok(r) = rx.try_recv() {
             if r.is_none() && std::mem::take(&mut self.st.update_manual) { self.st.say("Leaf Notes is up to date."); }
             self.st.update = r;

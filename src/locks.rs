@@ -64,9 +64,23 @@ impl NotesApp {
         let key = vault::key(password, &salt)?;
         let s = self.section_mut(id).ok_or("no such section")?;
         let lock = vault::seal(&key, &salt, &s.pages)?;
-        let ids: Vec<u64> = s.pages.iter().map(|p| p.id).collect();
+        let mut ids: Vec<u64> = s.pages.iter().map(|p| p.id).collect();
         s.lock = Some(lock);
         s.pages = vec![s.placeholder()];
+        let (name, color) = (s.name.clone(), s.color);
+        let nb_name = self.store.notebooks.iter().find(|n| n.sections.iter().any(|s| s.id == id)).map(|n| n.name.clone()).unwrap_or_default();
+        // pages deleted from this section earlier mustn't stay readable in the bin (nor their titles): each becomes a one-page locked section
+        for t in self.store.trash.iter_mut() {
+            let TrashItem::Page { notebook, section, page } = &t.item else { continue };
+            if *section != id { continue; }
+            let Ok(l) = vault::seal(&key, &salt, std::slice::from_ref(page)) else { continue };
+            ids.push(page.id);
+            let mut sec = Section { id: new_id(), name: tf!("{name} (deleted page)", name = name), color, pages: vec![], lock: Some(l) };
+            sec.pages = vec![sec.placeholder()];
+            t.item = TrashItem::Section { notebook: *notebook, section: sec };
+            t.label = format!("A page from {nb_name} › {name} (locked)");
+            t.at = None;
+        }
         // earlier plain-text versions of these pages shouldn't outlive the lock
         if self.st.persist { for p in &ids { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{p}.jsonl"))); } }
         self.st.index.forget(&ids, self.st.persist);
@@ -234,6 +248,20 @@ mod tests {
         let bin = serde_json::to_string(&app.store.trash).unwrap();
         assert!(other.is_empty() || !bin.contains(&other));
         let crate::TrashItem::Section { section, .. } = &app.store.trash.last().unwrap().item else { panic!() };
+        assert!(section.sealed());
+    }
+
+    #[test]
+    fn locking_seals_pages_deleted_from_it_earlier() {
+        let mut app = crate::safety::tests::app();
+        let sec = app.store.notebooks[0].sections[0].clone();
+        let (page, secret) = (sec.pages[0].id, sec.pages[0].title.clone());
+        assert!(!secret.is_empty());
+        app.delete(page); // deleted while the section was still plain
+        assert!(serde_json::to_string(&app.store.trash).unwrap().contains(&secret));
+        app.lock_section(sec.id, "hunter22").unwrap();
+        assert!(!serde_json::to_string(&app.store.trash).unwrap().contains(&secret), "the bin holds it encrypted too");
+        let crate::TrashItem::Section { section, .. } = &app.store.trash.last().unwrap().item else { panic!("kept as a locked section") };
         assert!(section.sealed());
     }
 

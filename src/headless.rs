@@ -216,6 +216,28 @@ mod clickthrough {
     }
 
     #[test]
+    fn undo_after_a_nudge_keeps_the_typing() {
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = Harness::new();
+        h.click("Insert");
+        h.click("Checklist");
+        let id = h.app.st.editing.expect("the new checklist is being edited");
+        let block = |h: &Harness| h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].blocks.iter().find(|b| b.id == id).cloned().unwrap();
+        h.run(vec![egui::Event::Text("milk".into())]);
+        h.run(vec![]);
+        let typed = matches!(&block(&h).kind, crate::model::Kind::Checklist { items } if items.iter().any(|i| i.1.contains("milk")));
+        let y = block(&h).pos[1];
+        key(&mut h, egui::Key::ArrowDown, egui::Modifiers::ALT);
+        assert!(block(&h).pos[1] > y, "Alt+↓ nudges the note");
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        key(&mut h, egui::Key::Z, egui::Modifiers::COMMAND);
+        let b = block(&h);
+        assert_eq!(b.pos[1], y, "undo puts it back");
+        if typed { assert!(matches!(&b.kind, crate::model::Kind::Checklist { items } if items.iter().any(|i| i.1.contains("milk"))), "and keeps what was typed"); }
+        assert!(typed, "the harness typed into the checklist");
+    }
+
+    #[test]
     fn two_finger_tap_undoes() {
         let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = Harness::new();
