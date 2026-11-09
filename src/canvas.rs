@@ -347,7 +347,10 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         }
     }
     if page.blocks.is_empty() && page.strokes.is_empty() {
-        ui.painter().text(o + Vec2::new(28.0, 24.0), Align2::LEFT_TOP, tr(if st.touch_ui { "Tap anywhere to type, or pick the pen to write. Type / for tables, maths and more." } else { "Click anywhere to type, or pick the pen to write. Type / for tables, maths and more." }), FontId::proportional(14.0), ui.visuals().weak_text_color());
+        // wrapped to the page's visible width (a narrow screen, the assistant open)
+        let hint = tr(if st.touch_ui { "Tap anywhere to type, or pick the pen to write. Type / for tables, maths and more." } else { "Click anywhere to type, or pick the pen to write. Type / for tables, maths and more." });
+        let g = ui.painter().layout(hint.to_string(), FontId::proportional(14.0), ui.visuals().weak_text_color(), (ui.clip_rect().right() - o.x - 56.0).max(160.0));
+        ui.painter().galley(o + Vec2::new(28.0, 24.0), g, ui.visuals().weak_text_color());
     }
     let later = playback_moment(page, st);
     let mut remove = None;
@@ -362,7 +365,12 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     // pictures (and printed PDF pages) first, then the highlighter over them, then the other notes:
     // a highlighter is on the paper, behind the words but on top of what's printed
     for pictures in [true, false] {
-        if !pictures { for s in page.strokes.iter().filter(|s| s.highlighter) { paint_stroke(&ui.painter_at(rect), s, o); } }
+        if !pictures {
+            let dark = ui.visuals().dark_mode;
+            for s in page.strokes.iter().filter(|s| s.highlighter) {
+                if dark { let mut f = s.clone(); f.color[3] = (f.color[3] as f32 * 0.6) as u8; paint_stroke(&ui.painter_at(rect), &f, o); } else { paint_stroke(&ui.painter_at(rect), s, o); }
+            }
+        }
         for b in page.blocks.iter_mut().filter(|b| matches!(b.kind, Kind::Image { .. }) == pictures) {
             match block_ui(ui, b, st, o) {
                 BlockAction::Delete => remove = Some(b.id),
@@ -419,10 +427,23 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
 
     // ink, drawn over the notes like ink on paper
     let painter = ui.painter_at(rect);
+    // on dark paper, near-black ink shows light (like chalk); over a printed page or picture it keeps its colour
+    let pictures: Vec<Rect> = if ui.visuals().dark_mode { page.blocks.iter().filter(|b| matches!(b.kind, Kind::Image { .. }))
+        .map(|b| Rect::from_min_size(Pos2::new(b.pos[0], b.pos[1]), Vec2::new(b.width, st.heights.get(&b.id).copied().unwrap_or(b.width * 1.3)))).collect() } else { vec![] };
+    let dark = ui.visuals().dark_mode;
+    let shown = |s: &Stroke| -> Option<Stroke> {
+        let [r, g, b, a] = s.color;
+        if !dark || 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32 >= 60.0 { return None; }
+        let p = s.points.get(s.points.len() / 2)?;
+        if pictures.iter().any(|q| q.contains(Pos2::new(p[0], p[1]))) { return None; }
+        Some(Stroke { color: [226, 230, 228, a], ..s.clone() })
+    };
     for s in page.strokes.iter().filter(|s| !s.highlighter) {
+        let light = shown(s);
+        let s = light.as_ref().unwrap_or(s);
         if later.as_ref().is_some_and(|f| f(s.t)) { let mut faded = s.clone(); faded.color[3] = (faded.color[3] as f32 * 0.22) as u8; paint_stroke(&painter, &faded, o); } else { paint_stroke(&painter, s, o); }
     }
-    if let Some(s) = &st.current { paint_stroke(&painter, s, o); }
+    if let Some(s) = &st.current { paint_stroke(&painter, shown(s).as_ref().unwrap_or(s), o); }
     // a selection only lasts while its ink exists, and not into erasing
     if st.tool == Tool::Eraser { st.selected.clear(); }
     st.selected.retain(|id| page.strokes.iter().any(|s| s.id == *id));
@@ -1280,7 +1301,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
     // summary and the main action
     ui.horizontal(|ui| {
         let chip = |ui: &mut egui::Ui, t: String, c: Color32| { egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| ui.label(RichText::new(t).size(12.5).color(c))); };
-        chip(ui, tf!("▤  {cards_n} cards", cards_n = page.cards.len()), ui.visuals().text_color());
+        chip(ui, if page.cards.len() == 1 { tr("▤  1 card").to_string() } else { tf!("▤  {cards_n} cards", cards_n = page.cards.len()) }, ui.visuals().text_color());
         if due > 0 { chip(ui, tf!("{due} due", due = due), Color32::from_rgb(214, 120, 40)); }
         if new > 0 { chip(ui, tf!("{new} new", new = new), acc); }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1555,7 +1576,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     // empty *before* this key: the Backspace that clears the last letter mustn't also remove the item
                     let was_empty = t.is_empty();
                     // Multi-line so long items wrap; Enter still makes a new item.
-                    let mut te = egui::TextEdit::multiline(t).id(egui::Id::unique(("chk", b.id, i))).frame(egui::Frame::NONE).desired_rows(1).desired_width(w - 40.0).hint_text(tr("To do…"));
+                    let mut te = egui::TextEdit::multiline(t).id(egui::Id::unique(("chk", b.id, i))).frame(egui::Frame::NONE).desired_rows(1).desired_width(w - 40.0 - if active && n > 1 { 30.0 } else { 0.0 }).hint_text(tr("To do…"));
                     if *done { te = te.text_color(ui.visuals().weak_text_color()); }
                     let r = ui.add(te);
                     focus(&r, st);
@@ -1609,6 +1630,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                             let mut te = egui::TextEdit::singleline(cell).desired_width(colw[ci.min(cols - 1)]).clip_text(false).frame(egui::Frame::NONE).id(egui::Id::unique(("cell", b.id, ri, ci)));
                             if ri == 0 { te = te.font(head_font.clone()).text_color(acc); }
                             let r = ui.add(te);
+                            ui.painter().hline(r.rect.x_range(), r.rect.bottom() + 2.0, ui.visuals().widgets.noninteractive.bg_stroke);
                             if (ri == 0 && ci == 0 && st.focus_id == Some(id)) || st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
                             changed |= r.changed();
                             // Tab in the last cell: a new row, ready to type in

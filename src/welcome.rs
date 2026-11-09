@@ -69,12 +69,15 @@ impl NotesApp {
         const STEPS: u8 = 5;
         let (mut close, mut empty_start) = (false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(26)).corner_radius(20);
-        egui::Modal::new(egui::Id::unique("tour")).frame(frame).show(ctx, |ui| {
-            ui.set_width(crate::fit_w(ui.ctx(), 520.0));
+        let id = egui::Id::unique("tour");
+        let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, self.st.bars[0] + (ctx.content_rect().height() * 0.1).min(90.0)));
+        egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+            let w = crate::fit_w(ui.ctx(), 520.0);
+            ui.set_width(w);
             let big = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).font(rich::serif(26.0)).color(ui.visuals().strong_text_color())); ui.add_space(6.0); };
             let text = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).size(15.0)); ui.add_space(4.0); };
             // the steps differ in length: keep the buttons below them in one place
-            ui.vertical(|ui| { ui.set_min_height(250.0); match step {
+            ui.vertical(|ui| { ui.set_min_height(if w < 480.0 { 340.0 } else { 250.0 }); match step {
                 0 => {
                     big(ui, "Welcome to Leaf Notes");
                     text(ui, "Your notes live in notebooks. A notebook has sections (like the tabs of a binder), and each section has pages.");
@@ -127,7 +130,7 @@ impl NotesApp {
                             if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
                             if ui.button(tr("Start with an empty notebook")).clicked() { empty_start = true; close = true; }
                         });
-                    } else if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
+                    }
                     text(ui, "You can see this tour again from Help (?, top right).");
                 }
             }});
@@ -140,6 +143,7 @@ impl NotesApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if step + 1 < STEPS && ui.add(egui::Button::new(RichText::new(tr("Next")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { step += 1; }
+                    if step + 1 == STEPS && !self.st.tour_fresh && ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { close = true; }
                     if step > 0 && ui.button(tr("Back")).clicked() { step -= 1; }
                     if step + 1 < STEPS && ui.add(egui::Button::new(tr("Skip")).frame_when_inactive(false)).clicked() { close = true; }
                 });
@@ -159,7 +163,7 @@ impl NotesApp {
 
     pub(crate) fn news_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        egui::Window::new(tf!("What's new in Leaf Notes {v}", v = VERSION)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).default_width(crate::fit_w(ctx, 460.0)).max_width(crate::fit_w(ctx, 460.0)).show(ctx, |ui| {
+        egui::Window::new(crate::window_title(tf!("What's new in Leaf Notes {v}", v = VERSION))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).default_width(crate::fit_w(ctx, 460.0)).max_width(crate::fit_w(ctx, 460.0)).show(ctx, |ui| {
             if let Some((_, items)) = CHANGES.iter().find(|(v, _)| *v == VERSION) {
                 for item in *items { ui.label(RichText::new(format!("•  {}", tr(item))).size(14.0)); }
             }
@@ -184,7 +188,7 @@ impl NotesApp {
             ("Locked sections", "Right-click a section ▸ Lock with a password. Its pages are encrypted; without the password they can't be opened, by anyone."),
             ("Keyboard", "Settings ▸ Your data ▸ Keyboard shortcuts lists them all."),
         ];
-        egui::Window::new(tr("Help")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 560.0), 520.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
+        egui::Window::new(crate::window_title(tr("Help"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 560.0), 520.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                 for (title, body) in topics {
                     ui.label(RichText::new(tr(title)).size(16.0).strong());

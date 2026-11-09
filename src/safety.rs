@@ -14,7 +14,7 @@ impl NotesApp {
     pub(crate) fn history_window(&mut self, ctx: &egui::Context) {
         let Some((id, versions, mut sel)) = self.st.history.take() else { return };
         let (mut open, mut restore, mut as_copy) = (true, None, None);
-        egui::Window::new(tr("Page history")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 780.0), 520.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
+        egui::Window::new(crate::window_title(tr("Page history"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 780.0), 520.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
             if versions.is_empty() {
                 ui.label(RichText::new(tr("No older versions yet. Leaf Notes keeps the previous version each time a page changes, at most every 10 minutes.")).weak());
                 return;
@@ -211,7 +211,7 @@ impl NotesApp {
         let get = |id: u64| self.store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).find(|p| p.id == id).cloned();
         let (Some(a), Some(b)) = (get(orig), get(copy)) else { self.st.compare = None; return };
         let (mut open, mut choice) = (true, None);
-        egui::Window::new(tr("Two versions of this page")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 900.0), 560.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
+        egui::Window::new(crate::window_title(tr("Two versions of this page"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 900.0), 560.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
             ui.columns(2, |cols| {
                 for (k, (p, label)) in [(&a, tr("This device")), (&b, tr("The other device"))].into_iter().enumerate() {
                     let ui = &mut cols[k];

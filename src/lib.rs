@@ -65,6 +65,9 @@ impl Tip for egui::Response {
 
 fn accent(ui: &egui::Ui) -> Color32 { if ui.visuals().dark_mode { mix(accent_base(), Color32::WHITE, 0.45) } else { accent_base() } }
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 { a.lerp_to_gamma(b, t) }
+/// Every window looks like Settings: a rounded card with a serif title.
+pub(crate) fn window_frame(ctx: &egui::Context) -> egui::Frame { egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)).corner_radius(16) }
+pub(crate) fn window_title(t: impl Into<String>) -> egui::RichText { egui::RichText::new(t.into()).font(rich::serif(19.0)) }
 
 pub const ACCENTS: [(&str, [u8; 3]); 6] = [("Teal", [15, 118, 110]), ("Indigo", [67, 56, 202]), ("Coral", [214, 82, 62]), ("Forest", [21, 128, 61]), ("Plum", [147, 51, 134]), ("Slate", [51, 65, 85])];
 

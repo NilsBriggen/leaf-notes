@@ -101,8 +101,10 @@ fn group(ui: &mut egui::Ui, caption: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.vertical(|ui| {
         let r = ui.horizontal(|ui| { ui.set_min_height(h); add(ui); }).response.rect;
         if captions {
-            let (cr, _) = ui.allocate_exact_size(Vec2::new(r.width(), 13.0), Sense::hover());
-            ui.painter().text(cr.center(), Align2::CENTER_CENTER, caption, FontId::proportional(10.5), ui.visuals().weak_text_color());
+            // a caption longer than its buttons widens the group rather than running into the next one
+            let g = ui.painter().layout_no_wrap(caption.to_string(), FontId::proportional(10.5), ui.visuals().weak_text_color());
+            let (cr, _) = ui.allocate_exact_size(Vec2::new(r.width().max(g.size().x + 8.0), 13.0), Sense::hover());
+            ui.painter().galley(cr.center() - g.size() / 2.0, g, ui.visuals().weak_text_color());
         }
     });
     let (r, _) = ui.allocate_exact_size(Vec2::new(9.0, if captions { h + 12.0 } else { h }), Sense::hover());
@@ -268,7 +270,7 @@ pub(crate) fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     if r.clicked() { *on = !*on; r.mark_changed(); }
     let t = ui.ctx().animate_bool_responsive(r.id, *on);
     let v = ui.visuals();
-    let track = if *on { accent(ui) } else { v.widgets.inactive.weak_bg_fill.gamma_multiply(if v.dark_mode { 1.6 } else { 0.92 }) };
+    let track = if *on { accent_base() } else { v.widgets.inactive.weak_bg_fill.gamma_multiply(if v.dark_mode { 1.6 } else { 0.92 }) };
     ui.painter().rect_filled(rect, 12.0, track);
     if !*on { ui.painter().rect_stroke(rect, 12.0, v.widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside); }
     let x = egui::lerp(rect.left() + 12.0..=rect.right() - 12.0, t);
@@ -278,6 +280,13 @@ pub(crate) fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let on = *on;
     r.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, ""));
     r
+}
+
+/// One line of text that ends in "…" where it doesn't fit, instead of being cut mid-letter.
+pub(crate) fn one_line(painter: &egui::Painter, text: &str, font: FontId, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width: max_width.max(10.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    painter.layout_job(job)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -312,8 +321,13 @@ fn nav_item(ui: &mut egui::Ui, st: &mut St, id: u64, name: &str, color: Option<C
     let top = if sub.is_some() { rect.top() + 17.0 } else { rect.center().y };
     let painter = ui.painter_at(rect.shrink2(Vec2::new(10.0, 2.0)));
     let font = FontId::proportional(if indent > 0 { 13.5 } else { 14.5 });
-    painter.text(Pos2::new(x, top), Align2::LEFT_CENTER, name, font, if selected { v.strong_text_color() } else { v.text_color() });
-    if let Some(s) = sub { painter.text(Pos2::new(x, rect.top() + 36.0), Align2::LEFT_CENTER, s, FontId::proportional(11.5), v.weak_text_color()); }
+    let room = rect.right() - 10.0 - x;
+    let line = |text: &str, font: FontId, color: Color32, y: f32| {
+        let g = one_line(&painter, text, font, color, room);
+        painter.galley(Pos2::new(x, y - g.size().y / 2.0), g, color);
+    };
+    line(name, font, if selected { v.strong_text_color() } else { v.text_color() }, top);
+    if let Some(s) = sub { line(&s, FontId::proportional(11.5), v.weak_text_color(), rect.top() + 36.0); }
     if r.double_clicked() { st.rename = Some((id, name.to_string())); }
     focus_ring(ui, &r, rect, 10.0);
     r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
@@ -1024,7 +1038,7 @@ impl NotesApp {
                             if ui.add(egui::Button::new(RichText::new(tr(if self.st.touch_ui { "Show answer" } else { "Show answer   Space" })).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() { sd.shown = true; }
                         } else {
                             let w = (ui.available_width() - 16.0) / 3.0;
-                            for (k, (label, col)) in { let t = self.st.touch_ui; [(tr(if t { "Again" } else { "Again   1" }), Color32::from_rgb(214, 82, 62)), (tr(if t { "Good" } else { "Good   2" }), acc), (tr(if t { "Easy" } else { "Easy   3" }), Color32::from_rgb(21, 128, 61))] }.into_iter().enumerate() {
+                            for (k, (label, col)) in { let t = self.st.touch_ui; [(tr(if t { "Again" } else { "Again   1" }), Color32::from_rgb(214, 82, 62)), (tr(if t { "Good" } else { "Good   2" }), accent_base()), (tr(if t { "Easy" } else { "Easy   3" }), Color32::from_rgb(21, 128, 61))] }.into_iter().enumerate() {
                                 if ui.add(egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(col).min_size(Vec2::new(w, 38.0))).clicked() { rate = Some(k); }
                             }
                         }
@@ -1663,8 +1677,9 @@ impl NotesApp {
                 let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
                 if r.hovered() { ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill); }
                 let painter = ui.painter_at(rect.shrink(4.0));
-                painter.text(rect.min + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, if title.is_empty() { tr("Untitled page") } else { title.as_str() }, FontId::proportional(14.0), ui.visuals().strong_text_color());
-                painter.text(rect.min + Vec2::new(8.0, 24.0), Align2::LEFT_TOP, path, FontId::proportional(10.5), acc);
+                let strong = ui.visuals().strong_text_color();
+                painter.galley(rect.min + Vec2::new(8.0, 6.0), one_line(&painter, if title.is_empty() { tr("Untitled page") } else { title.as_str() }, FontId::proportional(14.0), strong, rect.width() - 16.0), strong);
+                painter.galley(rect.min + Vec2::new(8.0, 24.0), one_line(&painter, path, FontId::proportional(10.5), acc, rect.width() - 16.0), acc);
                 // snippet around the match, with the match highlighted
                 let start = text.get(..at).unwrap_or("").char_indices().rev().nth(24).map_or(0, |(i, _)| i);
                 let tail_end = text.get(end..).and_then(|t| t.char_indices().nth(40)).map_or(text.len(), |(i, _)| end + i);
@@ -1672,9 +1687,10 @@ impl NotesApp {
                     let mut job = egui::text::LayoutJob::default();
                     let f = |c: Color32, bg: Color32| egui::TextFormat { font_id: FontId::proportional(11.5), color: c, background: bg, ..Default::default() };
                     let weak = ui.visuals().weak_text_color();
-                    job.append(&text[start..at].replace('\n', " "), 0.0, f(weak, Color32::TRANSPARENT));
+                    let plain = |t: &str| t.replace('\n', " ").replace(['*', '=', '$', '`', '\\', '{', '}', '^', '#'], "");
+                    job.append(&plain(&text[start..at]), 0.0, f(weak, Color32::TRANSPARENT));
                     job.append(&text[at..end], 0.0, f(ui.visuals().text_color(), mark));
-                    job.append(&text[end..tail_end].replace('\n', " "), 0.0, f(weak, Color32::TRANSPARENT));
+                    job.append(&plain(&text[end..tail_end]), 0.0, f(weak, Color32::TRANSPARENT));
                     job.wrap.max_width = rect.width() - 16.0;
                     job.wrap.max_rows = 1;
                     let g = painter.layout_job(job);
@@ -1854,8 +1870,11 @@ impl NotesApp {
             for (i, (_, title, path, at)) in hits.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
                 if i == sel || resp.hovered() { ui.painter().rect_filled(rect, 8.0, if i == sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
-                ui.painter().text(rect.min + Vec2::new(12.0, 13.0), Align2::LEFT_CENTER, title, FontId::proportional(14.5), ui.visuals().strong_text_color());
-                ui.painter().text(rect.min + Vec2::new(12.0, 31.0), Align2::LEFT_CENTER, path, FontId::proportional(11.5), ui.visuals().weak_text_color());
+                let (strong, weak) = (ui.visuals().strong_text_color(), ui.visuals().weak_text_color());
+                let g = one_line(ui.painter(), title, FontId::proportional(14.5), strong, rect.width() - 24.0);
+                ui.painter().galley(rect.min + Vec2::new(12.0, 13.0 - g.size().y / 2.0), g, strong);
+                let g = one_line(ui.painter(), path, FontId::proportional(11.5), weak, rect.width() - 24.0);
+                ui.painter().galley(rect.min + Vec2::new(12.0, 31.0 - g.size().y / 2.0), g, weak);
                 if resp.clicked() { go = Some(*at); }
                 if i == sel && (down || up) { ui.scroll_to_rect(rect, None); }
             }
@@ -1964,7 +1983,7 @@ impl NotesApp {
             let mut open = true;
             let mut restore = None;
             let mut purge = None;
-            egui::Window::new(tr("Recently deleted")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_width(crate::fit_w(ctx, 420.0)).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
+            egui::Window::new(crate::window_title(tr("Recently deleted"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_width(crate::fit_w(ctx, 420.0)).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
                 if self.store.trash.is_empty() { ui.label(RichText::new(tr("Nothing here. Deleted pages, sections and notebooks wait here until you empty the bin.")).weak()); }
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (i, t) in self.store.trash.iter().enumerate().rev() {
@@ -2002,7 +2021,7 @@ impl NotesApp {
         }
         if self.st.show_shortcuts {
             let mut open = true;
-            egui::Window::new(tr("Keyboard shortcuts")).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).show(ctx, |ui| {
+            egui::Window::new(crate::window_title(tr("Keyboard shortcuts"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).show(ctx, |ui| {
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).striped(true).show(ui, |ui| {
                     for (k, what) in [("Ctrl+N", "New page"), ("Ctrl+F", "Search all notes"), ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                         ("Ctrl+B / Ctrl+I", "Bold / italic"), ("Ctrl+Shift+H", "Highlight"), ("Ctrl+M", "Inline math"), ("Ctrl+`", "Inline code"),
@@ -2019,7 +2038,7 @@ impl NotesApp {
         if let Some((how, mut path)) = self.st.path_prompt.clone() {
             let mut go = false;
             let mut cancel = false;
-            egui::Window::new(tr(match how { Ins::Picture => "Insert picture", Ins::Printout => "Insert printout", Ins::Attach => "Attach file" })).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).show(ctx, |ui| {
+            egui::Window::new(crate::window_title(tr(match how { Ins::Picture => "Insert picture", Ins::Printout => "Insert printout", Ins::Attach => "Attach file" }))).frame(crate::window_frame(ctx)).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).show(ctx, |ui| {
                 ui.label(tr("File path on this device:"));
                 ui.text_edit_singleline(&mut path);
                 ui.horizontal(|ui| { go = ui.button(tr("Insert")).clicked(); cancel = ui.button(tr("Cancel")).clicked(); });
