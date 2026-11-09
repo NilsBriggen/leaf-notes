@@ -143,6 +143,9 @@ fn format_utc(secs: u64, time: bool) -> String {
     s
 }
 
+/// A search result: (only a near miss, where the page is, title, notebook › section, the page's text, match start, match end).
+pub(crate) type SearchHit = (bool, (usize, usize, usize), String, String, String, usize, usize);
+
 /// A study session: the deck, what's left to go, and how it went.
 pub(crate) struct Study { pub title: String, pub cards: Vec<Card>, pub queue: Vec<usize>, pub total: usize, pub shown: bool, pub tally: [u32; 3], pub missed: Vec<usize> }
 
@@ -1072,7 +1075,7 @@ impl NotesApp {
             let jump = ui.add(egui::Button::new(RichText::new(tr("↗  Jump to a page…")).size(13.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
                 .tip("Quick switcher (Ctrl+K)");
             if jump.clicked() { self.st.switcher = Some((String::new(), 0)); }
-            let open_tasks = self.open_tasks().len();
+            let open_tasks = self.st.open_tasks_n;
             let t = ui.add(egui::Button::new(RichText::new(tf!("☑  All tasks{x}", x = if open_tasks > 0 { format!("  ·  {open_tasks}") } else { String::new() })).size(13.0).color(if self.st.tasks { accent(ui) } else { ui.visuals().weak_text_color() }))
                 .frame_when_inactive(false).selected(self.st.tasks).min_size(Vec2::new(ui.available_width(), 30.0))).tip("Every open to-do from every notebook");
             if t.clicked() { self.st.tasks ^= true; }
@@ -1323,7 +1326,23 @@ impl NotesApp {
         let mut go = None;
         let mut toggle = None;
         let mut found = 0;
-        let mut hits: Vec<(bool, (usize, usize, usize), String, String, String, usize, usize)> = vec![];
+        // full-text search over every page is the costly part: kept until the query changes (or a second passes)
+        let fresh = self.st.search_cache.as_ref().is_some_and(|(cq, at, _)| *cq == q && now_f() - at < 1.0);
+        if filter.is_none() && !fresh {
+            let mut hits: Vec<SearchHit> = vec![];
+            for (ni, n) in self.store.notebooks.iter().enumerate() { for (si, s) in n.sections.iter().enumerate() { for (pi, p) in s.pages.iter().enumerate() {
+                // also handwriting and PDF text read in the background
+                let mut text = p.plain_text();
+                if let Some(extra) = self.st.index.text(p.id) { text.push('\n'); text.push_str(extra); }
+                let lower = text.to_lowercase();
+                // exact matches first, then near misses (typos, handwriting read slightly wrong)
+                let Some((at, end, exact)) = crate::index::fuzzy_find(&lower, &q) else { continue };
+                hits.push((!exact, (ni, si, pi), p.title.clone(), format!("{} › {}", n.name, s.name), text, at, end));
+            }}}
+            hits.sort_by_key(|h| h.0);
+            self.st.search_cache = Some((q.clone(), now_f(), hits));
+        }
+        let hits: Vec<SearchHit> = if filter.is_none() { self.st.search_cache.as_ref().map(|c| c.2.clone()).unwrap_or_default() } else { vec![] };
         egui::ScrollArea::vertical().id_salt("search-scroll").auto_shrink([false; 2]).show(ui, |ui| {
             for (ni, n) in self.store.notebooks.iter().enumerate() {
                 for (si, s) in n.sections.iter().enumerate() {
@@ -1346,19 +1365,10 @@ impl NotesApp {
                                     if r.tip(format!("{} › {} › {}", n.name, s.name, p.title)).clicked() { go = Some((ni, si, pi)); }
                                 });
                             }
-                            continue;
                         }
-                        // also handwriting and PDF text read in the background
-                        let mut text = p.plain_text();
-                        if let Some(extra) = self.st.index.text(p.id) { text.push('\n'); text.push_str(extra); }
-                        let lower = text.to_lowercase();
-                        // exact matches first, then near misses (typos, handwriting read slightly wrong)
-                        let Some((at, end, exact)) = crate::index::fuzzy_find(&lower, &q) else { continue };
-                        hits.push((!exact, (ni, si, pi), p.title.clone(), format!("{} › {}", n.name, s.name), text, at, end));
                     }
                 }
             }
-            hits.sort_by_key(|h| h.0);
             for (_, at_page, title, path, text, at, end) in &hits {
                 let (at, end) = (*at, (*end).min(text.len()));
                 found += 1;
@@ -1483,11 +1493,13 @@ impl NotesApp {
 
     /// Ctrl+K: type a few letters of any page and jump there.
     fn switcher_window(&mut self, ctx: &egui::Context) {
-        let Some((mut q, mut sel)) = self.st.switcher.take() else { return };
+        let Some((mut q, mut sel)) = self.st.switcher.take() else { self.st.switch_cache = None; return };
         let ql = q.trim().to_lowercase();
-        // (score, title, path, place)
+        // (score, title, path, place); the scan (which reads page text) runs only when the query changes
+        let cached = self.st.switch_cache.take().filter(|(cq, _)| *cq == ql).map(|(_, h)| h);
         let mut hits: Vec<(f32, String, String, (usize, usize, usize))> = vec![];
-        for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
+        if let Some(h) = &cached { hits = h.clone(); }
+        if cached.is_none() { for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
             let title = if p.title.trim().is_empty() { tr("Untitled page").to_string() } else { p.title.clone() };
             let path = format!("{} › {}", n.name, s.name);
             let score = if ql.is_empty() {
@@ -1503,7 +1515,8 @@ impl NotesApp {
             hits.push((score, title, path, (a, b, c)));
         }}}
         hits.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.cmp(&y.1)));
-        hits.truncate(12);
+        hits.truncate(12); }
+        self.st.switch_cache = Some((ql.clone(), hits.clone()));
         let (down, up, enter) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::ArrowUp), i.consume_key(Modifiers::NONE, Key::Enter)));
         if down { sel = (sel + 1).min(hits.len().saturating_sub(1)); }
         if up { sel = sel.saturating_sub(1); }

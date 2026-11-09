@@ -472,9 +472,22 @@ fn layout_fence_box(p: &Painter, l: &str, b: MBox, r: &str, size: f32, color: Co
 }
 
 /// Lay out and draw `src` as math; returns the widget response.
+/// `parse`, remembered: equations are drawn every frame, and their source rarely changes.
+fn parsed(src: &str) -> Node {
+    thread_local! { static CACHE: std::cell::RefCell<std::collections::HashMap<String, Node>> = Default::default(); }
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(n) = c.get(src) { return n.clone(); }
+        if c.len() > 2000 { c.clear(); } // shortcut: forget everything at once rather than track use, fine at this size
+        let n = parse(src);
+        c.insert(src.to_string(), n.clone());
+        n
+    })
+}
+
 pub fn math_label(ui: &mut egui::Ui, src: &str, size: f32) -> egui::Response {
     let color = ui.visuals().text_color();
-    let node = parse(src);
+    let node = parsed(src);
     let mut b = layout(ui.painter(), &node, size, color);
     let avail = ui.available_width();
     if b.w > avail && avail > 60.0 {

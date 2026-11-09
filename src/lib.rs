@@ -238,6 +238,14 @@ struct St {
     popup: Option<canvas::Popup>,
     open_link: Option<String>,
     page_titles: Vec<String>,
+    /// Pages linking to `backlinks_for`, open tasks and when these were last gathered (see `ui`).
+    backlinks: Vec<(String, (usize, usize, usize))>,
+    backlinks_for: u64,
+    open_tasks_n: usize,
+    derived_at: f64,
+    /// The last search (query, when, results) and Ctrl+K list (query, results): recomputed when the query changes, or after a second.
+    search_cache: Option<(String, f64, Vec<chrome::SearchHit>)>,
+    switch_cache: Option<(String, Vec<(f32, String, String, (usize, usize, usize))>)>,
     insert_below: Option<(u64, Kind)>,
     /// Quick switcher (Ctrl+K): query and highlighted row.
     switcher: Option<(String, usize)>,
@@ -264,6 +272,8 @@ struct St {
     press_page: Option<Page>,
     heights: HashMap<u64, f32>,
     textures: HashMap<String, Option<TextureHandle>>,
+    /// Pictures decoded in this frame (frame time, how many).
+    decodes: (f64, u8),
     undo: Vec<(u64, Page)>,
     redo: Vec<(u64, Page)>,
     dirty: bool,
@@ -308,6 +318,12 @@ struct St {
     unlock_err: String,
     /// The welcome tour's current step.
     tour: Option<u8>,
+    /// Compare every page at the next save (after changes elsewhere than the page in front), and when that last happened.
+    full_save: bool,
+    full_at: f64,
+    /// Saves so far, and at the start of the running sync round (nothing new saved: nothing to merge).
+    saves: u64,
+    sync_saves: u64,
     /// Held while this window owns the data folder (see `instance_lock`).
     #[allow(dead_code)]
     instance: Option<std::fs::File>,
@@ -581,12 +597,12 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false, 0.0), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, snap_press: false, press_page: None, heights: HashMap::new(),
-            textures: HashMap::new(), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false, 0.0), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], backlinks: vec![], backlinks_for: 0, open_tasks_n: 0, derived_at: -10.0, search_cache: None, switch_cache: None, insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, snap_press: false, press_page: None, heights: HashMap::new(),
+            textures: HashMap::new(), decodes: (0.0, 0), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
             status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, tour_fresh: false, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
-            instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
+            full_save: true, full_at: 0.0, saves: 0, sync_saves: 0, instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
             #[cfg(target_os = "android")] android: None, #[cfg(target_os = "android")] keyboard_shown: false };
@@ -629,6 +645,7 @@ impl NotesApp {
     }
 
     fn go_to(&mut self, nb: usize, sec: usize, pg: usize) {
+        if self.st.dirty { self.st.full_save = true; } // the page being left may have unsaved changes
         if self.st.narrow { self.st.p.show_nav = false; } // phones: show the page that was picked
         (self.nb, self.sec, self.pg) = (nb, sec, pg);
         if let Some(id) = self.store.notebooks.get(nb).and_then(|n| n.sections.get(sec)).and_then(|s| s.pages.get(pg)).map(|p| p.id) {
@@ -797,6 +814,7 @@ impl NotesApp {
     }
 
     fn save_now(&mut self) {
+        self.st.saves += 1;
         self.st.dirty = false;
         self.st.since_save = 0.0;
         if !self.st.persist { return; }
@@ -812,7 +830,11 @@ impl NotesApp {
         // during a whole-page PDF export the panels are hidden for the picture: saved as they really are
         let mut prefs = self.st.p.clone();
         if let Some(c) = &self.st.capture { (prefs.show_nav, prefs.show_ai, prefs.ribbon_open) = c.keep; }
-        let r = self.st.saver.save(&data_dir(), sealed.as_ref().unwrap_or(&self.store)).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &prefs)).and_then(|_| save(sync::SYNC_FILE, &sy));
+        // a full comparison of every page now and then (and when asked), else the quick one (see `Saver::save_with`)
+        let full = std::mem::take(&mut self.st.full_save) || now_f() - self.st.full_at > 20.0;
+        if full { self.st.full_at = now_f(); }
+        let front = (!full).then(|| self.page().id);
+        let r = self.st.saver.save_with(&data_dir(), sealed.as_ref().unwrap_or(&self.store), front).and_then(|_| save(SETTINGS_FILE, &ai)).and_then(|_| save(PREFS_FILE, &prefs)).and_then(|_| save(sync::SYNC_FILE, &sy));
         self.st.sync_pending = true;
         if let Err(e) = r { self.st.say(tf!("⚠ Could not save: {e}", e = e)); self.st.dirty = true; }
     }
@@ -1235,6 +1257,7 @@ impl NotesApp {
     pub(crate) fn start_sync(&mut self, first: Option<sync::First>) {
         if self.st.sync_rx.is_some() || !self.st.persist || !self.st.sync.on() { return; }
         let sent = self.sealed().unwrap_or_else(|| self.store.clone());
+        self.st.sync_saves = self.st.saves;
         let (cfg, local, home) = (self.st.sync.clone(), sent.clone(), data_dir());
         let (tx, rx) = channel();
         std::thread::spawn(move || { let _ = tx.send(sync::run(&cfg, &home, &local, first, false)); });
@@ -1250,17 +1273,22 @@ impl NotesApp {
         let Some((sent, _)) = self.st.sync_rx.take() else { return };
         match r {
             Ok(sync::Outcome::AskFirst { pages }) => self.st.sync_ask = Some(pages),
-            Ok(sync::Outcome::Synced { store, down, base, problem, .. }) => {
-                // compare and merge in the sealed form; opened locked sections are opened again after
-                let current = self.sealed().unwrap_or_else(|| self.store.clone());
-                let meanwhile = !sync::same(&sent, &current);
-                let merged = if meanwhile { sync::merge(&sent, &current, &store) } else { Ok(store) };
+            Ok(sync::Outcome::Synced { store, down, base, problem, changed, .. }) => {
+                // compare and merge in the sealed form; opened locked sections are opened again after.
+                // Nothing saved or edited since the round began: the notes are still what was sent, so the
+                // costly whole-library comparisons are skipped (the round already knows whether it changed them)
+                let touched = self.st.dirty || self.st.saves != self.st.sync_saves;
+                let current = touched.then(|| self.sealed().unwrap_or_else(|| self.store.clone()));
+                let meanwhile = current.as_ref().is_some_and(|c| !sync::same(&sent, c));
+                let merged = match &current { Some(c) if meanwhile => sync::merge(&sent, c, &store), _ => Ok(store) };
                 match merged {
                     Ok(m) => {
-                        if !sync::same(&m, &current) {
+                        let differs = match &current { Some(c) if meanwhile => !sync::same(&m, c), _ => changed };
+                        if differs {
                             // stay on the open page wherever it is now
                             let open = self.store.notebooks.get(self.nb).and_then(|n| n.sections.get(self.sec)).and_then(|s| s.pages.get(self.pg)).map(|p| p.id);
                             self.store = self.reopen(m);
+                            self.st.full_save = true; // pages other than this one changed
                             // undo steps are whole pages from before the merge: they would undo the other device's changes
                             self.st.undo.clear();
                             self.st.redo.clear();
@@ -1504,7 +1532,6 @@ impl eframe::App for NotesApp {
             match r { Ok(()) => { self.insert(Kind::Image { file }); self.st.editing = None; self.st.say("Pasted the picture onto the page."); } Err(e) => self.st.say(tf!("⚠ Couldn't paste the picture: {e}", e = e)) }
         }
         for f in ctx.input(|i| i.raw.dropped_files.clone()) { let p = f.path().to_path_buf(); if !p.as_os_str().is_empty() { self.insert_file(&p, Ins::Printout); } }
-        self.st.due_now = self.due_cards().len();
         self.handle_keys(&ctx);
         self.poll_ai(&ctx);
         self.clamp();
@@ -1576,16 +1603,30 @@ impl eframe::App for NotesApp {
         let (nb, sec, pg) = (self.nb, self.sec, self.pg);
         let crumb = format!("{}  ·  {}", self.store.notebooks[nb].name, self.store.notebooks[nb].sections[sec].name);
         let mut page_action = None;
-        // page titles for the "[[" list, and pages linking here (backlinks)
-        let here = self.store.notebooks[nb].sections[sec].pages[pg].title.trim().to_lowercase();
-        self.st.page_titles = self.store.notebooks.iter().flat_map(|n| n.sections.iter()).flat_map(|s| s.pages.iter()).map(|p| p.title.clone()).filter(|t| !t.trim().is_empty()).collect();
-        let needle = format!("[[{here}]]");
-        let mut backlinks = vec![];
-        if !here.is_empty() {
-            for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
-                if (a, b, c) != (nb, sec, pg) && p.blocks.iter().any(|bl| matches!(&bl.kind, Kind::Text { text, .. } if text.to_lowercase().contains(&needle))) { backlinks.push((p.title.clone(), (a, b, c))); }
-            }}}
+        // What's gathered from the whole library (cards due, open tasks, page titles for the "[[" list,
+        // pages linking here): at most once a second, and at once on another page, not every frame.
+        let here_id = self.store.notebooks[nb].sections[sec].pages[pg].id;
+        if now_f() - self.st.derived_at > 1.0 || self.st.backlinks_for != here_id {
+            self.st.derived_at = now_f();
+            self.st.backlinks_for = here_id;
+            self.st.due_now = self.due_cards().len();
+            self.st.open_tasks_n = self.open_tasks().len();
+            let here = self.store.notebooks[nb].sections[sec].pages[pg].title.trim().to_lowercase();
+            self.st.page_titles = self.store.notebooks.iter().flat_map(|n| n.sections.iter()).flat_map(|s| s.pages.iter()).map(|p| p.title.clone()).filter(|t| !t.trim().is_empty()).collect();
+            let needle = format!("[[{here}]]");
+            let mut backlinks = vec![];
+            if !here.is_empty() {
+                for (a, n) in self.store.notebooks.iter().enumerate() { for (b, s) in n.sections.iter().enumerate() { for (c, p) in s.pages.iter().enumerate() {
+                    if (a, b, c) != (nb, sec, pg) && p.blocks.iter().any(|bl| match &bl.kind {
+                        Kind::Text { text, .. } => text.to_lowercase().contains(&needle),
+                        Kind::Checklist { items } => items.iter().any(|(_, t)| t.to_lowercase().contains(&needle)),
+                        _ => false,
+                    }) { backlinks.push((p.title.clone(), (a, b, c))); }
+                }}}
+            }
+            self.st.backlinks = backlinks;
         }
+        let backlinks = self.st.backlinks.clone();
         let fav = self.st.p.favorites.contains(&self.store.notebooks[nb].sections[sec].pages[pg].id);
         let conflict = self.conflict_pair();
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
@@ -1747,7 +1788,8 @@ impl eframe::App for NotesApp {
         if self.st.recorder.is_some() { self.toggle_record(); }
         if self.st.capture.is_some() { self.cancel_capture(""); } // put the panels back before saving settings
         let unsynced = self.st.sync_pending || self.st.dirty;
-        // save first: a slow or killed exit sync must never cost the last edits
+        // save first (everything compared): a slow or killed exit sync must never cost the last edits
+        self.st.full_save = true;
         self.save_now();
         self.st.index.flush(self.st.persist);
         // send the last changes on the way out (short timeouts, so closing never hangs for long)

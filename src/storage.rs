@@ -124,16 +124,38 @@ fn recover_pages(dir: &Path, known: &std::collections::HashSet<u64>) -> Option<S
 
 fn hash(b: &[u8]) -> u64 { b.iter().fold(0xcbf29ce484222325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x100000001b3)) }
 
+/// A quick fingerprint of a page: everything but the inside of its ink strokes (their count, ends
+/// and looks are in). Ink only changes on the page in front, which is always fully compared.
+fn quick_sig(p: &Page) -> u64 {
+    let meta = serde_json::to_vec(&(&p.title, p.level, p.paper, p.kind, p.created, p.other_of, &p.blocks, &p.cards, &p.recordings)).unwrap_or_default();
+    let mut h = hash(&meta);
+    let mut add = |x: u64| h = (h ^ x).wrapping_mul(0x100000001b3);
+    for s in &p.strokes {
+        add(s.id);
+        add(s.points.len() as u64);
+        for q in s.points.first().into_iter().chain(s.points.last()) { for v in q { add(v.to_bits() as u64); } }
+        add(u32::from_be_bytes(s.color) as u64);
+        add(s.width.to_bits() as u64);
+    }
+    h
+}
+
 /// Saves only what changed since the last save of this session.
 #[derive(Default)]
 pub struct Saver {
     written: HashMap<u64, u64>,
+    /// quick fingerprint of each page as last written (see `quick_sig`)
+    sigs: HashMap<u64, u64>,
     history_at: HashMap<u64, u64>,
     started: bool,
 }
 
 impl Saver {
-    pub fn save(&mut self, dir: &Path, store: &Store) -> std::io::Result<()> {
+    pub fn save(&mut self, dir: &Path, store: &Store) -> std::io::Result<()> { self.save_with(dir, store, None) }
+
+    /// With `front`: a quick save. That page is compared in full; the others only by their quick
+    /// fingerprint, which saves turning every page of a big library into text a few times a minute.
+    pub fn save_with(&mut self, dir: &Path, store: &Store, front: Option<u64>) -> std::io::Result<()> {
         std::fs::create_dir_all(dir.join("pages"))?;
         if !self.started && read_json::<Store>(&dir.join(LIBRARY)).is_some() {
             // once per session: keep the library from before, so a bad session can be rolled back by hand
@@ -144,6 +166,9 @@ impl Saver {
         let mut seen = std::collections::HashSet::new();
         for p in store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages) {
             seen.insert(p.id);
+            let sig = quick_sig(p);
+            if self.started && front.is_some_and(|f| f != p.id) && self.sigs.get(&p.id) == Some(&sig) { continue; }
+            self.sigs.insert(p.id, sig);
             let bytes = serde_json::to_vec(p)?;
             let h = hash(&bytes);
             if self.written.get(&p.id) == Some(&h) { continue; }
@@ -301,6 +326,28 @@ mod tests {
         assert_eq!(titles(&again).iter().filter(|t| *t == "Made after the backup").count(), 1);
         #[cfg(unix)]
         { use std::os::unix::fs::PermissionsExt; assert_eq!(std::fs::metadata(d.join(LIBRARY)).unwrap().permissions().mode() & 0o777, 0o600); }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn quick_saves_still_catch_changes_elsewhere() {
+        let d = tmp();
+        let mut store = sample();
+        let mut saver = Saver::default();
+        saver.save(&d, &store).unwrap();
+        let front = store.notebooks[0].sections[0].pages[0].id;
+        let other = store.notebooks[1].sections[0].pages[0].id;
+        let before = std::fs::metadata(page_path(&d, other)).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // nothing changed elsewhere: not rewritten
+        store.notebooks[0].sections[0].pages[0].title = "Front".into();
+        saver.save_with(&d, &store, Some(front)).unwrap();
+        assert_eq!(std::fs::metadata(page_path(&d, other)).unwrap().modified().unwrap(), before);
+        // a change on another page (an AI job, a tick in the task list): written by a quick save too
+        store.notebooks[1].sections[0].pages[0].blocks.push(block(0.0, 0.0, 100.0, Kind::Text { text: "elsewhere".into(), heading: 0 }));
+        saver.save_with(&d, &store, Some(front)).unwrap();
+        let Ok(Loaded::Store(s, _)) = load(&d) else { panic!() };
+        assert!(s.notebooks[1].sections[0].pages[0].blocks.iter().any(|b| matches!(&b.kind, Kind::Text { text, .. } if text == "elsewhere")));
         let _ = std::fs::remove_dir_all(&d);
     }
 

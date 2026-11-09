@@ -22,10 +22,23 @@ pub fn serif(size: f32) -> FontId {
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Style { pub bold: bool, pub italic: bool, pub strike: bool, pub code: bool, pub mark: bool }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Piece { Marker(String), Text(String, Style), Math(String), Link(String) }
 
 /// Split one line into styled pieces. Markers only open when a matching close exists on the line.
+/// `pieces`, remembered per line: notes are drawn every frame and their text rarely changes.
+pub fn pieces_cached(line: &str) -> Vec<Piece> {
+    thread_local! { static CACHE: std::cell::RefCell<std::collections::HashMap<String, Vec<Piece>>> = Default::default(); }
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(p) = c.get(line) { return p.clone(); }
+        if c.len() > 5000 { c.clear(); } // shortcut: forget everything at once, fine at this size
+        let p = pieces(line);
+        c.insert(line.to_string(), p.clone());
+        p
+    })
+}
+
 pub fn pieces(line: &str) -> Vec<Piece> {
     let ch: Vec<char> = line.chars().collect();
     let n = ch.len();
@@ -161,7 +174,7 @@ pub fn edit_job(text: &str, base: f32, heading: u8, c: &Colors) -> LayoutJob {
         let prefix_color = if matches!(kind, LineKind::Plain) { c.dim } else { c.accent };
         let lh = Some(size * if matches!(kind, LineKind::Heading(_)) || heading > 0 { 1.3 } else { line_height() });
         job.append(&body[..plen], 0.0, TextFormat { font_id: FontId::proportional(size), color: prefix_color, line_height: lh, ..Default::default() });
-        for p in pieces(&body[plen..]) {
+        for p in pieces_cached(&body[plen..]) {
             match p {
                 Piece::Marker(m) => job.append(&m, 0.0, TextFormat { font_id: FontId::proportional(size), color: c.dim, line_height: lh, ..Default::default() }),
                 Piece::Text(t, s) => job.append(&t, 0.0, fmt(size, s, color, c, heading > 0 || matches!(kind, LineKind::Heading(_)))),
@@ -210,7 +223,7 @@ pub fn view(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Colors) -
             }
             let mut job = LayoutJob::default();
             let done = matches!(kind, LineKind::Check(true));
-            for p in pieces(&line[plen..]) {
+            for p in pieces_cached(&line[plen..]) {
                 match p {
                     Piece::Marker(_) => {}
                     Piece::Text(t, mut s) => {

@@ -262,8 +262,9 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             let mut y = o.y + 12.0;
             while y < rect.bottom() {
                 if y > clip.top() - 24.0 && y < clip.bottom() + 24.0 {
-                    let mut x = o.x + 12.0;
-                    while x < rect.right() { ui.painter().circle_filled(Pos2::new(x, y), 1.3, line.gamma_multiply(1.6)); x += 24.0; }
+                    // only the dots on screen (zoomed out, a page is thousands of them)
+                    let mut x = o.x + 12.0 + ((clip.left() - o.x - 36.0).max(0.0) / 24.0).floor() * 24.0;
+                    while x < rect.right().min(clip.right() + 24.0) { ui.painter().circle_filled(Pos2::new(x, y), 1.3, line.gamma_multiply(1.6)); x += 24.0; }
                 }
                 y += 24.0;
             }
@@ -479,6 +480,11 @@ fn stroke_extent(s: &Stroke) -> f32 {
 
 pub(crate) fn paint_stroke(painter: &egui::Painter, s: &Stroke, o: Pos2) {
     if s.points.is_empty() { return; } // a damaged or odd stroke from another device draws nothing rather than crashing
+    // off-screen ink isn't drawn: its outline is cheap to find, its shapes aren't
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for p in &s.points { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+    let bounds = Rect::from_min_max(Pos2::new(o.x + lo[0], o.y + lo[1]), Pos2::new(o.x + hi[0], o.y + hi[1])).expand(s.width * 2.0 + 2.0);
+    if !painter.clip_rect().intersects(bounds) { return; }
     let col = c4(s.color);
     let pts: Vec<Pos2> = s.points.iter().map(|p| Pos2::new(o.x + p[0], o.y + p[1])).collect();
     let w0 = seg_width(s, s.points[0][2], 1.0, 0.0);
@@ -1456,9 +1462,22 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 let ci = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
                 Some(ui.ctx().load_texture(file.clone(), ci, egui::TextureOptions::LINEAR))
             };
+            // a picture is decoded once it comes near the screen, at most two a frame (a 60-page printout
+            // doesn't freeze the app while every page loads); a PDF export needs them all at once
+            let est = Vec2::new(w, st.heights.get(&b.id).copied().unwrap_or(w * 1.3));
+            let near = ui.is_rect_visible(Rect::from_min_size(ui.cursor().min, est).expand(600.0));
+            let frame = ui.input(|i| i.time);
+            if st.decodes.0 != frame { st.decodes = (frame, 0); }
+            let wait = !st.textures.contains_key(file) && st.capture.is_none() && (!near || st.decodes.1 >= 2);
+            if wait {
+                if near { ui.ctx().request_repaint(); }
+                ui.allocate_exact_size(est, Sense::hover());
+                return changed;
+            }
             let tex = match st.textures.get(file) {
                 Some(t) => t.clone(),
                 None => {
+                    st.decodes.1 += 1;
                     let t = load();
                     // a picture that isn't here yet (still syncing) is tried again; only an unreadable one is given up on
                     if t.is_some() || files_path(file).exists() { st.textures.insert(file.clone(), t.clone()); }

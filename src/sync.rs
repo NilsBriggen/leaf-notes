@@ -56,7 +56,8 @@ pub enum First { Merge, UseShared }
 
 pub enum Outcome {
     /// Done: `store` is now on both sides. Commit `base` once `store` is saved on this device.
-    Synced { store: Store, up: usize, down: usize, base: PendingBase, problem: Option<String> },
+    /// `changed`: `store` differs from the notes this round started with (worked out here, off the window's thread).
+    Synced { store: Store, up: usize, down: usize, base: PendingBase, problem: Option<String>, changed: bool },
     /// First sync here and both sides have notes: ask the person how to join (pages in the shared copy).
     AskFirst { pages: usize },
 }
@@ -133,7 +134,8 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
         };
         let b = serde_json::to_vec(&Base { target: s.target(), tag, files: have, store: merged.clone() }).map_err(|e| e.to_string())?;
         let problem = failed.first().map(|(f, e)| tf!("{n} file(s) couldn't be synced this time (first: {f}: {e}).", n = failed.len(), f = f, e = e));
-        return Ok(Outcome::Synced { store: merged, up, down, base: PendingBase(b), problem });
+        let changed = canon(&merged) != canon(local);
+        return Ok(Outcome::Synced { store: merged, up, down, base: PendingBase(b), problem, changed });
     }
     Err(crate::tr("Another device kept syncing at the same moment — trying again shortly.").into())
 }
