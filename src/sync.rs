@@ -549,7 +549,7 @@ impl Remote {
             Some((ct, data)) => agent.run(b.header("content-type", ct).body(data).map_err(|e| e.to_string())?),
             None => agent.run(b.body(()).map_err(|e| e.to_string())?),
         };
-        let resp = r.map_err(|e| tf!("Couldn't reach Google Drive: {e}", e = e))?;
+        let resp = r.map_err(|e| tf!("Couldn't reach Google Drive: {e}", e = e) + offline_hint(&e))?;
         match resp.status().as_u16() {
             401 => Err(crate::tr("Google Drive refused the sign-in — sign in again in Settings ▸ Sync.").into()),
             403 => Err(crate::tr("Google Drive refused access (is the Drive API on for this app, or is the Drive full?).").into()),
@@ -606,6 +606,13 @@ fn google_access(agent: &ureq::Agent, refresh: &str) -> Result<String, String> {
         None if v["error"] == "invalid_grant" => Err(crate::tr("Your Google sign-in expired or was removed — sign in again in Settings ▸ Sync.").into()),
         None => Err(tf!("Google refused the sign-in: {x}", x = v["error_description"].as_str().or(v["error"].as_str()).unwrap_or("unknown error"))),
     }
+}
+
+/// What to check when Android kept the app off the network (its address lookups fail then); empty elsewhere.
+fn offline_hint(e: &impl std::fmt::Display) -> &'static str {
+    if cfg!(target_os = "android") && e.to_string().contains("lookup address") {
+        crate::tr(" Android may be keeping Leaf Notes off the internet: check Settings ▸ Apps ▸ Leaf Notes ▸ Mobile data & Wi-Fi, and Data Saver.")
+    } else { "" }
 }
 
 /// A sign-in in progress: the browser comes back to this little local web server, or the person
@@ -682,8 +689,20 @@ pub fn google_finish(s: SignIn) -> Result<(String, String), String> {
         // not our sign-in (another page or program calling this port): keep waiting for the real one
         if let Some(c) = found? { break c; }
     };
-    let mut resp = agent(false).post(TOKEN_URL).send_form([("client_id", GOOGLE_ID), ("client_secret", GOOGLE_SECRET), ("code", code.as_str()), ("code_verifier", s.verifier.as_str()), ("redirect_uri", s.redirect.as_str()), ("grant_type", "authorization_code")])
-        .map_err(|e| tf!("Couldn't reach Google: {e}", e = e))?;
+    // The browser is still in front when it comes back here, and Android often keeps an app in the
+    // background off the network (its lookups fail). Keep trying until Leaf Notes is in front again:
+    // the request never reached Google, and the code stays valid for a few minutes.
+    let until = std::time::Instant::now() + Duration::from_secs(180);
+    let mut resp = loop {
+        match agent(false).post(TOKEN_URL).send_form([("client_id", GOOGLE_ID), ("client_secret", GOOGLE_SECRET), ("code", code.as_str()), ("code_verifier", s.verifier.as_str()), ("redirect_uri", s.redirect.as_str()), ("grant_type", "authorization_code")]) {
+            Ok(r) => break r,
+            Err(e) if std::time::Instant::now() >= until => return Err(tf!("Couldn't reach Google: {e}", e = e) + offline_hint(&e)),
+            Err(_) => {
+                if matches!(s.paste.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)) { return Err(crate::tr("Sign-in was cancelled.").into()); }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+    };
     let v: Value = resp.body_mut().read_json().map_err(|e| tf!("Google sent an unexpected answer: {e}", e = e))?;
     let Some(refresh) = v["refresh_token"].as_str() else { return Err(tf!("Google didn't sign you in: {x}", x = v["error_description"].as_str().or(v["error"].as_str()).unwrap_or("no lasting sign-in was given"))) };
     Ok((refresh.to_string(), id_email(v["id_token"].as_str().unwrap_or(""))))

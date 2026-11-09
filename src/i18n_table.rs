@@ -1022,6 +1022,7 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("Browser stuck on a page that won't load after signing in? Copy its address and paste it here:", "Bleibt der Browser nach der Anmeldung auf einer Seite hängen, die nicht lädt? Kopiere ihre Adresse und füge sie hier ein:", "Le navigateur reste bloqué sur une page qui ne charge pas après la connexion ? Copie son adresse et colle-la ici :"),
     ("Finish", "Abschließen", "Terminer"),
     ("COMMANDS", "BEFEHLE", "COMMANDES"),
+    (" Android may be keeping Leaf Notes off the internet: check Settings ▸ Apps ▸ Leaf Notes ▸ Mobile data & Wi-Fi, and Data Saver.", " Android lässt Leaf Notes vielleicht nicht ins Internet: Prüfe Einstellungen ▸ Apps ▸ Leaf Notes ▸ Mobile Daten & WLAN sowie den Datensparmodus.", " Android empêche peut-être Leaf Notes d'accéder à Internet : vérifie Paramètres ▸ Applications ▸ Leaf Notes ▸ Données mobiles et Wi-Fi, ainsi que l'Économiseur de données."),
     ("▤  1 card", "▤  1 Karte", "▤  1 carte"),
     ("That address has no sign-in code in it — copy the whole address from the browser's address bar.", "In dieser Adresse steckt kein Anmeldecode – kopiere die ganze Adresse aus der Adressleiste des Browsers.", "Cette adresse ne contient pas de code de connexion — copie l'adresse complète depuis la barre d'adresse du navigateur."),
     ("That address is from another sign-in — sign in again.", "Diese Adresse gehört zu einer anderen Anmeldung – melde dich erneut an.", "Cette adresse vient d'une autre connexion — reconnecte-toi."),
