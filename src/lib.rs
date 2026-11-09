@@ -271,7 +271,7 @@ struct St {
     derived_at: f64,
     /// The last search (query, when, results) and Ctrl+K list (query, results): recomputed when the query changes, or after a second.
     search_cache: Option<(String, f64, Vec<chrome::SearchHit>)>,
-    switch_cache: Option<(String, Vec<(f32, String, String, (usize, usize, usize))>)>,
+    switch_cache: Option<(String, Vec<chrome::SwitchHit>)>,
     insert_below: Option<(u64, Kind)>,
     /// Quick switcher (Ctrl+K): query and highlighted row.
     switcher: Option<(String, usize)>,

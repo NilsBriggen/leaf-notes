@@ -98,6 +98,8 @@ impl NotesApp {
     }
 
     /// A page deleted from an opened locked section, as a one-page locked section with the same password.
+    /// Err hands the page back (it must not be lost), hence the big error.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn sealed_page_for_bin(&mut self, from: &Section, page: Page) -> Result<Section, Page> {
         let (Some(lock), Some(key)) = (&from.lock, self.st.keys.get(&from.id)) else { return Err(page) };
         let Ok(l) = vault::seal(key, &lock.salt, std::slice::from_ref(&page)) else { return Err(page) };

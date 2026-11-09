@@ -7,6 +7,12 @@ const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.3.2", &[
+        "Your notes are safer: fixes for locked sections, a damaged notes file, the welcome tour and sync, a lock against two windows, and daily backups.",
+        "The eraser catches straight lines anywhere; undo stays on the page you're on; highlighting works on printed PDFs.",
+        "Back and forward between pages, commands in Ctrl+K, copy and paste for ink, and handwriting you can correct before it becomes text.",
+        "Study: new cards show up in review, ratings can be undone, flashcards from any note, and page templates.",
+    ]),
     ("0.3.1", &[
         "The eraser has its own settings: a size, and \"Part of a stroke\" or \"Whole stroke\" as one clear switch.",
         "The highlighter has a size and can take any colour.",

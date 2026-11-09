@@ -80,6 +80,8 @@ For Google Drive, the Google Cloud project also needs the **Google Drive API** t
 - `history/`: earlier versions of each page (⋯ ▸ Page history)
 - `files/`: pictures, PDFs and recordings
 - `search-index.json`: text read from handwriting and PDFs, for search (rebuilt when missing)
+- `backups/`: a copy of the notes from each of the last 7 days (Settings ▸ Your data ▸ Daily backups)
+- `.lock`: held while Leaf Notes is open, so a second window doesn't save over the first
 
 Every file is written safely (a temporary file, then a rename), and a damaged file costs one page, never everything. Older versions stored everything in `notebooks.json`; it is split up on the first start and kept as `notebooks.json.before-split`. Settings ▸ Your data saves and restores backups. The pages of locked sections are stored, synced and backed up only in encrypted form; pictures, PDFs and recordings on them are not encrypted.
 

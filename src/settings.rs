@@ -9,6 +9,7 @@ impl NotesApp {
         let mut test = false;
         #[allow(unused_mut)]
         let (mut restore, mut import, mut backup_to): (Option<std::path::PathBuf>, Vec<std::path::PathBuf>, Option<std::path::PathBuf>) = (None, vec![], None);
+        #[cfg_attr(target_os = "android", allow(unused_mut))] // the PDF picker is desktop-only
         let mut pdfs: Vec<std::path::PathBuf> = vec![];
         let before = serde_json::to_string(&self.st.p).unwrap_or_default();
         // phones: a thinner frame, and the section list shows only icons

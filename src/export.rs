@@ -48,6 +48,7 @@ fn winansi(s: &str) -> Vec<u8> {
 
 /// A page as Markdown, with its pictures and a picture of its handwriting in "<name>_files" next to it
 /// (the plain export only writes "[image]" and "[N handwritten strokes]" there).
+#[cfg_attr(target_os = "android", allow(dead_code))] // Android shares the plain Markdown
 pub fn markdown_with_files(page: &Page, files: &Path, out: &Path) -> Result<(), String> {
     let mut md = page.plain_text();
     let dir_name = format!("{}_files", out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());

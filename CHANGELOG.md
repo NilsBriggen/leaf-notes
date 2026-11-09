@@ -2,6 +2,50 @@
 
 Each release on GitHub shows its section from this file. Downloads are on the [releases page](https://github.com/NilsBriggen/leaf-notes/releases): `.AppImage` for Linux, `.msi` for Windows, `.apk` for Android.
 
+## 0.3.2 — 2026-11-09
+
+A big round of fixes for safety and reliability, and many smaller improvements.
+
+**Your notes are safer**
+- Closing the app while a locked section was open could overwrite that section with its lock screen. Fixed.
+- Reopening the welcome tour from Help and choosing "Start with an empty notebook" no longer removes your notebooks (and on a first start the sample goes to Recently deleted).
+- A missing or damaged notes file no longer leads to pages being deleted: the app uses its backup and gathers loose pages into "Recovered pages".
+- Pages of locked sections stay encrypted in Recently deleted, in the safety copy made before joining sync, and in the search index.
+- Only one Leaf Notes window saves at a time; a second one shows your notes without saving.
+- A recording cut off by a crash or a flat battery is finished and put back on its page at the next start.
+- Daily backups (the last 7) in the backups folder; Recently deleted asks before emptying, and restored items go back to their old place.
+- Sync: one file that won't transfer no longer stops your notes from syncing, and the sync state is only saved once the notes are.
+
+**Fixes**
+- The eraser catches straight lines, boxes and fast strokes anywhere along them.
+- Undo stays on the page you're looking at; moving, resizing, ticking and retagging notes can be undone.
+- Highlighting works on top of printed PDF pages.
+- Dates and times are in your time zone; Esc closes windows; the theme stays when the system switches between light and dark.
+- Renaming a page keeps the links to it working; a copied deck has its own study progress; "$5 and $6" is no longer read as maths.
+- Many smaller fixes to checklists, headings, two-finger taps, scribble-to-erase and shape snapping.
+
+**Writing**
+- Tap a printed PDF page to type on it; tick boxes in a note without opening it.
+- Colour presets and recent colours, a pressure setting, and a tool menu in the status bar.
+- Lasso: copy, cut and paste ink, also onto another page.
+- Handwriting turned into text is shown first, so you can correct it.
+- Lines snap level, Tab indents lists, maths previews as you type, and unknown LaTeX commands are marked.
+
+**Organising and studying**
+- Back and forward between pages; Ctrl+K also runs commands; pages reopen where you left them.
+- Search can stay in one notebook or section and scrolls to the match.
+- The task list shows notes tagged To Do and sorts by @dates.
+- Review includes new cards, can undo a rating, shuffles, and says when cards come back.
+- Make flashcards from any note, add many cards from text, and use page templates.
+- Drag pages to reorder them or onto another section; recent pages in the side panel.
+
+**Around the page**
+- The assistant reads your handwriting, can be stopped, and can put answers below the note you're writing.
+- Sync settings wait for "Connect"; the status bar says when changes are waiting.
+- Locked sections close again after a while without use.
+- Update notices show what's new and link the download directly.
+- Android: recording keeps going with the screen off, and export works on Android 8 and 9.
+
 ## 0.3.1 — 2026-11-05
 
 - The eraser has its own settings while it's in hand: a size slider, and "Part of a stroke" or "Whole stroke" as one clear switch (no more clicking it twice to switch).

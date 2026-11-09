@@ -196,6 +196,9 @@ struct DragPage(u64, usize);
 /// The Ctrl+K list's commands (in `run_command`'s order).
 const COMMANDS: [&str; 11] = ["New page", "New deck", "Review due cards", "All tasks", "Settings", "Recently deleted", "Page history", "Keyboard shortcuts", "Dark mode on/off", "Export page as PDF", "New lecture"];
 
+/// A Ctrl+K row: (score, title, notebook › section, where it is — or a command or "create").
+pub(crate) type SwitchHit = (f32, String, String, (usize, usize, usize));
+
 /// A search result: (only a near miss, where the page is, title, notebook › section, the page's text, match start, match end).
 pub(crate) type SearchHit = (bool, (usize, usize, usize), String, String, String, usize, usize);
 
