@@ -58,6 +58,12 @@ fn call_file(method: &str, path: &Path, name: &str) {
     });
 }
 
+/// A recording started or stopped: Android keeps the microphone on with the screen off only while
+/// the app shows a "recording" notification (a foreground service in LeafActivity).
+pub fn recording(on: bool) {
+    let _ = with_activity(|env, act| { env.call_method(&act, JNIString::new("recording"), jni::jni_sig!("(Z)V"), &[on.into()])?; Ok(()) });
+}
+
 /// The system language ("de", "fr", …).
 pub fn language() -> Option<String> {
     with_activity(|env, act| {

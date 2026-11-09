@@ -1117,6 +1117,8 @@ impl NotesApp {
     /// Android: files from the picker or shared from other apps.
     #[cfg(target_os = "android")]
     fn take_incoming(&mut self) {
+        // a cheap question first: fetching the list every frame costs a string across JNI each time
+        if !droid::has_incoming() { return; }
         for (kind, path) in droid::incoming() {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
             match kind {
@@ -1128,6 +1130,11 @@ impl NotesApp {
                 9 => if let Ok(t) = std::fs::read_to_string(&path) { self.insert_markdown(&t); },
                 // shared from another app: by kind of file
                 _ => self.insert_file(&path, match ext.as_str() { "pdf" => Ins::Printout, "png" | "jpg" | "jpeg" | "webp" => Ins::Picture, "md" | "txt" => Ins::Printout, _ => Ins::Attach }),
+            }
+            // shared from another app: say where it went (it lands on the page that was open)
+            if matches!(kind, 0 | 9) {
+                let title = self.page().title.clone();
+                self.st.say(tf!("Added to “{page}”.", page = if title.trim().is_empty() { tr("Untitled page").to_string() } else { title }));
             }
             let _ = std::fs::remove_file(&path); // the app keeps its own copy
             self.st.picking_since = -1e9;
@@ -1331,6 +1338,8 @@ impl NotesApp {
             let file = rec.path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
             let r = rec.stop();
             let _ = std::fs::remove_file(rec_marker(id));
+            #[cfg(target_os = "android")]
+            droid::recording(false);
             match r {
                 Ok(secs) => {
                     let rec = Recording { id, file, start, secs };
@@ -1363,6 +1372,8 @@ impl NotesApp {
                 // if the app stops before the recording does, the next start finds it through this
                 let _ = storage::write_atomic(&rec_marker(id), serde_json::json!({ "page": pid, "start": start }).to_string().as_bytes());
                 self.st.recorder = Some((r, pid, id, start));
+                #[cfg(target_os = "android")]
+                droid::recording(true);
                 self.st.say("Recording — everything you write now is linked to this moment.");
             }
             Err(e) => self.st.say(format!("⚠ {e}")),
@@ -1740,7 +1751,9 @@ impl eframe::App for NotesApp {
             let now = ctx.input(|i| i.time);
             if wants { self.st.kb_idle_since = None; } else if self.st.kb_idle_since.is_none() { self.st.kb_idle_since = Some(now); }
             let close = !wants && self.st.kb_idle_since.is_some_and(|t| now - t > 0.4);
-            if wants && !self.keyboard_shown { app.show_soft_input(true); self.keyboard_shown = true; }
+            // a tap into the note again brings the keyboard back after the system's Back hid it (the app never hears that Back)
+            let tapped = ctx.input(|i| i.pointer.primary_released());
+            if wants && (!self.keyboard_shown || tapped) { app.show_soft_input(true); self.keyboard_shown = true; }
             else if close && self.keyboard_shown { app.hide_soft_input(true); self.keyboard_shown = false; }
             if !wants && self.keyboard_shown { ctx.request_repaint_after(std::time::Duration::from_millis(450)); }
             // Android doesn't wake an idle app for delayed repaints, so saving, timers and progress would

@@ -879,4 +879,5 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("Insert menu while typing", "Einfügemenü beim Tippen", "Menu Insérer pendant la saisie"),
     ("Link to another page while typing", "Beim Tippen auf eine andere Seite verlinken", "Lier une autre page pendant la saisie"),
     ("Flashcards: show the answer, then rate it", "Karteikarten: Antwort zeigen, dann bewerten", "Fiches : afficher la réponse, puis l'évaluer"),
+    ("Added to “{page}”.", "Zu „{page}“ hinzugefügt.", "Ajouté à « {page} »."),
 ];

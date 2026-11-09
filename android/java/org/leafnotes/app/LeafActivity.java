@@ -144,6 +144,11 @@ public class LeafActivity extends NativeActivity {
             if (c != null && c.moveToFirst() && c.getString(0) != null) name = c.getString(0);
         } catch (Exception e) { /* keep the default name */ }
         name = name.replaceAll("[^A-Za-z0-9._ -]", "_");
+        // a name without an extension (some apps share "image"): add one from the file's type, so a photo arrives as a picture
+        if (!name.contains(".")) {
+            String type = getContentResolver().getType(uri), ext = type == null ? null : android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+            if (ext != null) name = name + "." + ext;
+        }
         File f = new File(inbox(), System.nanoTime() + "-" + name);
         try (InputStream in = getContentResolver().openInputStream(uri); OutputStream out = new FileOutputStream(f)) {
             if (in == null) return null;
@@ -153,9 +158,17 @@ public class LeafActivity extends NativeActivity {
         } catch (Exception e) { return null; }
     }
 
-    /** A copy of the file in Downloads/Leaf Notes, which other apps may read (null if that failed). */
+    /** A copy of the file in Downloads/Leaf Notes, which other apps may read (null if that failed).
+     *  Android 8 and 9: a copy other apps may read through FileShare instead. */
     private Uri toDownloads(String path, String name, String mime) throws Exception {
-        if (Build.VERSION.SDK_INT < 29) { toast("This needs Android 10 or newer."); return null; }
+        if (Build.VERSION.SDK_INT < 29) {
+            File f = new File(FileShare.dir(this), name.replaceAll("[/\\\\]", "_"));
+            try (InputStream in = new FileInputStream(path); OutputStream out = new FileOutputStream(f)) {
+                byte[] buf = new byte[65536];
+                for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+            }
+            return new Uri.Builder().scheme("content").authority(FileShare.AUTHORITY).appendPath(f.getName()).build();
+        }
         ContentResolver r = getContentResolver();
         ContentValues v = new ContentValues();
         v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
@@ -202,6 +215,20 @@ public class LeafActivity extends NativeActivity {
     }
 
     private void toast(final String s) { runOnUiThread(new Runnable() { public void run() { Toast.makeText(LeafActivity.this, s, Toast.LENGTH_LONG).show(); } }); }
+
+    /** Ask for the microphone (from the main thread, where Android shows its dialog reliably). */
+    public void requestMic() {
+        runOnUiThread(new Runnable() { public void run() { requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 7); } });
+    }
+
+    /** A recording started or stopped: hold the app in the foreground meanwhile (see RecordService). */
+    public void recording(final boolean on) {
+        runOnUiThread(new Runnable() { public void run() {
+            Intent i = new Intent(LeafActivity.this, RecordService.class);
+            try { if (on) startForegroundService(i); else stopService(i); }
+            catch (Exception e) { if (on) toast("Recording may stop when the screen turns off."); }
+        }});
+    }
 
     /** The system language ("de", "fr", "en" …). */
     public String language() { return Locale.getDefault().getLanguage(); }

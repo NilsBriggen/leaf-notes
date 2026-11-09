@@ -649,14 +649,28 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                         st.still.1 = now;
                     }
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-                    let last = s.points.last().copied().unwrap_or([p.x, p.y, 0.8]);
-                    let d = (last[0] - p.x).hypot(last[1] - p.y);
-                    if d > 1.0 && !st.snapped {
-                        // Real pen pressure when the device reports it; otherwise slow strokes are a bit bolder, like a fountain pen.
-                        let pr = if !st.p.pressure { 0.85 } else { st.frame_force.unwrap_or_else(|| last[2] * 0.75 + (1.1 - d / 28.0).clamp(0.45, 1.0) * 0.25) };
-                        // the stabilizer lets the line trail the pen slightly, which irons out shaky hands
-                        let (x, y) = trail(last, p.x, p.y, st.p.stabilizer);
-                        s.points.push([x, y, pr]);
+                    // every position the pen reported since the last frame (a stylus sends several per
+                    // frame), not only where it is now: smoother curves and sharper corners
+                    let samples: Vec<(Pos2, Option<f32>)> = ui.input(|i| {
+                        let touch: Vec<(Pos2, Option<f32>)> = i.events.iter().filter_map(|e| match e {
+                            // only a stylus (it reports pressure): a resting palm's touches must not join the line
+                            egui::Event::Touch { pos, force: Some(f), phase: egui::TouchPhase::Move, .. } => Some((*pos, Some(if *f > 1.0 { f - 1.0 } else { f.abs() }))),
+                            _ => None,
+                        }).collect();
+                        if !touch.is_empty() { return touch; }
+                        i.events.iter().filter_map(|e| match e { egui::Event::PointerMoved(q) => Some((*q, None)), _ => None }).collect()
+                    });
+                    let samples: Vec<(Pos2, Option<f32>)> = if samples.is_empty() { vec![(p, None)] } else { samples.into_iter().map(|(q, f)| (from_global * q - o.to_vec2(), f)).collect() };
+                    for (q, force) in samples {
+                        let last = s.points.last().copied().unwrap_or([q.x, q.y, 0.8]);
+                        let d = (last[0] - q.x).hypot(last[1] - q.y);
+                        if d > 1.0 && !st.snapped {
+                            // Real pen pressure when the device reports it; otherwise slow strokes are a bit bolder, like a fountain pen.
+                            let pr = if !st.p.pressure { 0.85 } else { force.or(st.frame_force).unwrap_or_else(|| last[2] * 0.75 + (1.1 - d / 28.0).clamp(0.45, 1.0) * 0.25) };
+                            // the stabilizer lets the line trail the pen slightly, which irons out shaky hands
+                            let (x, y) = trail(last, q.x, q.y, st.p.stabilizer);
+                            s.points.push([x, y, pr]);
+                        }
                     }
                 },
                 Tool::Eraser => {

@@ -65,12 +65,8 @@ mod android {
     }
 
     pub fn request() -> Result<(), String> {
-        with_activity(|env, act| {
-            let p = env.new_string(MIC)?;
-            let list = env.new_object_array(1, jni::jni_str!("java/lang/String"), &p)?;
-            env.call_method(&act, JNIString::new("requestPermissions"), jni::jni_sig!("([Ljava/lang/String;I)V"), &[(&list).into(), 7i32.into()])?;
-            Ok(())
-        })
+        // on Android's main thread (LeafActivity.requestMic), where its permission dialog shows reliably
+        with_activity(|env, act| { env.call_method(&act, JNIString::new("requestMic"), jni::jni_sig!("()V"), &[])?; Ok(()) })
     }
 }
 

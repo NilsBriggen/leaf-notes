@@ -437,6 +437,18 @@ impl<T: 'static> EventLoop<T> {
                             "Input event {device_id:?}, {phase:?}, loc={location:?}, \
                              pointer={pointer:?}"
                         );
+                        // Leaf Notes: a stylus reports several positions per frame; Android batches all but the
+                        // latest as "history". Send them too, so fast strokes keep their shape.
+                        if stylus && phase == event::TouchPhase::Moved {
+                            let eraser = matches!(pointer.tool_type(), android_activity::input::ToolType::Eraser);
+                            let button = motion_event.button_state().stylus_primary();
+                            for h in pointer.history() {
+                                let p = (h.pressure() as f64).clamp(0.001, 1.0);
+                                let force = Some(Force::Normalized(if eraser { -p } else if button { 1.0 + p } else { p }));
+                                let touch = event::Touch { device_id, phase, location: PhysicalPosition { x: h.x() as _, y: h.y() as _ }, id, force };
+                                callback(event::Event::WindowEvent { window_id, event: event::WindowEvent::Touch(touch) }, self.window_target());
+                            }
+                        }
                         let event = event::Event::WindowEvent {
                             window_id,
                             event: event::WindowEvent::Touch(event::Touch {

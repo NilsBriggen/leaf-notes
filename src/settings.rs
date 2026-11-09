@@ -152,6 +152,8 @@ impl NotesApp {
                             row_below(ui, "Sync through", "Choose the same place on every device.", |ui| {
                                 ui.selectable_value(&mut s.via, sync::Via::Off, tr("Off"));
                                 ui.selectable_value(&mut s.via, sync::Via::Google, tr("Google Drive"));
+                                // Android apps can't pick or reach other apps' folders: Drive or WebDAV there
+                                #[cfg(not(target_os = "android"))]
                                 ui.selectable_value(&mut s.via, sync::Via::Folder, tr("A synced folder"));
                                 ui.selectable_value(&mut s.via, sync::Via::WebDav, tr("A WebDAV server"));
                             });
