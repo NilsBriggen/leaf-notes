@@ -719,6 +719,18 @@ pub fn rasterize(strokes: &[&Stroke]) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
+/// Move the page at `from` (with the subpages under it) to where the page at `to` is now, before it.
+/// Dropping a page onto its own subpage changes nothing.
+pub fn move_pages(pages: &mut Vec<Page>, from: usize, to: usize) {
+    if from >= pages.len() { return; }
+    let lvl = pages[from].level;
+    let end = from + 1 + pages[from + 1..].iter().take_while(|p| p.level > lvl).count();
+    if (from..end).contains(&to) { return; }
+    let run: Vec<Page> = pages.drain(from..end).collect();
+    let at = if to > from { to - run.len() } else { to }.min(pages.len());
+    for (k, p) in run.into_iter().enumerate() { pages.insert(at + k, p); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,6 +744,21 @@ mod tests {
         assert!(v.iter().all(|s| s.points.iter().all(|p| (p[0] - 100.0).abs() > 4.0)));
         assert!(densify(&[[0.0, 0.0, 1.0], [60.0, 0.0, 1.0]], 6.0).len() >= 11);
     }
+    #[test]
+    fn dragged_pages_land_where_the_line_shows_with_their_subpages() {
+        let mk = |t: &str, level: u8| Page { level, ..Page::new(t) };
+        let names = |v: &Vec<Page>| v.iter().map(|p| p.title.as_str()).collect::<Vec<_>>().join(" ");
+        let mut v = vec![mk("A", 0), mk("a1", 1), mk("B", 0), mk("C", 0)];
+        move_pages(&mut v, 0, 3); // A (and a1) dropped on the line above C
+        assert_eq!(names(&v), "B A a1 C");
+        move_pages(&mut v, 3, 0); // C up to the top
+        assert_eq!(names(&v), "C B A a1");
+        move_pages(&mut v, 2, 3); // A onto its own subpage: nothing
+        assert_eq!(names(&v), "C B A a1");
+        move_pages(&mut v, 0, 4); // C below the last page
+        assert_eq!(names(&v), "B A a1 C");
+    }
+
     #[test]
     fn cards_from_pasted_text() {
         let c = cards_from_text("- cell :: the unit of life\nATP\tenergy\nQ: 2+2?\nA: 4\njunk line");

@@ -4,7 +4,7 @@ use crate::chrome::format_date;
 use crate::*;
 use eframe::egui::{Align2, FontId, Rect, RichText, Sense};
 
-pub(crate) enum PageAction { Export, Copy, Delete, Duplicate, History, Unlock(String), Go(usize, usize, usize), Nav(bool), ToggleFav, Study, Pdf(bool) }
+pub(crate) enum PageAction { Export, Copy, Delete, Duplicate, History, Unlock(String), Go(usize, usize, usize), Nav(bool), ToggleFav, Study, Pdf(bool), Retitled(String) }
 
 /// Whole-page PDF export in progress: the page is shown tile by tile at a fixed zoom and each
 /// tile is photographed (so the PDF looks exactly like the page, maths and all).
@@ -79,6 +79,9 @@ pub(crate) fn page_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, crumb: 
                 .text_color(ui.visuals().strong_text_color()).frame(egui::Frame::NONE).hint_text(RichText::new(tr("Untitled page")).font(rich::serif(if touch { 20.0 } else { 24.0 }))).desired_width(w).margin(egui::Margin::ZERO));
             if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
             if r.changed() { st.dirty = true; }
+            // a title changed here renames the page like the page list does: [[links]] to it follow
+            if r.gained_focus() { st.title_was = Some(page.title.clone()); }
+            if r.lost_focus() { if let Some(old) = st.title_was.take().filter(|o| o.trim() != page.title.trim()) { action = Some(PageAction::Retitled(old)); } }
             // one line that wraps on narrow screens: Enter finishes the title rather than starting a new line
             let enter = page.title.contains('\n');
             if enter { page.title.retain(|c| c != '\n' && c != '\r'); r.surrender_focus(); }

@@ -14,25 +14,39 @@ import java.net.URLConnection;
 
 /**
  * Lets another app read one exported file (read-only, by a link Leaf Notes hands it) on Android 8
- * and 9, which have no shared Downloads folder an app can write to without asking.
+ * and 9, which have no shared Downloads folder an app can write to without asking. The camera app
+ * may also write the photo being taken ("photo-…" files) there.
  */
 public class FileShare extends ContentProvider {
     static final String AUTHORITY = "org.leafnotes.app.files";
 
     static File dir(android.content.Context c) { File d = new File(c.getCacheDir(), "shared"); d.mkdirs(); return d; }
 
-    private File file(Uri uri) throws FileNotFoundException {
+    static Uri uri(File f) { return new Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(f.getName()).build(); }
+
+    /** Copies handed out more than a day ago aren't needed any more. */
+    static void tidy(android.content.Context c) {
+        File[] old = dir(c).listFiles();
+        if (old != null) for (File f : old) if (System.currentTimeMillis() - f.lastModified() > 86_400_000L) f.delete();
+    }
+
+    static File file(android.content.Context c, Uri uri) throws FileNotFoundException {
         String name = uri.getLastPathSegment();
         if (name == null || name.contains("/") || name.startsWith(".")) throw new FileNotFoundException();
-        File f = new File(dir(getContext()), name);
+        File f = new File(dir(c), name);
         if (!f.isFile()) throw new FileNotFoundException();
         return f;
     }
 
+    private File file(Uri uri) throws FileNotFoundException { return file(getContext(), uri); }
+
     @Override public boolean onCreate() { return true; }
 
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-        return ParcelFileDescriptor.open(file(uri), ParcelFileDescriptor.MODE_READ_ONLY);
+        File f = file(uri);
+        // only the camera's photo can be written, everything else is read-only
+        boolean write = mode.contains("w") && f.getName().startsWith("photo-");
+        return ParcelFileDescriptor.open(f, write ? ParcelFileDescriptor.parseMode(mode) : ParcelFileDescriptor.MODE_READ_ONLY);
     }
 
     @Override public String getType(Uri uri) {

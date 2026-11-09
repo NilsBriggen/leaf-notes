@@ -130,6 +130,10 @@ pub(crate) fn format_date(secs: u64, time: bool) -> String {
     format_utc((secs as i64 + local_offset(secs)).max(0) as u64, time)
 }
 
+/// The date without its year, in the reading language ("Wednesday, November 4", "Mittwoch, 4. November"), for page titles.
+pub(crate) fn short_date(secs: u64) -> String { without_year(&format_date(secs, false)) }
+fn without_year(d: &str) -> String { d.rsplit_once(' ').map_or(d.to_string(), |(a, _)| a.trim_end_matches(',').to_string()) }
+
 /// This device's offset from UTC in seconds at that moment (summer time included).
 fn local_offset(secs: u64) -> i64 {
     #[cfg(unix)]
@@ -1155,7 +1159,7 @@ impl NotesApp {
         let mut tasks = self.open_tasks();
         // tasks with a date ("@2026-11-20") first, soonest first
         tasks.sort_by_key(|t| due_day(&t.4).unwrap_or(i64::MAX));
-        let today = (now_secs() / 86_400) as i64;
+        let today = (now_secs() as i64 + local_offset(now_secs())).div_euclid(86_400);
         let mut tick = None;
         let mut go = None;
         egui::ScrollArea::vertical().id_salt("tasks-scroll").auto_shrink([false; 2]).show(ui, |ui| {
@@ -1541,8 +1545,10 @@ impl NotesApp {
                 if self.st.input == Input::Mouse && p.kind != PageKind::Locked && self.st.rename.is_none() {
                     let d = r.interact(Sense::drag());
                     d.dnd_set_drag_payload(DragPage(sec_id, i));
-                    if d.dnd_hover_payload::<DragPage>().is_some_and(|x| x.0 == sec_id && x.1 != i) { ui.painter().hline(r.rect.x_range(), r.rect.top(), EStroke::new(2.0, accent(ui))); }
-                    if let Some(x) = d.dnd_release_payload::<DragPage>() { if x.0 == sec_id && x.1 != i { drop_to = Some((x.1, i)); } }
+                    // the line shows where it lands: above this page, or below the last one when dragged down onto it
+                    let last = |from: usize| i + 1 == n && from < i;
+                    if let Some(x) = d.dnd_hover_payload::<DragPage>().filter(|x| x.0 == sec_id && x.1 != i) { ui.painter().hline(r.rect.x_range(), if last(x.1) { r.rect.bottom() } else { r.rect.top() }, EStroke::new(2.0, accent(ui))); }
+                    if let Some(x) = d.dnd_release_payload::<DragPage>() { if x.0 == sec_id && x.1 != i { drop_to = Some((x.1, if last(x.1) { n } else { i })); } }
                 }
                 if p.kind == PageKind::Locked { continue; } // the placeholder of a closed locked section has nothing to rename, move or delete
                 r.context_menu(|ui| {
@@ -1581,8 +1587,7 @@ impl NotesApp {
         if let Some((from, to)) = drop_to.filter(|(f, _)| *f < self.store.notebooks[nb].sections[sec].pages.len()) {
             let pages = &mut self.store.notebooks[nb].sections[sec].pages;
             let open = pages.get(self.pg).map(|p| p.id);
-            let p = pages.remove(from);
-            pages.insert(to.min(pages.len()), p);
+            crate::model::move_pages(pages, from, to);
             if let Some(id) = open { if let Some(k) = pages.iter().position(|p| p.id == id) { self.pg = k; } }
             self.st.dirty = true;
         }
@@ -1923,7 +1928,7 @@ impl NotesApp {
         if self.st.switcher.is_some() { self.switcher_window(ctx); } else { self.st.switch_cache = None; }
         if self.st.study.is_some() { self.study_window(ctx); }
         if self.st.mic_prompt { self.mic_window(ctx); }
-        if self.st.restore_ask.is_some() { self.restore_window(ctx); }
+        if self.st.restore_ask.is_some() { self.restore_window(ctx); } else { self.st.restore_parsed = None; }
         if let Some(mut r) = self.st.ink_review.take() {
             // the recognizer (or AI) can misread: correct it here before it replaces the handwriting
             let mut done = None;
@@ -2128,6 +2133,11 @@ mod tests {
         assert_eq!(super::format_utc(1_793_793_555, false), "Wednesday, November 4, 2026");
         assert_eq!(super::due_day("hand in @2026-11-04 please"), Some(1_793_793_555 / 86_400));
         assert_eq!(super::due_day("mail me @ noon"), None);
+        // page titles drop the year in every language (not only where there's a comma before it)
+        for (lang, want) in [("de", "Mittwoch, 4. November"), ("fr", "mercredi 4 novembre"), ("en", "Wednesday, November 4")] {
+            crate::i18n::set(lang);
+            assert_eq!(super::without_year(&super::format_utc(1_793_793_555, false)), want);
+        }
         // local time: never more than 14 hours from UTC
         assert!(super::local_offset(1_793_793_555).abs() <= 14 * 3600);
     }

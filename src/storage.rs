@@ -115,6 +115,8 @@ fn trashed_page_ids(store: &Store) -> Vec<u64> {
 fn recover_pages(dir: &Path, known: &std::collections::HashSet<u64>) -> Option<Store> {
     let mut pages: Vec<Page> = std::fs::read_dir(dir.join("pages")).ok()?.flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        // a known page's file (its id is its name) isn't read a second time
+        .filter(|e| e.path().file_stem().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()).is_none_or(|id| !known.contains(&id)))
         .filter_map(|e| read_json::<Page>(&e.path())).filter(|p| !known.contains(&p.id)).collect();
     if pages.is_empty() { return None; }
     pages.sort_by_key(|p| p.created);

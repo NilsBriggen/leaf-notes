@@ -240,6 +240,9 @@ impl<T: 'static> EventLoop<T> {
                 },
                 MainEvent::LostFocus => {
                     HAS_FOCUS.store(false, Ordering::Relaxed);
+                    // Leaf Notes: a stroke cut off by another window (no Up arrives) mustn't keep fingers blocked
+                    self.stylus_down = None;
+                    self.fingers.clear();
                     callback(
                         event::Event::WindowEvent {
                             window_id: window::WindowId(WindowId),

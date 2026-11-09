@@ -48,7 +48,14 @@ public class LeafActivity extends NativeActivity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        // the camera app may have needed the memory: the photo it was writing still arrives
+        if (state != null) photo = state.getParcelable("photo");
         takeShared(getIntent());
+    }
+
+    @Override protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        if (photo != null) out.putParcelable("photo", photo);
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -74,11 +81,17 @@ public class LeafActivity extends NativeActivity {
     public void takePhoto() {
         runOnUiThread(new Runnable() { public void run() {
             try {
-                ContentValues v = new ContentValues();
-                v.put(MediaStore.MediaColumns.DISPLAY_NAME, "Leaf Notes " + System.currentTimeMillis() + ".jpg");
-                v.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
-                if (Build.VERSION.SDK_INT >= 29) v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/Leaf Notes");
-                photo = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                if (Build.VERSION.SDK_INT < 29) {
+                    File f = new File(FileShare.dir(LeafActivity.this), "photo-" + System.currentTimeMillis() + ".jpg");
+                    f.createNewFile();
+                    photo = FileShare.uri(f);
+                } else {
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.MediaColumns.DISPLAY_NAME, "Leaf Notes " + System.currentTimeMillis() + ".jpg");
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
+                    v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/Leaf Notes");
+                    photo = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                }
                 Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT, photo)
                     .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 startActivityForResult(i, CAMERA);
@@ -91,8 +104,13 @@ public class LeafActivity extends NativeActivity {
         if (request == CAMERA && photo != null) {
             final Uri u = photo;
             photo = null;
-            if (result != RESULT_OK) { try { getContentResolver().delete(u, null, null); } catch (Exception e) { /* nothing to tidy */ } return; }
-            new Thread(new Runnable() { public void run() { String p = copyIn(u); if (p != null) incoming.add("1|" + p); } }).start();
+            final boolean own = FileShare.AUTHORITY.equals(u.getAuthority());
+            if (result != RESULT_OK) { try { if (own) FileShare.file(this, u).delete(); else getContentResolver().delete(u, null, null); } catch (Exception e) { /* nothing to tidy */ } return; }
+            new Thread(new Runnable() { public void run() {
+                String p = copyIn(u);
+                if (p != null) incoming.add("1|" + p);
+                if (own) try { FileShare.file(LeafActivity.this, u).delete(); } catch (Exception e) { /* gone already */ }
+            } }).start();
             return;
         }
         if (request < PICK || request > PICK + 99 || result != RESULT_OK || data == null) return;
@@ -162,12 +180,13 @@ public class LeafActivity extends NativeActivity {
      *  Android 8 and 9: a copy other apps may read through FileShare instead. */
     private Uri toDownloads(String path, String name, String mime) throws Exception {
         if (Build.VERSION.SDK_INT < 29) {
-            File f = new File(FileShare.dir(this), name.replaceAll("[/\\\\]", "_"));
+            FileShare.tidy(this);
+            File f = new File(FileShare.dir(this), name.replaceAll("[/\\\\]", "_").replaceFirst("^\\.+", "_"));
             try (InputStream in = new FileInputStream(path); OutputStream out = new FileOutputStream(f)) {
                 byte[] buf = new byte[65536];
                 for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
             }
-            return new Uri.Builder().scheme("content").authority(FileShare.AUTHORITY).appendPath(f.getName()).build();
+            return FileShare.uri(f);
         }
         ContentResolver r = getContentResolver();
         ContentValues v = new ContentValues();
@@ -185,22 +204,26 @@ public class LeafActivity extends NativeActivity {
 
     /** Open an attachment in another app. */
     public void openFile(final String path, final String name, final String mime) {
-        runOnUiThread(new Runnable() { public void run() {
+        new Thread(new Runnable() { public void run() {
             try {
-                Uri u = toDownloads(path, name, mime);
+                final Uri u = toDownloads(path, name, mime);
                 if (u == null) return;
-                Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(u, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                try { startActivity(view); } catch (ActivityNotFoundException e) { toast("No app here can open this file. It's in Downloads/Leaf Notes."); }
+                runOnUiThread(new Runnable() { public void run() {
+                    Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(u, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    try { startActivity(view); } catch (ActivityNotFoundException e) { toast("No app here can open this file. It's in Downloads/Leaf Notes."); }
+                }});
             } catch (Exception e) { toast("Couldn't open the file: " + e.getMessage()); }
-        }});
+        }}).start();
     }
 
     /** Hand an exported file to the share menu (mail, Drive, Files…); a copy also stays in Downloads/Leaf Notes. */
     public void shareFile(final String path, final String name, final String mime) {
-        runOnUiThread(new Runnable() { public void run() {
+        new Thread(new Runnable() { public void run() {
+            final Uri u;
+            try { u = toDownloads(path, name, mime); } catch (Exception e) { toast("Couldn't share the file: " + e.getMessage()); return; }
+            if (u == null) return;
+            runOnUiThread(new Runnable() { public void run() {
             try {
-                Uri u = toDownloads(path, name, mime);
-                if (u == null) return;
                 Intent send = new Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, u).putExtra(Intent.EXTRA_TITLE, name).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 send.setClipData(ClipData.newUri(getContentResolver(), name, u)); // shows the file's name in the share sheet
                 Intent chooser = Intent.createChooser(send, name);
@@ -211,7 +234,8 @@ public class LeafActivity extends NativeActivity {
                 chooser.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, new android.content.ComponentName[] { new android.content.ComponentName(LeafActivity.this, LeafActivity.class) });
                 startActivity(chooser);
             } catch (Exception e) { toast("Couldn't share the file: " + e.getMessage()); }
-        }});
+            }});
+        }}).start();
     }
 
     private void toast(final String s) { runOnUiThread(new Runnable() { public void run() { Toast.makeText(LeafActivity.this, s, Toast.LENGTH_LONG).show(); } }); }

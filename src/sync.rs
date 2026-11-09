@@ -125,6 +125,8 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
             if s.max_recording_mb > 0 && f.ends_with(".wav") && std::fs::metadata(files.join(&f)).is_ok_and(|m| m.len() > s.max_recording_mb as u64 * 1_000_000) { continue; }
             if sent.contains(&f) { have.push(f); continue; }
             match remote.put_file(&f, &files.join(&f)) { Ok(()) => { sent.push(f.clone()); have.push(f); up += 1; } Err(e) => failed.push((f, e)) }
+            // closing the app: one failed upload means the connection is poor, so the rest wait for next time
+            if quick && !failed.is_empty() { break; }
         }
         // on the way out only send: missing files come down next time
         for f in have.iter().filter(|_| !quick) {

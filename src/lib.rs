@@ -303,6 +303,8 @@ struct St {
     press_page: Option<Page>,
     /// A backup file picked to restore, waiting for "add" or "replace".
     restore_ask: Option<PathBuf>,
+    /// that backup, read once while the question is open
+    restore_parsed: Option<(PathBuf, Store)>,
     /// A recording waiting for "yes, send it" before it goes to the AI service for a transcript.
     transcribe_ask: Option<u64>,
     /// Where search looks: 0 everywhere, 1 this notebook, 2 this section.
@@ -420,6 +422,8 @@ struct St {
     /// a Google sign-in waiting for the browser: the address it opened, the result, where a pasted address goes, and the paste field
     google_rx: Option<GoogleWait>,
     google_paste: String,
+    /// the page title as it was when its field got focus (a change there renames the page, links and all)
+    title_was: Option<String>,
     persist: bool,
 }
 
@@ -679,12 +683,12 @@ impl NotesApp {
         let (nb, sec, pg) = p.last;
         let st = St {
             ai, p, tab: Tab::Home, tool: Tool::Type, current: None, anchor: None, lasso: vec![], selected: vec![], moving: false,
-            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false, 0.0), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], backlinks: vec![], backlinks_for: 0, open_tasks_n: 0, derived_at: -10.0, search_cache: None, switch_cache: None, insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, snap_press: false, press_page: None, note_at: None, drop_pdf: None, undo_delete: None, reveal: true, last_input: now_f(), transcribe_ask: None, restore_ask: None, theme_dirty: false, nav_back: vec![], nav_fwd: vec![], navigating: false, find_text: None, make_card: None, ink_review: None, ink_clip: vec![], unpinned: None, insert_near: false, opened_args: false, search_scope: 0, heights: HashMap::new(),
+            force: None, frame_force: None, editing: None, canvas_avail: Vec2::ZERO, typing_kb: false, short: false, sel_press: None, fingers: HashMap::new(), gesture: (0.0, 0, false, 0.0), scales: HashMap::new(), tool_before_erase: None, restore_tool: false, narrow: false, touch_ui: false, picking_since: -1e9, prev_t: 0.0, kb_idle_since: None, last_text: None, focus_id: None, fmt: None, input: Input::Mouse, tasks: false, due_now: 0, focus: None, ink_pass: false, mouse_hint: false, settings_tab: 0, views: HashMap::new(), pan: Vec2::ZERO, zoom_req: None, zoom_now: 1.0, still: (Pos2::ZERO, 0.0), snapped: false, xform: None, popup: None, open_link: None, page_titles: vec![], backlinks: vec![], backlinks_for: 0, open_tasks_n: 0, derived_at: -10.0, search_cache: None, switch_cache: None, insert_below: None, switcher: None, study: None, capture: None, recorder: None, rec_toggle: false, player: None, listen: true, speed: 1.0, mic_prompt: false, mic_wait: None, jump: None, recordings_span: None, fade_after: None, want_snap: false, snap_press: false, press_page: None, note_at: None, drop_pdf: None, undo_delete: None, reveal: true, last_input: now_f(), transcribe_ask: None, restore_ask: None, restore_parsed: None, theme_dirty: false, nav_back: vec![], nav_fwd: vec![], navigating: false, find_text: None, make_card: None, ink_review: None, ink_clip: vec![], unpinned: None, insert_near: false, opened_args: false, search_scope: 0, heights: HashMap::new(),
             textures: HashMap::new(), decodes: (0.0, 0), undo: vec![], redo: vec![], dirty: false, since_save: 0.0, search: String::new(), tag_filter: None,
             show_settings: false, show_trash: false, show_shortcuts: false, rename: None, commit_rename: false, path_prompt: None,
             ai_prompt: String::new(), eq_prompt: String::new(), ai_log: vec![], ai_rx: vec![], test_result: None,
             status: String::new(), status_age: 0.0, persist: persist && store_ok, saver: Default::default(), index: index::Index::load(persist && store_ok), transcribe: None, transcribe_req: None, update: None, update_rx: None, update_manual: false, crash: None, history: None, compare: None, keys: HashMap::new(), seal_cache: HashMap::new(), lock_prompt: None, unlock_pw: String::new(), unlock_err: String::new(), tour: None, tour_fresh: false, show_news: false, show_help: false, bars: [0.0; 4], bars_at: -10.0,
-            full_save: true, full_at: 0.0, saves: 0, sync_saves: 0, instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None, google_paste: String::new(),
+            full_save: true, full_at: 0.0, saves: 0, sync_saves: 0, instance: instance.ok().flatten(), sync, sync_rx: None, sync_at: 0.0, sync_ok: 0, sync_err: String::new(), sync_pending: false, sync_now: false, sync_ask: None, google_rx: None, google_paste: String::new(), title_was: None,
         };
         let mut app = NotesApp { store, st, nb, sec, pg, screenshot, frames: 0, shot_requested: false, shot_done: Default::default(),
             #[cfg(target_os = "android")] android: None, #[cfg(target_os = "android")] keyboard_shown: false };
@@ -1391,7 +1395,7 @@ impl NotesApp {
     /// Offline: suggest a deck from definitions, Q/A lines, highlights, headings and tables on this page.
     fn deck_from_notes(&mut self) {
         let page = self.page();
-        let title = if page.title.trim().is_empty() { "Untitled page".to_string() } else { page.title.clone() };
+        let title = if page.title.trim().is_empty() { tr("Untitled page").to_string() } else { page.title.clone() };
         let cards: Vec<(String, String)> = flashcards(page).into_iter().map(|c| (c.front, c.back)).collect();
         if cards.is_empty() {
             self.st.say("No card-like notes found here (questions, “term :: meaning”, highlights, headings or tables). Try “With AI”, or start a new deck.");
@@ -1399,7 +1403,7 @@ impl NotesApp {
         }
         // run again on a growing page: the new cards join the deck made before, instead of a second deck
         let name = format!("{title} — cards");
-        if let Some(d) = self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).flat_map(|s| s.pages.iter_mut()).find(|p| p.kind == PageKind::Deck && p.title == name) {
+        if let Some(d) = self.section().pages.iter_mut().find(|p| p.kind == PageKind::Deck && p.title == name) {
             let before = d.cards.len();
             for (f, b) in cards { if !d.cards.iter().any(|c| c.front.trim() == f.trim()) { d.cards.push(DeckCard::new(&f, &b)); } }
             let n = d.cards.len() - before;
@@ -1417,7 +1421,7 @@ impl NotesApp {
         let title = { let t = self.page().title.clone(); if t.trim().is_empty() { tr("Untitled page").to_string() } else { t } };
         let name = format!("{title} — cards");
         let sealed = self.section().sealed();
-        let found = self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).flat_map(|s| s.pages.iter_mut()).find(|p| p.kind == PageKind::Deck && p.title == name);
+        let found = self.section().pages.iter_mut().find(|p| p.kind == PageKind::Deck && p.title == name);
         match found {
             Some(d) => d.cards.push(DeckCard::new(&front, &back)),
             None if !sealed => {
@@ -1451,7 +1455,7 @@ impl NotesApp {
         let p = page_from_markdown(tr(title), md, self.st.p.note_width);
         let page = self.page();
         page.blocks = p.blocks;
-        page.title = format!("{} · {}", tr(title), chrome::format_date(now_secs(), false).rsplit_once(',').map_or(String::new(), |(a, _)| a.to_string()));
+        page.title = format!("{} · {}", tr(title), chrome::short_date(now_secs()));
         self.st.focus_id = None;
     }
 
@@ -1469,9 +1473,7 @@ impl NotesApp {
     /// A dated, empty lecture page, optionally recording straight away.
     fn start_lecture(&mut self, record: bool) {
         if !self.new_page(None) { return; }
-        let d = chrome::format_date(now_secs(), false);
-        let short = d.rsplit_once(',').map_or(d.clone(), |(a, _)| a.to_string()); // drop the year
-        self.page().title = format!("Lecture · {short}");
+        self.page().title = format!("{} · {}", tr("Lecture"), chrome::short_date(now_secs()));
         self.st.focus_id = None;
         if record && self.st.recorder.is_none() { self.st.rec_toggle = true; }
         self.st.say(if record { "New lecture page — recording starts once the microphone is allowed." } else { "New lecture page ready." });
@@ -1643,7 +1645,7 @@ impl NotesApp {
                 if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)))) || cmd(Key::V) { self.paste_ink(); }
             }
             // ← / → skip 10 seconds in the recording that's playing
-            if let Some(pl) = &self.st.player {
+            if let (Some(pl), false) = (&self.st.player, ctx.input(|i| i.modifiers.alt)) {
                 if key(Key::ArrowLeft) { pl.seek(pl.time() - 10.0); }
                 if key(Key::ArrowRight) { pl.seek(pl.time() + 10.0); }
             }
@@ -2012,6 +2014,7 @@ impl eframe::App for NotesApp {
         }
         match page_action {
             Some(canvas::PageAction::Export) => self.export_page(),
+            Some(canvas::PageAction::Retitled(old)) => { let (id, new) = (self.page().id, std::mem::replace(&mut self.page().title, old)); self.rename(id, new); }
             Some(canvas::PageAction::Copy) => { let md = self.page().plain_text(); ctx.copy_text(md); self.st.say("Page copied as Markdown."); }
             Some(canvas::PageAction::Delete) => { let id = self.page().id; self.delete(id); }
             Some(canvas::PageAction::Duplicate) => self.duplicate_page(nb, sec, pg),
@@ -2104,8 +2107,9 @@ impl eframe::App for NotesApp {
                 || self.st.mic_wait.is_some() || self.st.bars == [0.0; 4] || (!wants && self.keyboard_shown) || self.st.index.busy() || self.st.transcribe.is_some() || now_f() - self.st.picking_since < 120.0;
             WAKE_FAST.store(busy, std::sync::atomic::Ordering::Relaxed);
             static TICKER: std::sync::Once = std::sync::Once::new();
+            static WAKE_CTX: std::sync::Mutex<Option<egui::Context>> = std::sync::Mutex::new(None);
+            if let Ok(mut c) = WAKE_CTX.lock() { if c.as_ref() != Some(&ctx) { *c = Some(ctx.clone()); } }
             TICKER.call_once(|| {
-                let ctx = ctx.clone();
                 std::thread::spawn(move || {
                     let mut idle = 0u32;
                     loop {
@@ -2113,7 +2117,10 @@ impl eframe::App for NotesApp {
                         idle += 1;
                         // fast while busy; every 30 s otherwise (sync checks, clocks)
                         // also when a file was picked or shared (Android delivers it to Java)
-                        if WAKE_FAST.load(std::sync::atomic::Ordering::Relaxed) || idle >= 75 || droid::has_incoming() { idle = 0; ctx.request_repaint(); }
+                        if WAKE_FAST.load(std::sync::atomic::Ordering::Relaxed) || idle >= 75 || droid::has_incoming() {
+                            idle = 0;
+                            if let Some(c) = WAKE_CTX.lock().ok().and_then(|c| c.clone()) { c.request_repaint(); }
+                        }
                     }
                 });
             });

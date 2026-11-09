@@ -91,15 +91,21 @@ impl NotesApp {
     /// What's in the backup the person picked, and whether to add it or replace everything with it.
     pub(crate) fn restore_window(&mut self, ctx: &egui::Context) {
         let Some(path) = self.st.restore_ask.clone() else { return };
-        let parsed = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Store>(&b).ok());
-        let Some(backup) = parsed else { self.st.restore_ask = None; self.restore_backup(&path); return }; // says what's wrong
-        let pages: usize = backup.notebooks.iter().flat_map(|n| &n.sections).map(|s| s.pages.len()).sum();
+        // read once while the question is open, not on every frame (a backup can be big)
+        if self.st.restore_parsed.as_ref().is_none_or(|(p, _)| *p != path) {
+            match std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Store>(&b).ok()) {
+                Some(b) => self.st.restore_parsed = Some((path.clone(), b)),
+                None => { self.st.restore_ask = None; self.restore_backup(&path); return } // says what's wrong
+            }
+        }
+        let Some((_, backup)) = &self.st.restore_parsed else { return };
+        let (notebooks, pages): (usize, usize) = (backup.notebooks.len(), backup.notebooks.iter().flat_map(|n| &n.sections).map(|s| s.pages.len()).sum());
         let mut choice = None;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         let m = egui::Modal::new(egui::Id::unique("restore-ask")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 440.0));
             ui.label(RichText::new(tr("Restore a backup")).font(rich::serif(20.0)));
-            ui.label(tf!("This backup has {n} notebook(s) with {p} page(s).", n = backup.notebooks.len(), p = pages));
+            ui.label(tf!("This backup has {n} notebook(s) with {p} page(s).", n = notebooks, p = pages));
             ui.add_space(8.0);
             if ui.button(tr("Add them as extra notebooks")).clicked() { choice = Some(1); }
             if ui.button(tr("Replace everything with the backup")).tip("What's here now is saved to a file in the notes folder first").clicked() { choice = Some(2); }
@@ -107,9 +113,10 @@ impl NotesApp {
         });
         if m.should_close() { choice = Some(0); }
         match choice {
-            Some(1) => { self.st.restore_ask = None; self.restore_backup(&path); }
+            Some(1) => { self.st.restore_ask = None; self.st.restore_parsed = None; self.restore_backup(&path); }
             Some(2) => {
                 self.st.restore_ask = None;
+                let Some((_, backup)) = self.st.restore_parsed.take() else { return };
                 // the notes as they are now, sealed, kept before anything is replaced
                 let keep = data_dir().join(format!("before-restore-{}.json", now_secs()));
                 let now = self.sealed().unwrap_or_else(|| self.store.clone());
@@ -129,7 +136,7 @@ impl NotesApp {
                     }
                 }
             }
-            Some(_) => self.st.restore_ask = None,
+            Some(_) => { self.st.restore_ask = None; self.st.restore_parsed = None; }
             None => {}
         }
     }

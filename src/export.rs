@@ -58,9 +58,9 @@ pub fn markdown_with_files(page: &Page, files: &Path, out: &Path) -> Result<(), 
     blocks.sort_by(|a, b| (a.pos[1] / 40.0).floor().total_cmp(&(b.pos[1] / 40.0).floor()).then(a.pos[0].total_cmp(&b.pos[0])));
     for b in blocks {
         let Kind::Image { file } = &b.kind else { continue };
-        if !safe_name(file) { continue; }
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        if std::fs::copy(files.join(file), dir.join(file)).is_ok() { md = md.replacen("[image]", &format!("![](<{dir_name}/{file}>)"), 1); }
+        // every picture uses up its own placeholder, also one that can't be copied (else the next picture lands in its spot)
+        let copied = safe_name(file) && { std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?; std::fs::copy(files.join(file), dir.join(file)).is_ok() };
+        md = md.replacen("[image]", &if copied { format!("![](<{dir_name}/{file}>)") } else { "[picture]".to_string() }, 1);
     }
     let ink: Vec<&Stroke> = page.strokes.iter().filter(|s| !s.highlighter).collect();
     if let Some(png) = rasterize(&ink) {
