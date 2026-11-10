@@ -687,7 +687,7 @@ fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut St) -> Opt
                     let pen = *st.pen();
                     st.snapped = false;
                     st.still = (start, ui.input(|i| i.time));
-                    st.current = Some(Stroke { id: new_id(), points: vec![[start.x, start.y, if st.p.pressure { st.frame_force.unwrap_or(0.8) } else { 0.85 }]],
+                    st.current = Some(Stroke { id: new_id(), points: vec![[start.x, start.y, if st.p.pressure { st.frame_force.map(|f| f.clamp(0.0, 1.0).powf(st.p.pressure_curve)).unwrap_or(0.8) } else { 0.85 }]],
                         color: if hl { st.p.hl_color } else { pen.color }, width: if hl { st.p.hl_width } else { pen.width }, highlighter: hl, pen: pen.kind, t: now_f() });
                 }
                 Tool::Eraser => st.snapped = false, // the undo step is taken at the first stroke actually erased
@@ -1506,6 +1506,8 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     .hint_text(tr("Type here…  **bold**, - list, $x^2$, / for more, [[ to link a page")).layouter(&mut layouter).show(ui);
                 let r = &out.response;
                 focus(r, st);
+                // opened by a click: the cursor where it was clicked (roughly, on lines whose marks now show)
+                if let Some((_, p)) = st.click_at.take_if(|(bid, _)| *bid == b.id) { set_cursor(&ctx, id, out.galley.cursor_from_pos(p - out.galley_pos).index.0); }
                 if let Some(i) = popup_ui(ui, &ctx, id, b.id, text, &out, st) { changed |= apply_popup(&ctx, id, b.id, text, i, st); }
                 let r = &out.response;
                 if r.gained_focus() { st.editing = Some(b.id); st.last_text = Some(b.id); st.want_snap = true; }
@@ -1543,6 +1545,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     st.editing = Some(b.id);
                     st.focus_id = Some(id);
                     st.last_text = Some(b.id);
+                    st.click_at = ui.input(|i| i.pointer.interact_pos()).map(|p| (b.id, p));
                 }
             }
         }

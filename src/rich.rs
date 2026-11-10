@@ -215,7 +215,7 @@ pub fn view_ticks(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Col
             _ => (heading_size(base, heading), if heading > 0 { c.strong } else { c.text }),
         };
         if line.trim().is_empty() { ui.add_space(size * 0.8); continue; }
-        number = if kind == LineKind::Number { number + 1 } else { 0 };
+        number = if kind == LineKind::Number { next_number(line, number) } else { 0 };
         let indent = (line.len() - line.trim_start().len()) as f32 * 10.0; // two spaces: one sub-point step
         if matches!(kind, LineKind::Heading(_)) { ui.add_space(size * 0.3); }
         ui.spacing_mut().item_spacing.y = size * 0.3;
@@ -286,12 +286,19 @@ pub fn indent_line(text: &mut String, cursor: usize, out: bool) -> Option<usize>
     }
 }
 
-/// Tick or untick the "[ ]" box of line `n`.
+/// The number shown for a numbered line: a list starts at the number typed (like Markdown), then counts on.
+fn next_number(line: &str, prev: usize) -> usize {
+    if prev > 0 { return prev + 1; }
+    line.trim_start().chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap_or(1)
+}
+
+/// Tick or untick the "[ ]" box of line `n` (the box at its start, not one written later in the line).
 pub fn toggle_check(text: &mut String, n: usize) {
     let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
     let Some(l) = lines.get_mut(n) else { return };
+    let (LineKind::Check(_), p) = classify(l) else { return };
     for (from, to) in [("[ ]", "[x]"), ("[x]", "[ ]"), ("[X]", "[ ]")] {
-        if let Some(i) = l.find(from) { l.replace_range(i..i + 3, to); break; }
+        if let Some(i) = l[..p].find(from) { l.replace_range(i..i + 3, to); break; }
     }
     *text = lines.join("\n");
 }
@@ -301,11 +308,34 @@ pub fn toggle_check(text: &mut String, n: usize) {
 fn byte(text: &str, ci: usize) -> usize { text.char_indices().nth(ci).map_or(text.len(), |(b, _)| b) }
 
 /// Wrap the selection a..b in `m` (or unwrap if already wrapped). Returns the new selection.
+/// A selection over several lines gets the marks on each line (a mark can't span lines).
 pub fn toggle_wrap(text: &mut String, a: usize, b: usize, m: &str) -> (usize, usize) {
     let ml = m.chars().count();
     let chars: Vec<char> = text.chars().collect();
     let mc: Vec<char> = m.chars().collect();
-    if a >= ml && b + ml <= chars.len() && chars[a - ml..a] == mc[..] && chars[b..b + ml] == mc[..] {
+    if chars.get(a..b).is_some_and(|s| s.contains(&'\n')) {
+        let sel: String = chars[a..b].iter().collect();
+        let lines: Vec<&str> = sel.split('\n').collect();
+        // each line's text without its list mark and spaces: (lead, text, tail)
+        let parts = |l: &str| { let p = classify(l).1.max(l.len() - l.trim_start().len()); let e = l.trim_end().len().max(p); (l[..p].to_string(), l[p..e].to_string(), l[e..].to_string()) };
+        let wrapped = |t: &str| t.chars().count() >= 2 * ml && t.starts_with(m) && t.ends_with(m);
+        let all = lines.iter().map(|l| parts(l)).filter(|(_, t, _)| !t.is_empty()).all(|(_, t, _)| wrapped(&t));
+        let new: Vec<String> = lines.iter().map(|l| {
+            let (lead, t, tail) = parts(l);
+            if t.is_empty() { l.to_string() } else if all { format!("{lead}{}{tail}", &t[m.len()..t.len() - m.len()]) } else { format!("{lead}{m}{t}{m}{tail}") }
+        }).collect();
+        let joined = new.join("\n");
+        let n = joined.chars().count();
+        let (ab, bb) = (byte(text, a), byte(text, b));
+        text.replace_range(ab..bb, &joined);
+        return (a, a + n);
+    }
+    // "*" next to "**word**" is the bold's, not italics: only an odd run of stars counts as italic
+    let run = |it: &mut dyn Iterator<Item = &char>| it.take_while(|c| **c == mc[0]).count();
+    let outside = |k: usize| if ml == 1 { k % 2 == 1 } else { k >= ml };
+    let (before, after) = (run(&mut chars[..a.min(chars.len())].iter().rev()), run(&mut chars[b.min(chars.len())..].iter()));
+    let marks_match = a >= ml && b + ml <= chars.len() && chars[a - ml..a] == mc[..] && chars[b..b + ml] == mc[..];
+    if marks_match && outside(before) && outside(after) {
         let (bb, ab) = (byte(text, b), byte(text, a));
         text.replace_range(bb..bb + m.len(), "");
         text.replace_range(ab - m.len()..ab, "");
@@ -327,10 +357,16 @@ pub fn toggle_prefix(text: &mut String, a: usize, b: usize, prefix: &str) -> (us
     let has = |l: &str| { let (k, p) = classify(l); (k != LineKind::Plain).then_some(p) };
     let numbered = prefix == "1. ";
     // the same prefix exactly ("## " isn't "# ", "- [ ] " isn't "- "): another kind is switched, not removed
-    let all = lines.iter().all(|l| match has(l) { Some(p) => l[..p].trim() == prefix.trim() || (numbered && classify(l).0 == LineKind::Number), None => false });
-    let new: Vec<String> = lines.iter().enumerate().map(|(i, l)| {
-        let rest = has(l).map_or(*l, |p| &l[p..]);
-        if all { rest.to_string() } else if numbered { format!("{}. {rest}", i + 1) } else { format!("{prefix}{rest}") }
+    // with several lines, blank ones are left as they are (no bullet on an empty line, no gap in the numbers)
+    let skip = |l: &str| lines.len() > 1 && l.trim().is_empty();
+    let all = lines.iter().filter(|l| !skip(l)).all(|l| match has(l) { Some(p) => l[..p].trim() == prefix.trim() || (numbered && classify(l).0 == LineKind::Number), None => false });
+    let mut k = 0;
+    let new: Vec<String> = lines.iter().map(|l| {
+        if skip(l) { return l.to_string(); }
+        let indent = &l[..l.len() - l.trim_start().len()]; // sub-points stay sub-points
+        let rest = has(l).map_or(l.trim_start(), |p| &l[p..]);
+        k += 1;
+        if all { format!("{indent}{rest}") } else if numbered { format!("{indent}{k}. {rest}") } else { format!("{indent}{prefix}{rest}") }
     }).collect();
     let joined = new.join("\n");
     let delta = joined.chars().count() as isize - old.chars().count() as isize;
@@ -428,5 +464,39 @@ mod tests {
         let mut n = String::from("1. a\n");
         continue_list(&mut n, 5);
         assert_eq!(n, "1. a\n2. ");
+        // list buttons keep sub-points indented, skip blank lines and number only what gets a number
+        let mut sub = String::from("one\n  two\n\nthree");
+        toggle_prefix(&mut sub, 0, 15, "1. ");
+        assert_eq!(sub, "1. one\n  2. two\n\n3. three");
+        let n = sub.chars().count();
+        toggle_prefix(&mut sub, 0, n, "1. ");
+        assert_eq!(sub, "one\n  two\n\nthree");
+        // italics inside bold adds a star instead of eating one of the bold's
+        let mut b = String::from("**word**");
+        assert_eq!(toggle_wrap(&mut b, 2, 6, "*"), (3, 7));
+        assert_eq!(b, "***word***");
+        assert_eq!(toggle_wrap(&mut b, 3, 7, "*"), (2, 6));
+        assert_eq!(b, "**word**");
+        let mut i = String::from("*it*");
+        toggle_wrap(&mut i, 1, 3, "*");
+        assert_eq!(i, "it");
+        // across lines: each line gets its own marks
+        let mut ml = String::from("one\n\ntwo");
+        assert_eq!(toggle_wrap(&mut ml, 0, 8, "**"), (0, 16));
+        assert_eq!(ml, "**one**\n\n**two**");
+        toggle_wrap(&mut ml, 0, 16, "**");
+        assert_eq!(ml, "one\n\ntwo");
+        let mut li = String::from("- a\n- b");
+        toggle_wrap(&mut li, 0, 7, "*");
+        assert_eq!(li, "- *a*\n- *b*");
+        // only the box at the start of the line is ticked
+        let mut c = String::from("- [ ] buy [ ] tape");
+        toggle_check(&mut c, 0);
+        assert_eq!(c, "- [x] buy [ ] tape");
+        let mut p = String::from("plain [ ] text");
+        toggle_check(&mut p, 0);
+        assert_eq!(p, "plain [ ] text");
+        // numbered lists start at the number typed
+        assert_eq!((next_number("3. c", 0), next_number("1. d", 3), next_number("  1. x", 0)), (3, 4, 1));
     }
 }

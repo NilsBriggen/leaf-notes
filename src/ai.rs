@@ -52,7 +52,7 @@ pub fn ask(s: &AiSettings, system: &str, prompt: &str, png: Option<&[u8]>) -> Re
             let mut content = vec![];
             if let Some(i) = &img { content.push(json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":i}})); }
             content.push(json!({"type":"text","text":prompt}));
-            (format!("{base}/v1/messages"), json!({"model":s.model,"max_tokens":2048,"system":system,"messages":[{"role":"user","content":content}]}))
+            (format!("{base}/v1/messages"), json!({"model":s.model,"max_tokens":8192,"system":system,"messages":[{"role":"user","content":content}]}))
         }
         Provider::OpenAiCompatible => {
             let mut content = vec![json!({"type":"text","text":prompt})];
