@@ -939,6 +939,12 @@ fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockActi
     let inner_rect = Rect::from_min_size(outer.min, Vec2::new(b.width, f32::INFINITY));
     let faded = st.fade_after.is_some_and(|(now, a, z)| b.t > now && b.t >= a && b.t <= z);
     let res = ui.scope_builder(egui::UiBuilder::new().max_rect(inner_rect).id_salt(("block", b.id)), |ui| {
+        // notes are placed by position, so each must be as tall on a phone as where it was written:
+        // inside a note the spacing is the desktop one (the menus around it stay finger-sized)
+        let sp = ui.spacing_mut();
+        sp.interact_size.y = 26.0;
+        sp.button_padding = Vec2::new(10.0, 5.0);
+        sp.item_spacing = Vec2::new(8.0, 6.0);
         ui.set_width(b.width);
         if faded { ui.multiply_opacity(0.25); }
         ui.horizontal_top(|ui| {
