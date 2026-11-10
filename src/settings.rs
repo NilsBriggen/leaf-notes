@@ -384,8 +384,13 @@ impl NotesApp {
             ui.add_space(6.0);
             ui.label(tf!("The sync location already has notes ({pages} pages), and this device has its own. How should this device join?", pages = pages));
             ui.add_space(12.0);
-            if ui.add(egui::Button::new(RichText::new(tr("Combine both")).size(14.0).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("Every notebook from both sides, on every device").clicked() { choice = Some(Some(sync::First::Merge)); }
-            if ui.add(egui::Button::new(RichText::new(tr("Use only the synced notes")).size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).tip("This device's current notes are saved to a backup file first").clicked() { choice = Some(Some(sync::First::UseShared)); }
+            if ui.add(egui::Button::new(RichText::new(tr("Combine both")).size(14.0).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).clicked() { choice = Some(Some(sync::First::Merge)); }
+            // said under each choice (a phone shows no hover tips)
+            ui.label(RichText::new(tr("Every notebook from both sides, on every device")).size(11.5).weak());
+            ui.add_space(6.0);
+            if ui.add(egui::Button::new(RichText::new(tr("Use only the synced notes")).size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).clicked() { choice = Some(Some(sync::First::UseShared)); }
+            ui.label(RichText::new(tr("This device's current notes are saved to a backup file first")).size(11.5).weak());
+            ui.add_space(6.0);
             if ui.add(egui::Button::new(tr("Not now — turn sync off")).frame_when_inactive(false)).clicked() { choice = Some(None); }
         });
         let Some(c) = choice else { return };

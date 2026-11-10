@@ -192,7 +192,7 @@ impl Kind {
             Kind::Checklist { items } => items.iter().map(|i| i.1.as_str()).collect::<Vec<_>>().join(", "),
             Kind::Table { rows } => rows.first().map(|r| r.join(" · ")).unwrap_or_default(),
             Kind::Code { code, .. } => code.lines().next().unwrap_or("").to_string(),
-            Kind::Image { .. } => "Picture".into(),
+            Kind::Image { .. } => crate::tr("Picture").into(),
             Kind::File { name, .. } => name.clone(),
             Kind::Link { url, title } => if title.is_empty() { url.clone() } else { title.clone() },
         }

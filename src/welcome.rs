@@ -153,7 +153,7 @@ impl NotesApp {
         if empty_start {
             // the sample goes to Recently deleted rather than away for good
             let now = now_secs();
-            for n in std::mem::take(&mut self.store.notebooks) { self.store.trash.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n), at: None }); }
+            for n in std::mem::take(&mut self.store.notebooks) { self.store.trash.push(Trashed { label: tf!("Notebook “{name}”", name = n.name), deleted: now, item: TrashItem::Notebook(n), at: None }); }
             self.store.notebooks = vec![Notebook { id: new_id(), name: tr("My Notebook").into(), color: PALETTE[0], sections: vec![Section { id: new_id(), name: tr("Quick Notes").into(), color: PALETTE[1], pages: vec![Page::new(tr("First page"))], lock: None }] }];
             (self.nb, self.sec, self.pg) = (0, 0, 0);
             self.st.dirty = true;
@@ -194,7 +194,8 @@ impl NotesApp {
                 for (title, body) in topics {
                     ui.label(RichText::new(tr(title)).size(16.0).strong());
                     // touch screens have no right-click: say long-press instead
-                    let body = if self.st.touch_ui { tr(body).replace("Right-click", tr("Long-press")).replace("Rechtsklick", tr("Long-press")).replace("Clic droit", tr("Long-press")) } else { tr(body).to_string() };
+                    // (a text that already names both is left as it is: "Long-press (or right-click)")
+                    let body = if self.st.touch_ui && !tr(body).contains(tr("Long-press")) { tr(body).replace("Right-click", tr("Long-press")).replace("Rechtsklick", tr("Long-press")).replace("Clic droit", tr("Long-press")) } else { tr(body).to_string() };
                     ui.label(body);
                     ui.add_space(8.0);
                 }
@@ -251,7 +252,7 @@ impl NotesApp {
     pub(crate) fn crash_window(&mut self, ctx: &egui::Context) {
         let Some(path) = self.st.crash.clone() else { return };
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let (mut send, mut delete) = (false, false);
+        let (mut send, mut delete, mut later) = (false, false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         egui::Modal::new(egui::Id::unique("crash")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 520.0));
@@ -264,8 +265,11 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent_base())).clicked() { send = true; }
                 if ui.button(tr("Delete it")).clicked() { delete = true; }
+                // kept: asked again at the next start
+                if ui.button(tr("Not now")).clicked() { later = true; }
             });
         });
+        if later { self.st.crash = None; }
         if send {
             let body: String = format!("What were you doing when it happened?\n\n\n```\n{}\n```", report_part(&text));
             ctx.open_url(egui::OpenUrl::new_tab(format!("{ISSUES}?title={}&body={}", enc("Crash report"), enc(&body))));

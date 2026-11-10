@@ -97,7 +97,7 @@ impl NotesApp {
             let mut sec = Section { id: new_id(), name: tf!("{name} (deleted page)", name = name), color, pages: vec![], lock: Some(l) };
             sec.pages = vec![sec.placeholder()];
             t.item = TrashItem::Section { notebook: *notebook, section: sec };
-            t.label = format!("A page from {nb_name} › {name} (locked)");
+            t.label = tf!("A page from {nb} › {name} (locked)", nb = nb_name, name = name);
             t.at = None;
         }
         // earlier plain-text versions of these pages shouldn't outlive the lock

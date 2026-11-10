@@ -401,6 +401,8 @@ impl NotesApp {
                     if ui.add(b).tip("Show or hide the AI assistant").clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
                     // phones: no room for a search box; the 🔍 opens the page finder, which also searches page text
                     if search_icon {
+                        // Ctrl+F asked for the search box, which isn't shown: open the finder instead
+                        if self.st.focus_id == Some(egui::Id::unique("search")) { self.st.focus_id = None; self.st.switcher = Some((String::new(), 0)); }
                         if ui.add(egui::Button::new(RichText::new("🔍").size(15.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Find a page (Ctrl+K)").clicked() { self.st.switcher = Some((String::new(), 0)); }
                     } else {
                         // room left for undo, redo and Record
@@ -841,11 +843,11 @@ impl NotesApp {
 
     fn ribbon_ai(&mut self, ui: &mut egui::Ui) {
         group(ui, "This page", |ui| {
-            if rbtn(ui, "✦", "Summarize", false).clicked() { self.chat("Summarize this page in a few bullet points.".into()); }
+            if rbtn(ui, "✦", "Summarize", false).clicked() { self.chat(tr("Summarize this page in a few bullet points.").into()); }
             if rbtn(ui, "▤", "Flashcards", false).tip("Write flashcards from this page into it").clicked() { self.ai_cards(); }
-            if rbtn(ui, "☑", "Action items", false).clicked() { self.chat("List the action items from this page as a checklist.".into()); }
-            if rbtn(ui, "?", "Quiz me", false).clicked() { self.chat("Write 3 short quiz questions about this page. Put the answers at the end.".into()); }
-            if rbtn(ui, "💡", "Explain", false).clicked() { self.chat("Explain the main idea of this page simply, with one example.".into()); }
+            if rbtn(ui, "☑", "Action items", false).clicked() { self.chat(tr("List the action items from this page as a checklist.").into()); }
+            if rbtn(ui, "?", "Quiz me", false).clicked() { self.chat(tr("Write 3 short quiz questions about this page. Put the answers at the end.").into()); }
+            if rbtn(ui, "💡", "Explain", false).clicked() { self.chat(tr("Explain the main idea of this page simply, with one example.").into()); }
         });
         let has_text = self.st.last_text.is_some();
         group(ui, "Writing", |ui| {
@@ -1196,8 +1198,10 @@ impl NotesApp {
                     _ => {}
                 }
             }
+            let here = snap.id == self.page().id;
             self.st.snap(&snap);
-            self.st.say("Done ✓ (Undo brings it back)");
+            // undo only acts on the page in front
+            self.st.say(if here { "Done ✓ (Undo brings it back)" } else { "Done ✓" });
         }
         if let Some((a, b, c)) = go { self.go_to(a, b, c); self.st.tasks = false; }
     }
@@ -1213,7 +1217,7 @@ impl NotesApp {
                 let info = if page.kind == PageKind::Deck { tf!("{n} cards · {ready} ready to study", n = page.cards.len(), ready = page.deck().len()) } else { [(words, tr("{n} word"), tr("{n} words")), (page.blocks.len(), tr("{n} note"), tr("{n} notes")), (page.strokes.len(), tr("{n} ink stroke"), tr("{n} ink strokes"))]
                     .iter().map(|(n, one, many)| crate::i18n::fill(if *n == 1 { one } else { many }, &[("n", n)])).collect::<Vec<_>>().join(" · ") };
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new(tr(if self.st.dirty { "Saving…" } else { "✓ Saved" })).size(11.5).weak());
+                    ui.label(RichText::new(tr(if !self.st.persist { "⚠ Not saved" } else if self.st.dirty { "Saving…" } else { "✓ Saved" })).size(11.5).weak());
                     if let Some((v, url, notes)) = self.st.update.clone() {
                         let tip = if notes.is_empty() { tr("Download it").to_string() } else { format!("{notes}\n\n{}", tr("Click to download it. Right-click: not this version.")) };
                         let b = ui.add(egui::Button::new(RichText::new(tf!("⬆ Leaf Notes {v} is available", v = v.trim_start_matches('v'))).size(11.5).color(accent(ui))).frame_when_inactive(false)).tip(tip);
@@ -1507,7 +1511,7 @@ impl NotesApp {
     fn add_section(&mut self) {
         let nb = &mut self.store.notebooks[self.nb];
         let c = PALETTE[(nb.sections.len() + 1) % PALETTE.len()];
-        let s = Section { id: new_id(), name: "New section".into(), color: c, pages: vec![], lock: None };
+        let s = Section { id: new_id(), name: tr("New section").into(), color: c, pages: vec![], lock: None };
         self.st.rename = Some((s.id, s.name.clone()));
         nb.sections.push(s);
         let (n, i) = (self.nb, nb.sections.len() - 1);
@@ -1751,7 +1755,7 @@ impl NotesApp {
                 ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
                 for (label, prompt) in [("Summarize", "Summarize this page in a few bullet points."), ("Action items", "List the action items from this page as a checklist."),
                     ("Quiz me", "Write 3 short quiz questions about this page. Put the answers at the end."), ("Explain", "Explain the main idea of this page simply, with one example.")] {
-                    if ui.add(egui::Button::new(RichText::new(tr(label)).size(12.0)).corner_radius(10)).clicked() { self.chat(prompt.into()); }
+                    if ui.add(egui::Button::new(RichText::new(tr(label)).size(12.0)).corner_radius(10)).clicked() { self.chat(tr(prompt).into()); } // asked in the interface's language, so answered in it
                 }
                 // the person's own prompts (Settings ▸ AI)
                 for p in self.st.p.prompts.clone().lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from) {
@@ -1908,7 +1912,7 @@ impl NotesApp {
             0 => { self.new_page(None); }
             1 => self.new_deck("New deck", vec![]),
             2 => self.start_review(),
-            3 => self.st.tasks = true,
+            3 => { self.st.tasks = true; self.st.p.show_nav = true; } // the list is in the side panel
             4 => self.st.show_settings = true,
             5 => self.st.show_trash = true,
             6 => self.show_history(),

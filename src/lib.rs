@@ -429,6 +429,9 @@ struct St {
     persist: bool,
 }
 
+/// The deck made from a page's notes (found again by this name to add more cards).
+fn deck_name(title: &str) -> String { tf!("{title} — cards", title = title) }
+
 /// What copied ink puts on the clipboard (readable if pasted somewhere else), so Ctrl+V can paste it back.
 const INK_MARK: &str = "(Leaf Notes drawing)";
 fn is_ink_mark(t: &str) -> bool { let t = t.trim(); t == INK_MARK || t == tr(INK_MARK) }
@@ -864,7 +867,7 @@ impl NotesApp {
         if let Some(i) = self.store.notebooks.iter().position(|n| n.id == id) {
             let mut n = self.store.notebooks.remove(i);
             for s in &mut n.sections { self.close_for_bin(s); }
-            binned.push(Trashed { label: format!("Notebook “{}”", n.name), deleted: now, item: TrashItem::Notebook(n), at: Some(i) });
+            binned.push(Trashed { label: tf!("Notebook “{name}”", name = n.name), deleted: now, item: TrashItem::Notebook(n), at: Some(i) });
         }
         let mut found = None;
         for (a, n) in self.store.notebooks.iter().enumerate() {
@@ -878,19 +881,19 @@ impl NotesApp {
                 let mut s = self.store.notebooks[a].sections.remove(i);
                 self.close_for_bin(&mut s);
                 let n = &self.store.notebooks[a];
-                binned.push(Trashed { label: format!("Section “{}” from {}", s.name, n.name), deleted: now, item: TrashItem::Section { notebook: n.id, section: s }, at: Some(i) });
+                binned.push(Trashed { label: tf!("Section “{name}” from {nb}", name = s.name, nb = n.name), deleted: now, item: TrashItem::Section { notebook: n.id, section: s }, at: Some(i) });
             }
             Some((a, b, Some(i))) => {
                 let p = self.store.notebooks[a].sections[b].pages.remove(i);
                 let (n, s) = (&self.store.notebooks[a], &self.store.notebooks[a].sections[b]);
                 let (nid, nname) = (n.id, n.name.clone());
                 if s.lock.is_none() {
-                    binned.push(Trashed { label: format!("Page “{}” from {} › {}", p.title, nname, s.name), deleted: now, item: TrashItem::Page { notebook: nid, section: s.id, page: p }, at: Some(i) });
+                    binned.push(Trashed { label: tf!("Page “{title}” from {nb} › {sec}", title = p.title, nb = nname, sec = s.name), deleted: now, item: TrashItem::Page { notebook: nid, section: s.id, page: p }, at: Some(i) });
                 } else {
                     // a page of an opened locked section waits in the bin encrypted, as a one-page locked section (same password)
                     let from = s.clone_meta();
                     match self.sealed_page_for_bin(&from, p) {
-                        Ok(section) => binned.push(Trashed { label: format!("A page from {} › {} (locked)", nname, from.name), deleted: now, item: TrashItem::Section { notebook: nid, section }, at: None }),
+                        Ok(section) => binned.push(Trashed { label: tf!("A page from {nb} › {name} (locked)", nb = nname, name = from.name), deleted: now, item: TrashItem::Section { notebook: nid, section }, at: None }),
                         Err(p) => { self.store.notebooks[a].sections[b].pages.insert(i, p); self.st.say("Couldn't delete this page."); return; }
                     }
                 }
@@ -1139,7 +1142,7 @@ impl NotesApp {
                         .filter(|(q, a)| !q.is_empty() && !a.is_empty()).collect();
                     if cards.is_empty() { self.st.say("⚠ The AI didn't return any flashcards — try again."); continue; }
                     let n = cards.len();
-                    self.new_deck(&format!("{title} — cards"), cards);
+                    self.new_deck(&deck_name(&title), cards);
                     self.st.say(tf!("Made a deck of {n} cards — edit anything you like, then press Study.", n = n));
                 }
                 (Job::Chat, Err(e)) => { self.st.ai_log.push((true, format!("⚠ {e}"))); self.st.say(e); }
@@ -1172,7 +1175,7 @@ impl NotesApp {
                     self.st.snap(&snap);
                     let mut extra = String::new();
                     for name in names.lines() {
-                        if let Some(n) = name.strip_prefix('…') { extra = format!(" (first 60 of {n} pages)"); continue; }
+                        if let Some(n) = name.strip_prefix('…') { extra = tf!(" (first 60 of {n} pages)", n = n); continue; }
                         let (w, h) = image::image_dimensions(files_path(name)).unwrap_or((800, 1000));
                         let width = 640.0;
                         let y = { let heights = std::mem::take(&mut self.st.heights); let y = self.find_page(page).map_or(8.0, |p| p.blocks.iter().map(|b| b.pos[1] + heights.get(&b.id).copied().unwrap_or(40.0) + 18.0).fold(8.0, f32::max)); self.st.heights = heights; y };
@@ -1430,7 +1433,7 @@ impl NotesApp {
             return;
         }
         // run again on a growing page: the new cards join the deck made before, instead of a second deck
-        let name = format!("{title} — cards");
+        let name = deck_name(&title);
         if let Some(d) = self.section().pages.iter_mut().find(|p| p.kind == PageKind::Deck && p.title == name) {
             let (before, snap) = (d.cards.len(), d.clone());
             for (f, b) in cards { if !d.cards.iter().any(|c| c.front.trim() == f.trim()) { d.cards.push(DeckCard::new(&f, &b)); } }
@@ -1447,7 +1450,7 @@ impl NotesApp {
     /// One note as a flashcard in this page's deck (made next to the page if there's none yet), without leaving the page.
     fn add_card(&mut self, front: String, back: String) {
         let title = { let t = self.page().title.clone(); if t.trim().is_empty() { tr("Untitled page").to_string() } else { t } };
-        let name = format!("{title} — cards");
+        let name = deck_name(&title);
         let sealed = self.section().sealed();
         let found = self.section().pages.iter_mut().find(|p| p.kind == PageKind::Deck && p.title == name);
         match found {
@@ -1728,7 +1731,7 @@ impl NotesApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) { self.st.show_shortcuts = true; }
         if !typing && cmd(Key::D) { self.duplicate_page(nb, sec, pg); }
         if !typing && cmd(Key::B) { self.st.p.show_nav ^= true; }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) { self.st.tasks ^= true; }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) { self.st.tasks ^= true; if self.st.tasks { self.st.p.show_nav = true; } }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R)) { self.start_review(); }
         if cmd(Key::Comma) { self.st.show_settings = true; }
         if cmd(Key::F) { if self.st.narrow { self.st.p.show_nav = true; } self.st.focus_id = Some(egui::Id::unique("search")); }
@@ -1736,6 +1739,8 @@ impl NotesApp {
         // Android's Back: closes whatever is on top, one thing per press; with nothing open, leaves the app
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::BrowserBack)) { self.back(ctx); return; }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            // the sync question needs an answer: Esc mustn't act on what's behind it
+            if self.st.sync_ask.is_some() { return; }
             if self.st.popup.take().is_some() || self.st.switcher.take().is_some() { return; }
             if self.st.capture.is_some() { self.cancel_capture("PDF export cancelled."); return; }
             // Esc is taken here every frame, so the windows that say "Close (Esc)" are closed here too
@@ -1745,7 +1750,7 @@ impl NotesApp {
             if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some() || st.lock_prompt.take().is_some()
                 || st.ink_review.take().is_some() || st.drop_pdf.take().is_some() || st.transcribe_ask.take().is_some() || st.restore_ask.take().is_some()
                 || std::mem::take(&mut st.show_settings) || std::mem::take(&mut st.show_help) || std::mem::take(&mut st.show_news)
-                || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) || std::mem::take(&mut st.mic_prompt) { return; }
+                || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) || std::mem::take(&mut st.mic_prompt) || st.crash.take().is_some() { return; }
             self.st.selected.clear();
             self.st.editing = None;
             self.st.search.clear();
@@ -1756,12 +1761,14 @@ impl NotesApp {
 
     fn back(&mut self, ctx: &egui::Context) {
         let st = &mut self.st;
-        if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); }
+        if st.sync_ask.is_some() {} // needs an answer
+        else if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); }
         else if st.popup.take().is_some() || st.switcher.take().is_some() {}
         else if st.tour.take().is_some() { st.tour_fresh = false; }
         else if st.capture.is_some() { self.cancel_capture("PDF export cancelled."); }
         else if st.study.take().is_some() || st.history.take().is_some() || st.compare.take().is_some()
-            || st.ink_review.take().is_some() || st.drop_pdf.take().is_some() || st.transcribe_ask.take().is_some() || st.restore_ask.take().is_some() {}
+            || st.ink_review.take().is_some() || st.drop_pdf.take().is_some() || st.transcribe_ask.take().is_some() || st.restore_ask.take().is_some()
+            || st.lock_prompt.take().is_some() || std::mem::take(&mut st.mic_prompt) || st.crash.take().is_some() {}
         else if std::mem::take(&mut st.show_settings) || std::mem::take(&mut st.show_help) || std::mem::take(&mut st.show_news) || std::mem::take(&mut st.show_trash) || std::mem::take(&mut st.show_shortcuts) {}
         else if st.editing.take().is_some() || !std::mem::take(&mut st.selected).is_empty() {}
         else if st.narrow && st.p.show_ai { st.p.show_ai = false; }
