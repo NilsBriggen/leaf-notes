@@ -427,9 +427,18 @@ struct St {
     persist: bool,
 }
 
+/// What copied ink puts on the clipboard (readable if pasted somewhere else), so Ctrl+V can paste it back.
+const INK_MARK: &str = "(Leaf Notes drawing)";
+fn is_ink_mark(t: &str) -> bool { let t = t.trim(); t == INK_MARK || t == tr(INK_MARK) }
+
+/// `Page` has no `PartialEq`; its JSON is stable (no unordered maps inside).
+fn same_page(a: &Page, b: &Page) -> bool { serde_json::to_vec(a).ok() == serde_json::to_vec(b).ok() }
+
 impl St {
     /// Remember the page before a change so Undo can bring it back.
     fn snap(&mut self, page: &Page) {
+        // a step that changed nothing (focusing a field, tabbing through a table) isn't kept twice
+        if self.undo.iter().rev().find(|(id, _)| *id == page.id).is_some_and(|(_, p)| same_page(p, page)) { self.dirty = true; return; }
         self.undo.push((page.id, page.clone()));
         if self.undo.len() > 80 { self.undo.remove(0); }
         self.redo.clear();
@@ -989,17 +998,26 @@ impl NotesApp {
         }
     }
 
-    fn undo(&mut self, redo: bool) {
+    /// Undo (or redo) the last change to the page in front. False when there was nothing to take back.
+    fn undo(&mut self, redo: bool) -> bool {
         // only the page in front: undoing changes on a page you can't see would look like nothing happened
         let here = self.page().id;
-        let stack = if redo { &mut self.st.redo } else { &mut self.st.undo };
-        let popped = stack.iter().rposition(|(id, _)| *id == here).map(|i| stack.remove(i));
-        let Some((id, old)) = popped else { self.st.say(if redo { "Nothing to redo." } else { "Nothing to undo." }); return };
-        let Some(p) = self.find_page(id) else { return };
-        let cur = std::mem::replace(p, old);
-        if redo { self.st.undo.push((id, cur)) } else { self.st.redo.push((id, cur)) }
-        self.st.dirty = true;
-        self.st.selected.clear();
+        loop {
+            let stack = if redo { &mut self.st.redo } else { &mut self.st.undo };
+            let popped = stack.iter().rposition(|(id, _)| *id == here).map(|i| stack.remove(i));
+            let Some((id, mut old)) = popped else { self.st.say(if redo { "Nothing to redo." } else { "Nothing to undo." }); return false };
+            let Some(p) = self.find_page(id) else { return false };
+            // steps that changed nothing are skipped, so one Ctrl+Z always does something
+            if same_page(p, &old) { continue; }
+            // the title (links to it were renamed along) and the outline level aren't part of undo
+            old.title = p.title.clone();
+            old.level = p.level;
+            let cur = std::mem::replace(p, old);
+            if redo { self.st.undo.push((id, cur)) } else { self.st.redo.push((id, cur)) }
+            self.st.dirty = true;
+            self.st.selected.clear();
+            return true;
+        }
     }
 
     // ---------- AI ----------
@@ -1412,10 +1430,10 @@ impl NotesApp {
         // run again on a growing page: the new cards join the deck made before, instead of a second deck
         let name = format!("{title} — cards");
         if let Some(d) = self.section().pages.iter_mut().find(|p| p.kind == PageKind::Deck && p.title == name) {
-            let before = d.cards.len();
+            let (before, snap) = (d.cards.len(), d.clone());
             for (f, b) in cards { if !d.cards.iter().any(|c| c.front.trim() == f.trim()) { d.cards.push(DeckCard::new(&f, &b)); } }
             let n = d.cards.len() - before;
-            self.st.dirty = true;
+            self.st.snap(&snap);
             self.st.say(tf!("Added {n} new card(s) to “{deck}”.", n = n, deck = name));
             return;
         }
@@ -1431,7 +1449,7 @@ impl NotesApp {
         let sealed = self.section().sealed();
         let found = self.section().pages.iter_mut().find(|p| p.kind == PageKind::Deck && p.title == name);
         match found {
-            Some(d) => d.cards.push(DeckCard::new(&front, &back)),
+            Some(d) => { let snap = d.clone(); d.cards.push(DeckCard::new(&front, &back)); self.st.snap(&snap); }
             None if !sealed => {
                 let (pg, sec) = (self.pg, self.section());
                 let deck = Page { kind: PageKind::Deck, cards: vec![DeckCard::new(&front, &back)], ..Page::new(&name) };
@@ -1577,20 +1595,16 @@ impl NotesApp {
         if let Some((rec, pid, id, start)) = self.st.recorder.take() {
             let file = rec.path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
             let r = rec.stop();
-            let _ = std::fs::remove_file(rec_marker(id));
             #[cfg(target_os = "android")]
             droid::recording(false);
             match r {
                 Ok(secs) => {
-                    let rec = Recording { id, file, start, secs };
-                    match self.find_page(pid) {
-                        Some(p) => p.recordings.push(rec),
-                        None => { self.page().recordings.push(rec); self.st.say("The page you recorded on was deleted, so the recording was kept on this page."); return; }
-                    }
-                    self.st.dirty = true;
-                    self.st.say("Recording saved — press ▶ under the title, or tap a note to hear that moment.");
+                    let _ = std::fs::remove_file(rec_marker(id));
+                    if self.attach_recording(pid, Recording { id, file, start, secs }) { self.st.say("Recording saved — press ▶ under the title, or tap a note to hear that moment."); }
+                    else { self.st.say("The page you recorded on was deleted, so the recording was kept on this page."); }
                 }
-                Err(e) => self.st.say(format!("⚠ {e}")),
+                // the marker stays, so what was recorded is picked up like after a crash
+                Err(e) => { self.st.say(format!("⚠ {e}")); self.recover_recordings(); }
             }
             return;
         }
@@ -1621,6 +1635,17 @@ impl NotesApp {
     }
 
     /// Recordings that were still going when the app last stopped: finished and put back on their page.
+    /// Put a finished recording on its page (or this one, if that page is gone: false). Undo steps are
+    /// whole pages, so they get it too: undoing a stroke mustn't take the recording away.
+    fn attach_recording(&mut self, pid: u64, rec: Recording) -> bool {
+        let found = self.find_page(pid).is_some();
+        let on = if found { pid } else { self.page().id };
+        for (i, p) in self.st.undo.iter_mut().chain(self.st.redo.iter_mut()) { if *i == on { p.recordings.push(rec.clone()); } }
+        if let Some(p) = self.find_page(on) { p.recordings.push(rec); }
+        self.st.dirty = true;
+        found
+    }
+
     fn recover_recordings(&mut self) {
         let dir = data_dir().join("files");
         let mut found = 0;
@@ -1632,8 +1657,7 @@ impl NotesApp {
             if let Some(secs) = audio::finish_unfinished(&dir.join(format!("{id}.wav"))) {
                 let known = self.store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).any(|p| p.recordings.iter().any(|r| r.id == id));
                 if !known && secs > 0.0 {
-                    let rec = Recording { id, file: format!("{id}.wav"), start, secs };
-                    match self.find_page(pid) { Some(p) => p.recordings.push(rec), None => self.page().recordings.push(rec) }
+                    self.attach_recording(pid, Recording { id, file: format!("{id}.wav"), start, secs });
                     found += 1;
                 }
             }
@@ -1660,11 +1684,13 @@ impl NotesApp {
             if !self.st.selected.is_empty() && (key(Key::Delete) || key(Key::Backspace)) { self.delete_selected_ink(); }
             if self.st.tool == Tool::Lasso {
                 if cmd(Key::A) { self.st.selected = self.page().strokes.iter().map(|s| s.id).collect(); }
-                if !self.st.selected.is_empty() && cmd(Key::C) { self.copy_ink(false); }
-                if !self.st.selected.is_empty() && cmd(Key::X) { self.copy_ink(true); }
-                // egui turns Ctrl+V into a Paste event (it carries the clipboard text, maybe empty)
-                if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)))) || cmd(Key::V) { self.paste_ink(); }
+                // egui turns Ctrl+C / Ctrl+X into Copy / Cut events, with no key event
+                let ev = |f: fn(&egui::Event) -> bool| ctx.input(|i| i.events.iter().any(f));
+                if !self.st.selected.is_empty() && (cmd(Key::C) || ev(|e| matches!(e, egui::Event::Copy))) { self.copy_ink(ctx, false); }
+                if !self.st.selected.is_empty() && (cmd(Key::X) || ev(|e| matches!(e, egui::Event::Cut))) { self.copy_ink(ctx, true); }
             }
+            // Ctrl+V arrives as a Paste event, and only with text on the clipboard: copying ink puts a marker there
+            if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(t) if is_ink_mark(t)))) || cmd(Key::V) { self.paste_ink(); }
             // ← / → skip 10 seconds in the recording that's playing
             if let (Some(pl), false) = (&self.st.player, ctx.input(|i| i.modifiers.alt)) {
                 if key(Key::ArrowLeft) { pl.seek(pl.time() - 10.0); }
@@ -1760,10 +1786,11 @@ impl NotesApp {
     }
 
     /// Lasso clipboard: copy (and cut) the selected ink; paste puts it back a little offset, selected.
-    pub(crate) fn copy_ink(&mut self, cut: bool) {
+    pub(crate) fn copy_ink(&mut self, ctx: &egui::Context, cut: bool) {
         let sel = self.st.selected.clone();
         if sel.is_empty() { return; }
         self.st.ink_clip = self.page().strokes.iter().filter(|s| sel.contains(&s.id)).cloned().collect();
+        ctx.copy_text(tr(INK_MARK).to_string());
         if cut { self.delete_selected_ink(); }
         self.st.say(if cut { "Cut. Paste with Ctrl+V." } else { "Copied. Paste with Ctrl+V, also on another page." });
     }
@@ -1848,8 +1875,8 @@ impl eframe::App for NotesApp {
             // the first finger may also have tapped the paper and started an empty note: drop it
             self.st.editing = None;
             self.st.current = None;
-            self.undo(tap >= 3);
-            self.st.say(if tap >= 3 { "Redone (three-finger tap)." } else { "Undone (two-finger tap). Tap with three fingers to redo." });
+            // undo says so itself when there was nothing to take back
+            if self.undo(tap >= 3) { self.st.say(if tap >= 3 { "Redone (three-finger tap)." } else { "Undone (two-finger tap). Tap with three fingers to redo." }); }
         }
         if self.st.p.follow_system {
             if let Some(t) = ctx.system_theme() {
@@ -2237,5 +2264,28 @@ mod picture_tests {
         assert_eq!(image::image_dimensions(dir.join("a.png")).unwrap(), (2400, 80));
         assert_eq!(std::fs::read(dir.join("b.png")).unwrap(), std::fs::read(&small).unwrap()); // small ones are copied as they are
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod undo_tests {
+    use super::*;
+    #[test]
+    fn undo_keeps_recordings_and_skips_empty_steps() {
+        let mut app = crate::safety::tests::app();
+        let before = app.page().clone();
+        app.st.snap(&before); // focusing a field
+        app.st.snap(&before); // and another: no second step
+        assert_eq!(app.st.undo.len(), 1);
+        let snap = app.page().clone();
+        app.page().strokes.push(Stroke { id: 1, points: vec![[0.0, 0.0, 1.0]], color: [0, 0, 0, 255], width: 2.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 });
+        app.st.snap(&snap);
+        let pid = app.page().id;
+        assert!(app.attach_recording(pid, Recording { id: 9, file: "9.wav".into(), start: 0.0, secs: 1.0 }));
+        assert!(app.undo(false), "takes back the stroke");
+        assert_eq!(app.page().strokes.len(), before.strokes.len());
+        assert!(app.page().recordings.iter().any(|r| r.id == 9), "the recording stays");
+        assert!(!app.undo(false), "the focus step changed nothing, so there's nothing left");
+        assert!(app.undo(true) && app.page().strokes.len() == before.strokes.len() + 1);
     }
 }

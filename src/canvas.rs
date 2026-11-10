@@ -1324,6 +1324,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
     let mut remove = None;
     let mut swap = None;
     let mut changed = false;
+    let mut focus_snap = false;
     let colors = rich::Colors::from(ui, acc);
     egui::ScrollArea::vertical().id_salt(("deck", page.id)).auto_shrink([false; 2]).show(ui, |ui| {
         ui.set_max_width(ui.available_width().min(900.0) - 12.0);
@@ -1354,6 +1355,7 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
                         let r = ui.add(egui::TextEdit::multiline(text).id(id).hint_text(hint).desired_rows(2).desired_width(f32::INFINITY).layouter(&mut layouter)
                             .background_color(ui.visuals().faint_bg_color).margin(egui::Margin::symmetric(8, 6)));
                         if st.focus_id == Some(id) { r.request_focus(); st.focus_id = None; }
+                        focus_snap |= r.gained_focus();
                         changed |= r.changed();
                         // Ctrl+Enter on the back: the next card, without reaching for the mouse
                         if k == 1 && r.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) { add_after = Some(i); }
@@ -1409,6 +1411,8 @@ fn deck_view(ui: &mut egui::Ui, page: &mut Page, st: &mut St, study: &std::colle
         ui.label(RichText::new(tr("Tip: Tab jumps from front to back, Ctrl+Enter adds the next card. Use $x^2$ for maths and **bold** for emphasis.")).size(11.5).weak());
         ui.add_space(30.0);
     });
+    // starting to type on a card is an undo step (kept only if something changes)
+    if focus_snap { st.snap(page); }
     if let Some(i) = remove { st.snap(page); page.cards.remove(i); }
     if let Some((a, b)) = swap { st.snap(page); page.cards.swap(a, b); }
     if changed { st.dirty = true; }
@@ -1440,7 +1444,8 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
     let ctx = ui.ctx().clone();
     let acc = accent(ui);
     let mut changed = false;
-    let focus = |r: &egui::Response, st: &mut St| { if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; } };
+    // starting to type in a field is an undo step (the snapshot is skipped if nothing changes)
+    let focus = |r: &egui::Response, st: &mut St| { if st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; } if r.gained_focus() { st.want_snap = true; } };
     match &mut b.kind {
         Kind::Text { text, heading } => {
             let has_focus = ui.memory(|m| m.has_focus(id));
@@ -1598,7 +1603,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     }
                     if r.has_focus() && was_empty && n > 1 && ui.input(|i| i.key_pressed(Key::Backspace)) { remove = Some(i); }
                     // a visible way to remove an item (an empty field may send no Backspace on a phone)
-                    if active && n > 1 && ui.add(egui::Button::new(RichText::new("×").weak()).frame_when_inactive(false)).tip("Remove this item").clicked() { remove = Some(i); }
+                    if active && n > 1 && ui.add(egui::Button::new(RichText::new("×").weak()).frame_when_inactive(false)).tip("Remove this item").clicked() { remove = Some(i); st.snap_press = true; }
                 });
             }
             if let Some((i, rest)) = new_item {
@@ -1617,7 +1622,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                     ui.painter().rect_filled(Rect::from_min_size(r.min, Vec2::new(r.width() * done as f32 / items.len() as f32, r.height())), 2.0, acc);
                     ui.label(RichText::new(tf!("{done} of {items_n} done", done = done, items_n = items.len())).size(11.0).weak());
                 }
-                if active && ui.small_button(tr("+ item")).clicked() { items.push((false, String::new())); st.focus_id = Some(egui::Id::unique(("chk", b.id, items.len() - 1))); changed = true; }
+                if active && ui.small_button(tr("+ item")).clicked() { st.snap_press = true; items.push((false, String::new())); st.focus_id = Some(egui::Id::unique(("chk", b.id, items.len() - 1))); changed = true; }
             });
         }
         Kind::Table { rows } => {
@@ -1641,6 +1646,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                             let r = ui.add(te);
                             ui.painter().hline(r.rect.x_range(), r.rect.bottom() + 2.0, ui.visuals().widgets.noninteractive.bg_stroke);
                             if (ri == 0 && ci == 0 && st.focus_id == Some(id)) || st.focus_id == Some(r.id) { r.request_focus(); st.focus_id = None; }
+                            if r.gained_focus() { st.want_snap = true; }
                             changed |= r.changed();
                             // Tab in the last cell: a new row, ready to type in
                             if r.has_focus() && ri + 1 == n_rows && ci + 1 == cols && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) { add_row = true; }
@@ -1666,7 +1672,9 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             egui::Frame::new().fill(if dark { Color32::from_rgb(20, 24, 25) } else { Color32::from_rgb(244, 247, 248) }).stroke(ui.visuals().widgets.noninteractive.bg_stroke).corner_radius(8).inner_margin(8).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("{ }").size(11.0).color(acc));
-                    changed |= ui.add(egui::TextEdit::singleline(lang).desired_width(90.0).font(egui::TextStyle::Small).frame(egui::Frame::NONE)).changed();
+                    let r = ui.add(egui::TextEdit::singleline(lang).desired_width(90.0).font(egui::TextStyle::Small).frame(egui::Frame::NONE));
+                    if r.gained_focus() { st.want_snap = true; }
+                    changed |= r.changed();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { if ui.small_button(tr("⧉ Copy")).clicked() { ui.ctx().copy_text(code.clone()); } });
                 });
                 let r = ui.add(egui::TextEdit::multiline(code).id(id).code_editor().desired_rows(2).desired_width(w - 16.0).frame(egui::Frame::NONE));

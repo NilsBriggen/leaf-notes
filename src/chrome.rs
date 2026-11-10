@@ -813,7 +813,7 @@ impl NotesApp {
                     self.st.snap(&snap);
                     self.st.selected = ids;
                 }
-                if rbtn(ui, "⎘", "Copy", false).tip("Copy the selected ink (Ctrl+C); paste with Ctrl+V, also on another page").clicked() { self.copy_ink(false); }
+                if rbtn(ui, "⎘", "Copy", false).tip("Copy the selected ink (Ctrl+C); paste with Ctrl+V, also on another page").clicked() { self.copy_ink(ui.ctx(), false); }
                 if rbtn(ui, "🗑", "Delete", false).clicked() { self.delete_selected_ink(); }
                 // recolour the selection with one tap (highlights get the highlighter colours)
                 ui.vertical(|ui| {
@@ -1075,7 +1075,7 @@ impl NotesApp {
                 if rbtn(ui, icon, label, paper == p).clicked() { set = Some(p); }
             }
         });
-        if let Some(p) = set { self.page().paper = p; self.st.dirty = true; }
+        if let Some(p) = set { let snap = self.page().clone(); self.page().paper = p; self.st.snap(&snap); }
         group(ui, "Page zoom", |ui| {
             if rbtn(ui, "−", "Zoom out", false).tip("Or pinch / Ctrl+scroll on the page").clicked() { self.st.zoom_req = Some(ZoomReq::By(1.0 / 1.25)); }
             if rbtn(ui, &format!("{:.0}%", self.st.zoom_now * 100.0), "Actual size", false).clicked() { self.st.zoom_req = Some(ZoomReq::To(1.0)); }

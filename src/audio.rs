@@ -132,12 +132,15 @@ impl Downmix {
         self.sum += frame_avg;
         self.count += 1;
         self.phase += 1.0;
+        // a microphone slower than 16 kHz gives several output samples per input one: repeat it (not silence)
+        let v = ((self.sum / self.count as f32).clamp(-1.0, 1.0) * 32767.0) as i16;
+        let mut pushed = false;
         while self.phase >= self.step {
-            out.push(((self.sum / self.count.max(1) as f32).clamp(-1.0, 1.0) * 32767.0) as i16);
-            self.sum = 0.0;
-            self.count = 0;
+            out.push(v);
+            pushed = true;
             self.phase -= self.step;
         }
+        if pushed { self.sum = 0.0; self.count = 0; }
     }
     fn feed<T: SizedSample>(&mut self, data: &[T], out: &mut Vec<i16>) where f32: FromSample<T> {
         for frame in data.chunks(self.channels.max(1)) {
@@ -297,6 +300,15 @@ mod tests {
         assert!(pl.time() > 0.1, "playback advances: {}", pl.time());
         println!("played {:.2}s of {:.2}s", pl.time(), pl.len);
     }
+    #[test]
+    fn a_slow_microphone_is_not_padded_with_silence() {
+        let mut dm = Downmix { channels: 1, step: 8_000.0 / RATE as f64, phase: 0.0, sum: 0.0, count: 0 };
+        let mut out = vec![];
+        dm.feed(&vec![0.5f32; 8_000], &mut out);
+        assert!((out.len() as i64 - RATE as i64).abs() <= 1, "{}", out.len());
+        assert!(out.iter().all(|s| *s > 16_000), "no gaps of silence");
+    }
+
     #[test]
     fn downmixes_to_16k_and_reads_back() {
         // one second of 48 kHz stereo becomes one second of 16 kHz mono
