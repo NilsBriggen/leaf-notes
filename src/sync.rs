@@ -91,6 +91,8 @@ impl PendingBase {
 /// One sync round. `home` is this device's data folder. `quick` uses short timeouts (when closing the app).
 pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, quick: bool) -> Result<Outcome, String> {
     let remote = Remote::new(s, quick)?;
+    // closing the app: the files get about 10 s in all, the rest go next time
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let base: Option<Base> = std::fs::read(home.join(BASE_FILE)).ok().and_then(|b| serde_json::from_slice::<Base>(&b).ok()).filter(|b| b.target == s.target());
     let files = home.join("files");
     // files that wouldn't go up or down this round: tried once, reported, and the notes still sync
@@ -127,7 +129,7 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
             if sent.contains(&f) { have.push(f); continue; }
             match remote.put_file(&f, &files.join(&f)) { Ok(()) => { sent.push(f.clone()); have.push(f); up += 1; } Err(e) => failed.push((f, e)) }
             // closing the app: one failed upload means the connection is poor, so the rest wait for next time
-            if quick && !failed.is_empty() { break; }
+            if quick && (!failed.is_empty() || std::time::Instant::now() > deadline) { break; }
         }
         // on the way out only send: missing files come down next time
         for f in have.iter().filter(|_| !quick) {

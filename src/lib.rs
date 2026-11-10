@@ -662,6 +662,9 @@ impl NotesApp {
             }
         };
         model::rekey_study(&mut store);
+        // exports on Android only exist to be handed to the share menu (which takes its own copy): last session's can go
+        #[cfg(target_os = "android")]
+        if persist { let _ = std::fs::remove_dir_all(data_dir().join("exports")); }
         let (load_msg, store_ok) = if instance.is_err() { (Some(tr("⚠ Leaf Notes is already open in another window. This window shows your notes but doesn't save them.").to_string()), false) } else { (load_msg, store_ok) };
         let mut ai: ai::AiSettings = if persist { load(SETTINGS_FILE).unwrap_or_default() } else { ai::AiSettings::default() };
         let fresh_install = persist && !data_dir().join(PREFS_FILE).exists() && !data_dir().join(storage::LIBRARY).exists();
@@ -1230,7 +1233,11 @@ impl NotesApp {
         let is_image = how == Ins::Picture || matches!(ext.as_str(), "png" | "jpg" | "jpeg");
         let stored = format!("{}.{ext}", new_id());
         let dir = data_dir().join("files");
-        let copied = std::fs::create_dir_all(&dir).and_then(|_| if is_image { store_picture(path, &dir.join(&stored)) } else { std::fs::copy(path, dir.join(&stored)) });
+        // written under a dot name first (sync skips those), so a sync round never uploads half a file
+        let part = dir.join(format!(".{stored}"));
+        let copied = std::fs::create_dir_all(&dir).and_then(|_| if is_image { store_picture(path, &part) } else { std::fs::copy(path, &part) })
+            .and_then(|n| std::fs::rename(&part, dir.join(&stored)).map(|_| n));
+        if copied.is_err() { let _ = std::fs::remove_file(&part); }
         match copied {
             Err(e) => self.st.say(tf!("⚠ Could not add {path}: {e}", path = path.display(), e = e)),
             Ok(size) => {
@@ -1857,7 +1864,8 @@ impl eframe::App for NotesApp {
             let pic = image::RgbaImage::from_raw(img.size[0] as u32, img.size[1] as u32, img.as_raw().to_vec()).map(image::DynamicImage::ImageRgba8)
                 .map(|p| if p.width().max(p.height()) > 2400 { p.resize(2400, 2400, image::imageops::FilterType::Triangle) } else { p });
             let r = std::fs::create_dir_all(&dir).map_err(|e| e.to_string())
-                .and_then(|_| pic.ok_or_else(|| "not a picture".to_string())?.save(dir.join(&file)).map_err(|e| e.to_string()));
+                .and_then(|_| pic.ok_or_else(|| "not a picture".to_string())?.save(dir.join(format!(".{file}"))).map_err(|e| e.to_string()))
+                .and_then(|_| std::fs::rename(dir.join(format!(".{file}")), dir.join(&file)).map_err(|e| e.to_string()));
             match r { Ok(()) => { self.insert(Kind::Image { file }); self.st.editing = None; self.st.say("Pasted the picture onto the page."); } Err(e) => self.st.say(tf!("⚠ Couldn't paste the picture: {e}", e = e)) }
         }
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {

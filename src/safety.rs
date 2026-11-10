@@ -106,6 +106,7 @@ impl NotesApp {
             ui.set_width(crate::fit_w(ui.ctx(), 440.0));
             ui.label(RichText::new(tr("Restore a backup")).font(rich::serif(20.0)));
             ui.label(tf!("This backup has {n} notebook(s) with {p} page(s).", n = notebooks, p = pages));
+            if self.st.sync.on() { ui.label(RichText::new(tr("Sync is on: replacing everything also replaces the notes on your other devices.")).color(Color32::from_rgb(200, 120, 40))); }
             ui.add_space(8.0);
             if ui.button(tr("Add them as extra notebooks")).clicked() { choice = Some(1); }
             if ui.button(tr("Replace everything with the backup")).tip("What's here now is saved to a file in the notes folder first").clicked() { choice = Some(2); }
@@ -128,6 +129,7 @@ impl NotesApp {
                         self.st.undo.clear();
                         self.st.redo.clear();
                         crate::sync::dedupe(&mut self.store);
+                        crate::model::rekey_study(&mut self.store);
                         if self.store.notebooks.is_empty() { self.store = sample(); }
                         self.clamp();
                         self.st.full_save = true;
@@ -156,6 +158,7 @@ impl NotesApp {
         crate::sync::dedupe(&mut self.store);
         self.store.trash.extend(backup.trash);
         for (k, v) in backup.study { self.store.study.entry(k).or_insert(v); }
+        crate::model::rekey_study(&mut self.store);
         self.st.dirty = true;
         self.st.say(tf!("Restored {n} notebook(s) from the backup.", n = added));
     }

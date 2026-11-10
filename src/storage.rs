@@ -154,6 +154,8 @@ pub struct Saver {
     /// quick fingerprint of each page as last written (see `quick_sig`)
     sigs: HashMap<u64, u64>,
     history_at: HashMap<u64, u64>,
+    /// hash of the library as last written
+    library: u64,
     started: bool,
 }
 
@@ -194,7 +196,9 @@ impl Saver {
             trash: store.trash.clone(),
             study: store.study.clone(),
         };
-        write_atomic(&dir.join(LIBRARY), &serde_json::to_vec(&library)?)?;
+        let bytes = serde_json::to_vec(&library)?;
+        let h = hash(&bytes);
+        if h != self.library || !self.started { write_atomic(&dir.join(LIBRARY), &bytes)?; self.library = h; }
         if !self.started {
             self.started = true;
             // the old single file has been split up: keep it next to the new files as a backup
