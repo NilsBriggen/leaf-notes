@@ -1594,7 +1594,12 @@ impl NotesApp {
         if let Some((i, to)) = move_to {
             let p = self.store.notebooks[nb].sections[sec].pages.remove(i);
             let title = p.title.clone();
-            if let Some(s) = self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).find(|s| s.id == to) { s.pages.push(p); }
+            let pid = p.id;
+            if let Some(s) = self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).find(|s| s.id == to) {
+                // into a locked section: its earlier plain-text versions shouldn't outlive the move
+                if s.lock.is_some() { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{pid}.jsonl"))); self.st.index.forget(&[pid], self.st.persist); }
+                s.pages.push(p);
+            }
             self.st.dirty = true;
             self.st.say(tf!("Moved “{title}”.", title = title));
             self.clamp();

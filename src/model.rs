@@ -20,7 +20,7 @@ pub fn now_secs() -> u64 {
 pub struct Store {
     pub notebooks: Vec<Notebook>,
     #[serde(default)] pub trash: Vec<Trashed>,
-    /// Flashcard progress, keyed by the card's front text.
+    /// Flashcard progress, keyed by `card<id>` (deck pages) or `card_key` of the question (cards in notes).
     #[serde(default)] pub study: std::collections::HashMap<String, CardState>,
 }
 
@@ -384,7 +384,26 @@ pub const STUDY_DAYS: [u64; 6] = [0, 1, 3, 7, 16, 35];
 
 fn push_card(cards: &mut Vec<Card>, f: &str, b: &str) {
     let (f, b) = (f.trim().to_string(), b.trim().to_string());
-    if !f.is_empty() && !b.is_empty() && !cards.iter().any(|c| c.front == f) { cards.push(Card { key: f.clone(), front: f, back: b.chars().take(600).collect() }); }
+    if !f.is_empty() && !b.is_empty() && !cards.iter().any(|c| c.front == f) { cards.push(Card { key: card_key(&f), front: f, back: b.chars().take(600).collect() }); }
+}
+
+/// The progress key of a card written inside notes: a hash of its question, the same on every device
+/// (the question itself would stay readable in the library after its section is locked).
+pub fn card_key(front: &str) -> String {
+    format!("q{:016x}", front.bytes().fold(0xcbf29ce484222325u64, |h, x| (h ^ x as u64).wrapping_mul(0x100000001b3)))
+}
+
+fn is_card_key(k: &str) -> bool {
+    k.strip_prefix("card").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        || k.strip_prefix('q').is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Progress saved by older versions under the question text: moved to the hashed key.
+pub fn rekey_study(s: &mut Store) {
+    let old: Vec<String> = s.study.keys().filter(|k| !is_card_key(k)).cloned().collect();
+    for k in old {
+        if let Some(v) = s.study.remove(&k) { s.study.entry(card_key(k.trim())).or_insert(v); }
+    }
 }
 
 /// Suggest flashcards from a notes page, offline, from the ways people already write notes:
@@ -734,6 +753,19 @@ pub fn move_pages(pages: &mut Vec<Page>, from: usize, to: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_card_progress_moves_to_hashed_keys() {
+        let mut s = Store { notebooks: vec![], trash: vec![], study: Default::default() };
+        let st = CardState { bx: 3, due: 9 };
+        s.study.insert("What is a pole?".into(), st);
+        s.study.insert("card42".into(), st);
+        rekey_study(&mut s);
+        assert_eq!(s.study.get(&card_key("What is a pole?")), Some(&st));
+        assert!(s.study.contains_key("card42") && !s.study.contains_key("What is a pole?") && s.study.len() == 2);
+        rekey_study(&mut s);
+        assert_eq!(s.study.len(), 2, "already converted keys stay");
+    }
+
     #[test]
     fn the_eraser_finds_the_middle_of_a_ruler_line() {
         let line = Stroke { id: 1, points: vec![[0.0, 0.0, 1.0], [200.0, 0.0, 1.0]], color: [0, 0, 0, 255], width: 2.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 };

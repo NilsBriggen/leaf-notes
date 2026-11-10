@@ -11,6 +11,25 @@ fn pages_hash(pages: &[Page]) -> u64 {
     serde_json::to_vec(pages).unwrap_or_default().iter().fold(0xcbf29ce484222325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x100000001b3))
 }
 
+/// Older backups and safety copies still hold a newly locked section in plain text: put its locked
+/// form there too (and drop its deleted pages from their bins). Files that can't be read stay as they are.
+pub(crate) fn lock_in_backups(dir: &std::path::Path, sec: &Section) {
+    let named = |p: &std::path::Path| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".json") && (n.starts_with("before-restore-") || n.starts_with("before-sync-")));
+    let files = std::fs::read_dir(dir.join("backups")).into_iter().flatten().flatten().map(|e| e.path())
+        .chain(std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| named(p)));
+    for f in files {
+        let Ok(mut s) = std::fs::read(&f).map_err(|_| ()).and_then(|b| serde_json::from_slice::<Store>(&b).map_err(|_| ())) else { continue };
+        let mut changed = false;
+        let bin = s.trash.iter_mut().filter_map(|t| match &mut t.item { TrashItem::Section { section, .. } => Some(section), _ => None });
+        for x in s.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).chain(bin).filter(|x| x.id == sec.id && !x.sealed()) { *x = sec.clone(); changed = true; }
+        let n = s.trash.len();
+        s.trash.retain(|t| !matches!(&t.item, TrashItem::Page { section, .. } if *section == sec.id));
+        if changed || s.trash.len() != n {
+            if let Ok(b) = serde_json::to_vec(&s) { let _ = crate::storage::write_atomic(&f, &b); }
+        }
+    }
+}
+
 impl NotesApp {
     fn section_mut(&mut self, id: u64) -> Option<&mut Section> { self.store.notebooks.iter_mut().flat_map(|n| n.sections.iter_mut()).find(|s| s.id == id) }
 
@@ -67,7 +86,7 @@ impl NotesApp {
         let mut ids: Vec<u64> = s.pages.iter().map(|p| p.id).collect();
         s.lock = Some(lock);
         s.pages = vec![s.placeholder()];
-        let (name, color) = (s.name.clone(), s.color);
+        let (name, color, locked) = (s.name.clone(), s.color, s.clone());
         let nb_name = self.store.notebooks.iter().find(|n| n.sections.iter().any(|s| s.id == id)).map(|n| n.name.clone()).unwrap_or_default();
         // pages deleted from this section earlier mustn't stay readable in the bin (nor their titles): each becomes a one-page locked section
         for t in self.store.trash.iter_mut() {
@@ -82,7 +101,10 @@ impl NotesApp {
             t.at = None;
         }
         // earlier plain-text versions of these pages shouldn't outlive the lock
-        if self.st.persist { for p in &ids { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{p}.jsonl"))); } }
+        if self.st.persist {
+            for p in &ids { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{p}.jsonl"))); }
+            lock_in_backups(&data_dir(), &locked);
+        }
         self.st.index.forget(&ids, self.st.persist);
         self.st.keys.remove(&id);
         self.after_lock_change();
@@ -249,6 +271,30 @@ mod tests {
         assert!(other.is_empty() || !bin.contains(&other));
         let crate::TrashItem::Section { section, .. } = &app.store.trash.last().unwrap().item else { panic!() };
         assert!(section.sealed());
+    }
+
+    #[test]
+    fn locking_also_locks_older_backups() {
+        let mut app = crate::safety::tests::app();
+        let sec = app.store.notebooks[0].sections[0].clone();
+        let secret = sec.pages[0].title.clone();
+        let dir = std::env::temp_dir().join(format!("ln-lockbk-{}", crate::new_id()));
+        std::fs::create_dir_all(dir.join("backups")).unwrap();
+        let mut old = app.store.clone();
+        old.trash.push(crate::Trashed { label: "x".into(), deleted: 1, item: crate::TrashItem::Page { notebook: 0, section: sec.id, page: sec.pages[0].clone() }, at: None });
+        let bytes = serde_json::to_vec(&old).unwrap();
+        for f in ["backups/2026-01-01.json", "before-sync-1.json", "before-restore-1.json"] { std::fs::write(dir.join(f), &bytes).unwrap(); }
+        std::fs::write(dir.join("backups/broken.json"), b"{").unwrap();
+        app.lock_section(sec.id, "hunter22").unwrap();
+        super::lock_in_backups(&dir, &app.store.notebooks[0].sections[0]);
+        for f in ["backups/2026-01-01.json", "before-sync-1.json", "before-restore-1.json"] {
+            let t = std::fs::read_to_string(dir.join(f)).unwrap();
+            assert!(!t.contains(&secret), "{f} still readable");
+            let s: crate::Store = serde_json::from_str(&t).unwrap();
+            assert!(s.notebooks[0].sections[0].sealed() && s.trash.is_empty());
+        }
+        assert_eq!(std::fs::read(dir.join("backups/broken.json")).unwrap(), b"{");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

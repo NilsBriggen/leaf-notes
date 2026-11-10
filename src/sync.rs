@@ -106,7 +106,7 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
             Got::Same => { let b = base.as_ref().expect("Same only with a base"); (Some((b.store.clone(), b.files.clone())), Some(b.tag.clone())) }
             Got::Data(bytes, tag) => (Some(parse_shared(&bytes)?), Some(tag)),
         };
-        let merged = match (&shared, &base, first) {
+        let mut merged = match (&shared, &base, first) {
             (None, _, _) => local.clone(),
             (Some((sh, _)), _, Some(First::UseShared)) => sh.clone(),
             (Some((sh, _)), Some(b), _) => merge(&b.store, local, sh)?,
@@ -117,6 +117,7 @@ pub fn run(s: &SyncSettings, home: &Path, local: &Store, first: Option<First>, q
                 sh.clone()
             }
         };
+        tidy(&mut merged);
         // Files first, so other devices never see notes whose pictures aren't there yet.
         let mut have: Vec<String> = shared.as_ref().map(|(_, f)| f.clone()).unwrap_or_default();
         let (mut up, mut down) = (0, 0);
@@ -187,12 +188,41 @@ pub fn same(a: &Store, b: &Store) -> bool { canon(a) == canon(b) }
 /// a page changed on both sides in the same spot is kept twice ("… (other device)").
 pub fn merge(base: &Store, local: &Store, remote: &Store) -> Result<Store, String> {
     let (b, l, r) = (canon(base), canon(local), canon(remote));
-    if l == b || l == r { return Ok(remote.clone()); }
-    if r == b { return Ok(local.clone()); }
+    if l == b || l == r { let mut s = remote.clone(); tidy(&mut s); return Ok(s); }
+    if r == b { let mut s = local.clone(); tidy(&mut s); return Ok(s); }
     let v = mv(&b, &l, &r, false).unwrap_or(l);
     let mut s: Store = serde_json::from_value(v).map_err(|e| tf!("Couldn't combine the changes ({e}); nothing was changed.", e = e))?;
+    tidy(&mut s);
     dedupe(&mut s);
     Ok(s)
+}
+
+fn tidy(s: &mut Store) { rescue_locked(s); rekey_study(s); }
+
+/// A section locked on one device while another still wrote in it comes out of the merge holding the
+/// lock and plain pages, and saving would drop those pages (nobody has a key for them). Move them into
+/// their own plain section next to it instead.
+fn rescue_locked(s: &mut Store) {
+    for n in &mut s.notebooks {
+        let mut i = 0;
+        while i < n.sections.len() {
+            let sec = &mut n.sections[i];
+            if sec.lock.is_some() && sec.pages.iter().any(|p| p.kind != PageKind::Locked) {
+                let mut pages: Vec<Page> = std::mem::take(&mut sec.pages).into_iter().filter(|p| p.kind != PageKind::Locked).collect();
+                sec.pages = vec![sec.placeholder()];
+                for p in &mut pages {
+                    p.id = new_id();
+                    p.other_of = None;
+                    for b in &mut p.blocks { b.id = new_id(); }
+                    for st in &mut p.strokes { st.id = new_id(); }
+                }
+                let copy = Section { id: new_id(), name: format!("{} (other device)", sec.name), color: sec.color, pages, lock: None };
+                n.sections.insert(i + 1, copy);
+                i += 1;
+            }
+            i += 1;
+        }
+    }
 }
 
 /// `strict`: inside a page, where a clash means the page is kept twice (Err); elsewhere this device's value wins.
@@ -807,6 +837,28 @@ mod tests {
         assert_eq!(secs.len(), 2);
         assert!(secs[1].name.ends_with("(other device)") && secs[1].pages[0].id == secs[1].id);
         assert_eq!((secs[0].lock.as_ref().unwrap().data.as_str(), secs[1].lock.as_ref().unwrap().data.as_str()), ("here", "there"));
+    }
+
+    #[test]
+    fn edits_survive_a_lock_from_another_device() {
+        let base = sample();
+        let locked = |s: &mut Store| { let sec = &mut s.notebooks[0].sections[0]; sec.lock = Some(Lock { salt: "s".into(), nonce: "n".into(), data: "d".into() }); sec.pages = vec![sec.placeholder()]; };
+        let mut edited = base.clone();
+        let t = edited.notebooks[0].sections[0].pages[0].title.clone();
+        page_mut(&mut edited, &t).title = "written meanwhile".into();
+        let mut l = base.clone();
+        locked(&mut l);
+        for m in [merge(&base, &l, &edited).unwrap(), merge(&base, &edited, &l).unwrap()] {
+            let secs = &m.notebooks[0].sections;
+            assert!(secs[0].sealed() && secs[0].pages.len() == 1, "the locked section holds only its placeholder");
+            assert!(secs[1].lock.is_none() && secs[1].name.ends_with("(other device)"));
+            assert!(secs[1].pages.iter().any(|p| p.title == "written meanwhile"));
+        }
+        // a shared copy that already holds a lock plus plain pages, with nothing changed here
+        let mut bad = l.clone();
+        bad.notebooks[0].sections[0].pages.push(Page::new("stray"));
+        let m = merge(&l, &l, &bad).unwrap();
+        assert!(m.notebooks[0].sections[0].sealed() && m.notebooks[0].sections[1].pages[0].title == "stray");
     }
 
     /// A sync round whose result is saved at once (as the app does), so its base is committed.

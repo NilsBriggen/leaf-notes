@@ -102,6 +102,11 @@ pub fn load(dir: &Path) -> Result<Loaded, String> {
     Ok(recover_pages(dir, &Default::default()).map_or(Loaded::Fresh, |s| Loaded::Store(s, vec![])))
 }
 
+/// Every page id, in the notebooks and in Recently deleted.
+pub(crate) fn all_page_ids(store: &Store) -> std::collections::HashSet<u64> {
+    store.notebooks.iter().flat_map(|n| &n.sections).flat_map(|s| &s.pages).map(|p| p.id).chain(trashed_page_ids(store)).collect()
+}
+
 /// Pages waiting in Recently deleted (their content is in the library, so their old files may go).
 fn trashed_page_ids(store: &Store) -> Vec<u64> {
     store.trash.iter().flat_map(|t| match &t.item {

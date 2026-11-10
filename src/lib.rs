@@ -653,7 +653,7 @@ impl NotesApp {
         // one window at a time saves into the data folder: a second one would delete the first one's new pages
         let instance = if persist { instance_lock() } else { Ok(None) };
         // a library that can't be read is never saved over: the app runs without saving and says why
-        let (store, load_msg, store_ok) = if !persist { (sample(), None, false) } else {
+        let (mut store, load_msg, store_ok) = if !persist { (sample(), None, false) } else {
             match storage::load(&data_dir()) {
                 Ok(storage::Loaded::Fresh) => (sample(), None, true),
                 Ok(storage::Loaded::Store(s, damaged)) if damaged.is_empty() => (s, None, true),
@@ -661,6 +661,7 @@ impl NotesApp {
                 Err(e) => (sample(), Some(tf!("⚠ Your notes couldn't be read ({e}). Nothing will be saved until this is fixed, so your files stay untouched.", e = e)), false),
             }
         };
+        model::rekey_study(&mut store);
         let (load_msg, store_ok) = if instance.is_err() { (Some(tr("⚠ Leaf Notes is already open in another window. This window shows your notes but doesn't save them.").to_string()), false) } else { (load_msg, store_ok) };
         let mut ai: ai::AiSettings = if persist { load(SETTINGS_FILE).unwrap_or_default() } else { ai::AiSettings::default() };
         let fresh_install = persist && !data_dir().join(PREFS_FILE).exists() && !data_dir().join(storage::LIBRARY).exists();
@@ -1513,7 +1514,18 @@ impl NotesApp {
                         if differs {
                             // stay on the open page wherever it is now
                             let open = self.store.notebooks.get(self.nb).and_then(|n| n.sections.get(self.sec)).and_then(|s| s.pages.get(self.pg)).map(|p| p.id);
+                            let before = storage::all_page_ids(&self.store);
+                            let old_secs: HashMap<u64, bool> = self.store.notebooks.iter().flat_map(|n| &n.sections).map(|s| (s.id, s.lock.is_some())).collect();
                             self.store = self.reopen(m);
+                            // pages locked or deleted for good elsewhere: their plain text goes from history, the search index and old backups here too
+                            let gone: Vec<u64> = before.difference(&storage::all_page_ids(&self.store)).copied().collect();
+                            if !gone.is_empty() {
+                                if self.st.persist { for p in &gone { let _ = std::fs::remove_file(data_dir().join("history").join(format!("{p}.jsonl"))); } }
+                                self.st.index.forget(&gone, self.st.persist);
+                            }
+                            let secs: Vec<&Section> = self.store.notebooks.iter().flat_map(|n| &n.sections).collect();
+                            if self.st.persist { for s in secs.iter().filter(|s| s.sealed() && old_secs.get(&s.id) == Some(&false)) { locks::lock_in_backups(&data_dir(), s); } }
+                            let rescued: Vec<String> = secs.iter().filter(|s| s.lock.is_none() && !old_secs.contains_key(&s.id) && s.name.ends_with("(other device)")).map(|s| s.name.clone()).collect();
                             self.st.full_save = true; // pages other than this one changed
                             // undo steps are whole pages from before the merge: they would undo the other device's changes
                             self.st.undo.clear();
@@ -1521,6 +1533,8 @@ impl NotesApp {
                             match open.and_then(|id| self.locate(id)) { Some((a, b, c)) => (self.nb, self.sec, self.pg) = (a, b, c), None => self.clamp() }
                             self.save_now();
                             self.st.say(if down > 0 { tf!("Synced changes from your other devices ({down} file(s)).", down = down) } else { "Synced changes from your other devices.".into() });
+                            // a section was locked elsewhere while this device still wrote in it
+                            if let Some(name) = rescued.first() { self.st.say(tf!("A section was locked on another device while you wrote in it here. Those pages are in “{name}”: unlock the section and move them back in.", name = name)); }
                         }
                         self.st.sync_pending = meanwhile;
                         self.st.sync_ok = now_secs();

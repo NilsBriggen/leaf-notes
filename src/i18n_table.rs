@@ -451,6 +451,7 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("Sync stopped unexpectedly — trying again shortly.", "Synchronisierung unerwartet gestoppt – neuer Versuch in Kürze.", "La synchronisation s'est arrêtée de façon inattendue — nouvel essai sous peu."),
     ("Sync through", "Synchronisieren über", "Synchroniser via"),
     ("Synced changes from your other devices ({down} file(s)).", "Änderungen von deinen anderen Geräten synchronisiert ({down} Datei(en)).", "Modifications synchronisées depuis vos autres appareils ({down} fichier(s))."),
+    ("A section was locked on another device while you wrote in it here. Those pages are in “{name}”: unlock the section and move them back in.", "Ein Abschnitt wurde auf einem anderen Gerät gesperrt, während du hier darin geschrieben hast. Diese Seiten sind in „{name}“: entsperre den Abschnitt und verschiebe sie zurück.", "Une section a été verrouillée sur un autre appareil pendant que vous y écriviez ici. Ces pages sont dans « {name} » : déverrouillez la section et remettez-les dedans."),
     ("Synced changes from your other devices.", "Änderungen von deinen anderen Geräten synchronisiert.", "Modifications synchronisées depuis vos autres appareils."),
     ("Syncing with your other devices", "Synchronisierung mit deinen anderen Geräten", "Synchronisation avec vos autres appareils"),
     ("Syncing…", "Wird synchronisiert…", "Synchronisation…"),
