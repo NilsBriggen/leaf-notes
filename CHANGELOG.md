@@ -2,9 +2,20 @@
 
 Each release on GitHub shows its section from this file. Downloads are on the [releases page](https://github.com/NilsBriggen/leaf-notes/releases): `.AppImage` for Linux, `.msi` for Windows, `.apk` for Android.
 
-## 0.3.2 — 2026-11-09
+## 0.3.2 — 2026-11-10
 
 A big round of fixes for safety and reliability, and many smaller improvements.
+
+**New since the second release candidate**
+- Locking a section on one device while another still had unsynced changes in it no longer loses those changes: they're kept in "… (other device)" next to it.
+- A lock that arrives through sync also clears the old plain text from this device's page history, search and backups; locking does the same for older backups. Flashcards written inside notes no longer keep their questions readable in the library.
+- Notes are as tall on a phone as on a laptop, so pages written on one no longer overlap on the other.
+- Undo: a recording you just stopped stays when you undo; typing in checklists, tables, code, maths and flashcards can be undone; Ctrl+Z skips steps that changed nothing. A recording whose Stop fails is recovered.
+- Ctrl+C, Ctrl+X and Ctrl+V work on selected ink. Clicking into a note puts the cursor where you clicked.
+- Formatting: list buttons keep sub-points and skip blank lines, italics inside bold work, numbered lists start at the number you typed, and ticking a box only ticks the box at the start of the line.
+- Phones and small windows: the tour, the Home toolbar, the shortcuts list and the side panel fit; Android Back closes the password and microphone prompts; the crash report can wait ("Not now").
+- "Delete forever" in Recently deleted asks twice; studying has an Undo button; the status bar says "Not saved" when nothing is saved; AI quick actions ask in your language.
+- Fixed: half-copied pictures being synced, closing the app hanging on a slow connection, microphones below 16 kHz recording gaps of silence, and long AI answers being cut off.
 
 **New since the first release candidate**
 - The Draw toolbar keeps one height whatever is in hand: switching to the eraser with a pen's button no longer makes the page jump.

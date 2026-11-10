@@ -13,6 +13,7 @@ const CHANGES: &[(&str, &[&str])] = &[
         "Back and forward between pages, commands in Ctrl+K, copy and paste for ink, and handwriting you can correct before it becomes text.",
         "Study: new cards show up in review, ratings can be undone, flashcards from any note, and page templates.",
         "Phones: titles wrap, Settings and Ctrl+K fit the screen, the Draw toolbar holds still, and Google Drive sign-in works on Android.",
+        "Pages look the same on phone and laptop, undo is more reliable, and locking a section on one device keeps what you wrote on another.",
     ]),
     ("0.3.1", &[
         "The eraser has its own settings: a size, and \"Part of a stroke\" or \"Whole stroke\" as one clear switch.",
