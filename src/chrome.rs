@@ -560,11 +560,14 @@ impl NotesApp {
     }
 
     fn ribbon_home(&mut self, ui: &mut egui::Ui) {
-        group(ui, "Lecture", |ui| {
-            if rbtn(ui, "🎓", "New lecture", false).tip("A new page titled with today's date").clicked() { self.start_lecture(false); }
-            if rbtn(ui, "●", "Record lecture", false).tip("New lecture page, recording from the start").clicked() { self.start_lecture(true); }
+        let lecture = |me: &mut Self, ui: &mut egui::Ui| group(ui, "Lecture", |ui| {
+            if rbtn(ui, "🎓", "New lecture", false).tip("A new page titled with today's date").clicked() { me.start_lecture(false); }
+            if rbtn(ui, "●", "Record lecture", false).tip("New lecture page, recording from the start").clicked() { me.start_lecture(true); }
         });
+        // narrow screens: the tools first, so Pen and Select aren't pushed out of sight
+        if !self.st.narrow { lecture(self, ui); }
         group(ui, "Tools", |ui| self.tool_buttons(ui, &[(Tool::Type, "Aa", "Type"), (Tool::Pen, "✏", "Pen"), (Tool::Lasso, "➰", "Select ink")]));
+        if self.st.narrow { lecture(self, ui); }
         let target = self.st.editing.or(self.st.last_text);
         let is_text = target.is_some_and(|id| self.page().blocks.iter().any(|b| b.id == id && matches!(b.kind, Kind::Text { .. })));
         let heading = target.and_then(|id| self.page().blocks.iter().find(|b| b.id == id)).and_then(|b| if let Kind::Text { heading, .. } = b.kind { Some(heading) } else { None }).unwrap_or(0);
@@ -732,7 +735,7 @@ impl NotesApp {
                 ui.spacing_mut().button_padding.y = ui.spacing().button_padding.y.min(5.0);
                 ui.horizontal(|ui| {
                     let kind = self.st.pen().kind;
-                    egui::ComboBox::from_id_salt("pen-kind").width(118.0).selected_text(tr(kind.name())).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("pen-kind").width(104.0).selected_text(tr(kind.name())).show_ui(ui, |ui| {
                         for k in PenKind::ALL { if ui.selectable_label(kind == k, tr(k.name())).clicked() { self.st.pen().kind = k; } }
                     }).response.tip("What the chosen pen writes like");
                     ui.spacing_mut().interact_size = Vec2::new(32.0, 24.0);
@@ -759,6 +762,7 @@ impl NotesApp {
                     let l = ui.label(RichText::new(tr("Size")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 70.0;
                     ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).labelled_by(l.id).tip(tip);
+                    ui.add_space(6.0); // apart from the Size slider
                     let l = ui.label(RichText::new(tr("Smooth")).size(11.5).weak());
                     ui.spacing_mut().slider_width = 50.0;
                     ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).labelled_by(l.id).tip("Smoothing: irons out shaky lines (see the sample). More smoothing makes the line trail the pen a little.");
@@ -775,14 +779,14 @@ impl NotesApp {
             let mut pts: Vec<[f32; 3]> = vec![];
             for i in 0..60 {
                 let t = i as f32 / 59.0;
-                let (x, y) = (t * 84.0, 18.0 - 9.0 * (t * 6.3).sin() + 1.8 * (i as f32 * 2.7).sin() + 1.2 * (i as f32 * 5.3).cos());
+                let (x, y) = (t * 68.0, 18.0 - 9.0 * (t * 6.3).sin() + 1.8 * (i as f32 * 2.7).sin() + 1.2 * (i as f32 * 5.3).cos());
                 let pr = 0.35 + 0.65 * (t * 3.1).sin().abs();
                 let (x, y) = pts.last().map_or((x, y), |l| crate::canvas::trail(*l, x, y, stab));
                 pts.push([x, y, pr]);
             }
             crate::canvas::smooth_passes(&mut pts, stab);
             let sample = Stroke { id: 0, points: pts, color: pen.color, width: pen.width.min(6.0), highlighter: false, pen: pen.kind, t: 0.0 };
-            let (r, _) = ui.allocate_exact_size(Vec2::new(96.0, 40.0), Sense::hover());
+            let (r, _) = ui.allocate_exact_size(Vec2::new(80.0, 40.0), Sense::hover());
             // the sample sits on paper-white even in dark mode, so dark inks stay visible
             ui.painter().rect_filled(r, 8.0, if ui.visuals().dark_mode { Color32::from_rgb(200, 207, 204) } else { ui.visuals().faint_bg_color });
             crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
@@ -976,18 +980,7 @@ impl NotesApp {
         // Enter: show the answer, then "Good" (one key all the way through)
         if (space || enter) && !sd.shown { sd.shown = true; } else if enter && sd.shown { rate = Some(1); }
         if sd.shown { if k1 { rate = Some(0) } else if k2 { rate = Some(1) } else if k3 { rate = Some(2) } }
-        // Backspace or Ctrl+Z: take the last rating back
-        if back {
-            if let Some(u) = sd.undo.take() {
-                match u.before { Some(b) => { self.store.study.insert(u.key, b); } None => { self.store.study.remove(&u.key); } }
-                sd.queue = u.queue;
-                sd.missed = u.missed;
-                sd.tally[u.rating] = sd.tally[u.rating].saturating_sub(1);
-                sd.shown = true;
-                rate = None;
-                self.st.dirty = true;
-            }
-        }
+        let mut back = back;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("study")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 600.0));
@@ -995,7 +988,11 @@ impl NotesApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Study")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
                 ui.label(RichText::new(format!("·  {}", sd.title)).size(14.0).weak());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).clicked() { close = true; } });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).clicked() { close = true; }
+                    // touch screens have no Backspace: a visible way to take the last rating back
+                    if sd.undo.is_some() && ui.add(egui::Button::new(tr("↶ Undo")).frame_when_inactive(false)).tip("Take the last rating back (Backspace)").clicked() { back = true; }
+                });
             });
             let done = sd.total - sd.queue.len();
             let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
@@ -1052,6 +1049,18 @@ impl NotesApp {
                 }
             }
         });
+        // Backspace, Ctrl+Z or ↶ Undo: take the last rating back
+        if back {
+            if let Some(u) = sd.undo.take() {
+                match u.before { Some(b) => { self.store.study.insert(u.key, b); } None => { self.store.study.remove(&u.key); } }
+                sd.queue = u.queue;
+                sd.missed = u.missed;
+                sd.tally[u.rating] = sd.tally[u.rating].saturating_sub(1);
+                sd.shown = true;
+                rate = None;
+                self.st.dirty = true;
+            }
+        }
         if let (Some(k), Some(i)) = (rate, sd.queue.first().copied()) {
             let key = sd.cards[i].key.clone();
             sd.undo = Some(StudyUndo { key: key.clone(), before: self.store.study.get(&key).copied(), rating: k, queue: sd.queue.clone(), missed: sd.missed.clone() });
@@ -1124,7 +1133,7 @@ impl NotesApp {
             let label = format!("{}  {:02}:{:02}  ■", tr(if brk { "☕ Break" } else { "⏱ Focus" }), left / 60, left % 60);
             if ui.add(egui::Button::new(RichText::new(label).size(11.5).color(accent(ui))).frame_when_inactive(false)).tip("Stop the timer").clicked() { self.st.focus = None; }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-        } else if ui.add(egui::Button::new(RichText::new(tr("⏱ Focus 25")).size(11.5)).frame_when_inactive(false)).tip("25 minutes of focused study, then a 5-minute break").clicked() {
+        } else if ui.add(egui::Button::new(RichText::new(tr("⏱ 25 min")).size(11.5)).frame_when_inactive(false)).tip("25 minutes of focused study, then a 5-minute break").clicked() {
             self.st.focus = Some((now + 25.0 * 60.0, false));
             self.st.say("Focus time: 25 minutes. You've got this.");
         }
@@ -1281,7 +1290,8 @@ impl NotesApp {
         egui::Panel::left("sections").show_separator_line(false).resizable(false).exact_size(sec_w).frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(egui::Margin { left: 14, right: 10, top: 2, bottom: 12 })).show(ui, |ui| {
             self.notebook_switcher(ui);
             ui.add_space(6.0);
-            let jump = ui.add(egui::Button::new(RichText::new(tr("↗  Jump to a page…")).size(13.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
+            // one line in the phone's narrow column too
+            let jump = ui.add(egui::Button::new(RichText::new(tr(if phone { "↗  Find a page" } else { "↗  Jump to a page…" })).size(13.0).color(ui.visuals().weak_text_color())).truncate().frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 30.0)))
                 .tip("Quick switcher (Ctrl+K)");
             if jump.clicked() { self.st.switcher = Some((String::new(), 0)); }
             let open_tasks = self.st.open_tasks_n;
@@ -1658,10 +1668,10 @@ impl NotesApp {
             self.st.search_cache = Some((q.clone(), now_f(), hits));
         }
         let hits: Vec<SearchHit> = if filter.is_none() { self.st.search_cache.as_ref().map(|c| c.2.clone()).unwrap_or_default() } else { vec![] };
-        if filter.is_none() && !q.is_empty() { ui.label(RichText::new(tf!("{n} page(s)", n = hits.len())).size(11.0).weak()); }
+        if filter.is_none() && !q.is_empty() { ui.label(RichText::new(crate::i18n::fill(tr(if hits.len() == 1 { "{n} page" } else { "{n} pages" }), &[("n", &hits.len())])).size(11.0).weak()); }
         egui::ScrollArea::vertical().id_salt("search-scroll").auto_shrink([false; 2]).show(ui, |ui| {
             for (ni, n) in self.store.notebooks.iter().enumerate() {
-                for (si, s) in n.sections.iter().enumerate() {
+                for (si, s) in n.sections.iter().enumerate().filter(|(si, _)| in_scope(ni, *si)) {
                     for (pi, p) in s.pages.iter().enumerate() {
                         if let Some(f) = filter {
                             for b in &p.blocks {
@@ -2004,8 +2014,15 @@ impl NotesApp {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| { ui.label(&t.label); ui.label(RichText::new(tf!("Deleted {x}", x = format_date(t.deleted, true))).size(11.0).weak()); });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button(tr("Delete forever")).clicked() { purge = Some(i); }
-                                if ui.small_button(tr("Restore")).clicked() { restore = Some(i); }
+                                // like emptying the bin, a second click: this can't be undone
+                                let sure_id = egui::Id::unique("purge-one-sure");
+                                if ui.data(|d| d.get_temp::<usize>(sure_id)) == Some(i) {
+                                    if ui.small_button(tr("Cancel")).clicked() { ui.data_mut(|d| d.remove::<usize>(sure_id)); }
+                                    if ui.small_button(RichText::new(tr("Delete for good")).color(Color32::from_rgb(200, 60, 50))).clicked() { purge = Some(i); ui.data_mut(|d| d.remove::<usize>(sure_id)); }
+                                } else {
+                                    if ui.small_button(tr("Delete forever")).clicked() { ui.data_mut(|d| d.insert_temp(sure_id, i)); }
+                                    if ui.small_button(tr("Restore")).clicked() { restore = Some(i); ui.data_mut(|d| d.remove::<usize>(sure_id)); }
+                                }
                             });
                         });
                         ui.separator();
@@ -2035,17 +2052,21 @@ impl NotesApp {
         }
         if self.st.show_shortcuts {
             let mut open = true;
-            egui::Window::new(crate::window_title(tr("Keyboard shortcuts"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).show(ctx, |ui| {
+            egui::Window::new(crate::window_title(tr("Keyboard shortcuts"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).max_width(crate::fit_w(ctx, 620.0)).show(ctx, |ui| {
+                // small windows and phones: it scrolls instead of running off the screen
+                egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 140.0).max(160.0)).show(ui, |ui|
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).striped(true).show(ui, |ui| {
                     for (k, what) in [("Ctrl+N", "New page"), ("Ctrl+F", "Search all notes"), ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                         ("Ctrl+B / Ctrl+I", "Bold / italic"), ("Ctrl+Shift+H", "Highlight"), ("Ctrl+M", "Inline math"), ("Ctrl+`", "Inline code"),
                         ("T  P  H  E  L", "Type, pen, highlighter, eraser, select ink"), ("Delete", "Delete selected ink"), ("Esc", "Clear selection and search"),
                         ("Ctrl + / Ctrl −", "Make everything larger or smaller"), ("Ctrl+K", "Jump to a page"), ("Two fingers", "Scroll while drawing (touch screens)"), ("Click empty paper", "Start a new note there"),
                         ("- , 1. , [ ] , #", "Start a list, checkbox or heading while typing"), ("/", "Insert menu while typing"), ("[[", "Link to another page while typing"),
-                        ("Space · 1 2 3", "Flashcards: show the answer, then rate it")] {
-                        ui.label(RichText::new(tr(k)).monospace()); ui.label(tr(what)); ui.end_row();
+                        ("Space · 1 2 3", "Flashcards: show the answer, then rate it"), ("Alt+← / Alt+→", "Back / forward between pages"),
+                        ("Ctrl+D", "Duplicate this page"), ("F2", "Rename this page"), ("Ctrl+Shift+T", "All tasks"), ("Ctrl+Shift+R", "Review due flashcards"),
+                        ("Ctrl+,", "Settings"), ("F1", "This list")] {
+                        ui.label(RichText::new(tr(k)).monospace()); ui.add(egui::Label::new(tr(what)).wrap()); ui.end_row();
                     }
-                });
+                }));
             });
             if !open { self.st.show_shortcuts = false; }
         }

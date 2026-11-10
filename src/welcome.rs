@@ -82,13 +82,15 @@ impl NotesApp {
                 0 => {
                     big(ui, "Welcome to Leaf Notes");
                     text(ui, "Your notes live in notebooks. A notebook has sections (like the tabs of a binder), and each section has pages.");
-                    text(ui, "Pick a notebook at the top left, a section below it, and a page in the next column.");
+                    // phones show one panel at a time and have no keyboard shortcuts: say it their way
+                    let (touch, narrow) = (self.st.touch_ui, self.st.narrow);
+                    text(ui, if narrow { "Tap ☰ to see your notebooks, their sections and pages." } else { "Pick a notebook at the top left, a section below it, and a page in the next column." });
                     text(ui, "Everything stays on this device and works offline.");
-                    text(ui, "Ctrl+K jumps to any page; type [[ in a note to link another page.");
+                    text(ui, if touch { "🔍 finds any page; type [[ in a note to link another page." } else { "Ctrl+K jumps to any page; type [[ in a note to link another page." });
                 }
                 1 => {
                     big(ui, "Type or write");
-                    text(ui, "Click anywhere on a page to start typing there. Type / for headings, lists, tables, equations and more.");
+                    text(ui, if self.st.touch_ui { "Tap anywhere on a page to start typing there. Type / for headings, lists, tables, equations and more." } else { "Click anywhere on a page to start typing there. Type / for headings, lists, tables, equations and more." });
                     text(ui, "Choose a pen in the Draw tab to write by hand. A stylus always draws; handwriting can be turned into text or maths.");
                     text(ui, "Record a lecture while you write, then tap your notes to hear that moment again.");
                 }
@@ -115,7 +117,7 @@ impl NotesApp {
                     big(ui, "Optional extras");
                     text(ui, "AI with your own key: summaries, flashcards, rewriting and reading handwriting. Your key stays on this device.");
                     text(ui, "Sync keeps notes the same on all your devices, through Google Drive, a synced folder or a WebDAV server.");
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui.button(tr("Add an AI key…")).clicked() { self.st.show_settings = true; self.st.settings_tab = 3; close = true; }
                         if ui.button(tr("Set up sync…")).clicked() { self.st.show_settings = true; self.st.settings_tab = 5; close = true; }
                     });
@@ -127,7 +129,7 @@ impl NotesApp {
                     if self.st.tour_fresh {
                         text(ui, "There's a sample notebook to look around in. Keep it, or start with an empty one.");
                         ui.add_space(6.0);
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
                             if ui.button(tr("Start with an empty notebook")).clicked() { empty_start = true; close = true; }
                         });
@@ -136,12 +138,15 @@ impl NotesApp {
                 }
             }});
             ui.add_space(14.0);
+            // progress dots on their own row: longer button names (German) would run into them
             ui.horizontal(|ui| {
-                // progress dots
                 for i in 0..STEPS {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
                     ui.painter().circle_filled(r.center(), 4.0, if i == step { accent(ui) } else { ui.visuals().widgets.inactive.bg_fill });
                 }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if step + 1 < STEPS && ui.add(egui::Button::new(RichText::new(tr("Next")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { step += 1; }
                     if step + 1 == STEPS && !self.st.tour_fresh && ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { close = true; }

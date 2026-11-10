@@ -67,10 +67,15 @@ impl NotesApp {
                                 }
                                 let mut col = c3(p.accent);
                                 if ui.color_edit_button_srgba(&mut col).tip("Any colour").changed() { p.accent = [col.r(), col.g(), col.b()]; }
+                                ui.label(RichText::new(tr("Any colour")).size(12.0).weak()); // (phones show no hover tips)
                             });
                             row(ui, "Interface size", if self.st.touch_ui { "Makes everything larger or smaller." } else { "Makes everything larger or smaller (also Ctrl + / Ctrl −)." }, |ui| {
-                                let mut z = ctx.zoom_factor();
-                                if ui.add(egui::Slider::new(&mut z, 0.7..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed() { ctx.set_zoom_factor(z); p.zoom = z; }
+                                // applied when the drag ends: rescaling while dragging moves the slider away under the pointer
+                                let held = egui::Id::unique("zoom-drag");
+                                let mut z = ui.data(|d| d.get_temp::<f32>(held)).unwrap_or(ctx.zoom_factor());
+                                let r = ui.add(egui::Slider::new(&mut z, 0.7..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                                if r.dragged() { ui.data_mut(|d| d.insert_temp(held, z)); }
+                                else if r.drag_stopped() || r.changed() { ui.data_mut(|d| d.remove::<f32>(held)); ctx.set_zoom_factor(z); p.zoom = z; }
                             });
                             row_below(ui, "Language", "Choose the language of menus, buttons and messages.", |ui| {
                                 for (code, name) in crate::i18n::LANGUAGES { ui.selectable_value(&mut p.lang, code.to_string(), if code.is_empty() { tr(name) } else { name }); }
@@ -285,7 +290,8 @@ impl NotesApp {
                                 #[cfg(not(target_os = "android"))]
                                 if ui.button(tr("Open folder")).clicked() { let _ = std::fs::create_dir_all(&dir); crate::canvas::open_path(&dir); }
                             });
-                            row(ui, "Backup", "Save a copy of every notebook as one file (pictures and attachments stay in the folder above).", |ui| {
+                            // Android's notes folder can't be opened, so say plainly what the file leaves out
+                            row(ui, "Backup", if cfg!(target_os = "android") { "Save a copy of every notebook as one file. Pictures, attachments and recordings are not in it." } else { "Save a copy of every notebook as one file (pictures and attachments stay in the folder above)." }, |ui| {
                                 let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
                                 if ui.button(tr("Save a backup…")).clicked() {
