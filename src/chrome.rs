@@ -735,7 +735,7 @@ impl NotesApp {
                 ui.spacing_mut().button_padding.y = ui.spacing().button_padding.y.min(5.0);
                 ui.horizontal(|ui| {
                     let kind = self.st.pen().kind;
-                    egui::ComboBox::from_id_salt("pen-kind").width(104.0).selected_text(tr(kind.name())).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("pen-kind").width(92.0).selected_text(tr(kind.name())).show_ui(ui, |ui| {
                         for k in PenKind::ALL { if ui.selectable_label(kind == k, tr(k.name())).clicked() { self.st.pen().kind = k; } }
                     }).response.tip("What the chosen pen writes like");
                     ui.spacing_mut().interact_size = Vec2::new(32.0, 24.0);
@@ -760,11 +760,11 @@ impl NotesApp {
                 ui.horizontal(|ui| {
                     let tip = match self.st.force { Some(f) => tf!("Pen thickness. Pen pressure now: {pct}%", pct = format!("{:.0}", f * 100.0)), None => "Pen thickness. Pressure comes from your pen, or from speed with a mouse".into() };
                     let l = ui.label(RichText::new(tr("Size")).size(11.5).weak());
-                    ui.spacing_mut().slider_width = 70.0;
+                    ui.spacing_mut().slider_width = 60.0;
                     ui.add(egui::Slider::new(&mut self.st.pen().width, 0.5..=16.0).show_value(false)).labelled_by(l.id).tip(tip);
                     ui.add_space(6.0); // apart from the Size slider
                     let l = ui.label(RichText::new(tr("Smooth")).size(11.5).weak());
-                    ui.spacing_mut().slider_width = 50.0;
+                    ui.spacing_mut().slider_width = 44.0;
                     ui.add(egui::Slider::new(&mut self.st.p.stabilizer, 0.0..=1.0).show_value(false)).labelled_by(l.id).tip("Smoothing: irons out shaky lines (see the sample). More smoothing makes the line trail the pen a little.");
                     // only once a pen has reported pressure; in this row, so the toolbar doesn't grow when it does
                     if self.st.p.pressure && self.st.force.is_some() {
@@ -779,14 +779,14 @@ impl NotesApp {
             let mut pts: Vec<[f32; 3]> = vec![];
             for i in 0..60 {
                 let t = i as f32 / 59.0;
-                let (x, y) = (t * 68.0, 18.0 - 9.0 * (t * 6.3).sin() + 1.8 * (i as f32 * 2.7).sin() + 1.2 * (i as f32 * 5.3).cos());
+                let (x, y) = (t * 54.0, 18.0 - 9.0 * (t * 6.3).sin() + 1.8 * (i as f32 * 2.7).sin() + 1.2 * (i as f32 * 5.3).cos());
                 let pr = 0.35 + 0.65 * (t * 3.1).sin().abs();
                 let (x, y) = pts.last().map_or((x, y), |l| crate::canvas::trail(*l, x, y, stab));
                 pts.push([x, y, pr]);
             }
             crate::canvas::smooth_passes(&mut pts, stab);
             let sample = Stroke { id: 0, points: pts, color: pen.color, width: pen.width.min(6.0), highlighter: false, pen: pen.kind, t: 0.0 };
-            let (r, _) = ui.allocate_exact_size(Vec2::new(80.0, 40.0), Sense::hover());
+            let (r, _) = ui.allocate_exact_size(Vec2::new(64.0, 40.0), Sense::hover());
             // the sample sits on paper-white even in dark mode, so dark inks stay visible
             ui.painter().rect_filled(r, 8.0, if ui.visuals().dark_mode { Color32::from_rgb(200, 207, 204) } else { ui.visuals().faint_bg_color });
             crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
