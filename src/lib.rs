@@ -768,6 +768,8 @@ impl NotesApp {
         }
         if self.st.narrow { self.st.p.show_nav = false; } // phones: show the page that was picked
         (self.nb, self.sec, self.pg) = (nb, sec, pg);
+        // a new notebook has no section yet: give it one (and a page) before anything reads it
+        self.clamp();
         self.st.reveal = true;
         if let Some((sid, id)) = self.store.notebooks.get(nb).and_then(|n| n.sections.get(sec)).and_then(|s| s.pages.get(pg).map(|p| (s.id, p.id))) {
             self.st.p.last_page.insert(sid, id);
@@ -2279,6 +2281,15 @@ mod picture_tests {
 #[cfg(test)]
 mod undo_tests {
     use super::*;
+    #[test]
+    fn going_to_a_new_empty_notebook_gives_it_a_page() {
+        let mut app = crate::safety::tests::app();
+        app.store.notebooks.push(Notebook { id: new_id(), name: "New".into(), color: [0, 0, 0], sections: vec![] });
+        let last = app.store.notebooks.len() - 1;
+        app.go_to(last, 0, 0);
+        assert!(app.store.notebooks[app.nb].sections[app.sec].pages.get(app.pg).is_some(), "the side panel reads this right away");
+    }
+
     #[test]
     fn undo_keeps_recordings_and_skips_empty_steps() {
         let mut app = crate::safety::tests::app();

@@ -2,9 +2,12 @@
 
 Each release on GitHub shows its section from this file. Downloads are on the [releases page](https://github.com/NilsBriggen/leaf-notes/releases): `.AppImage` for Linux, `.msi` for Windows, `.apk` for Android.
 
-## 0.3.2 — 2026-11-10
+## 0.3.2 — 2026-11-11
 
 A big round of fixes for safety and reliability, and many smaller improvements.
+
+**New since the third release candidate**
+- Creating a new notebook no longer crashes the app.
 
 **New since the second release candidate**
 - Locking a section on one device while another still had unsynced changes in it no longer loses those changes: they're kept in "… (other device)" next to it.
