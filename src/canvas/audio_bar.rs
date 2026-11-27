@@ -157,7 +157,7 @@ pub(crate) fn audio_bar(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
                             ui.close();
                         }
                         if ui
-                            .button(RichText::new(tr("🗑  Remove recording")).color(Color32::from_rgb(200, 60, 50)))
+                            .button(RichText::new(tr("🗑  Remove recording")).color(crate::chrome::danger_color(ui)))
                             .tip("Remove this recording from the page (Undo brings it back)")
                             .clicked()
                         {

@@ -96,9 +96,10 @@ pub(crate) fn deck_view(
                         ui.label(RichText::new(format!("{}", i + 1)).size(13.0).weak());
                         ui.label(RichText::new(tr(&label)).size(11.0).color(col));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::new("🗑").frame_when_inactive(false)).tip("Delete this card").clicked() { remove = Some(i); }
-                            if i + 1 < n && ui.add(egui::Button::new("↓").frame_when_inactive(false)).tip("Move down").clicked() { swap = Some((i, i + 1)); }
-                            if i > 0 && ui.add(egui::Button::new("↑").frame_when_inactive(false)).tip("Move up").clicked() { swap = Some((i, i - 1)); }
+                            ui.spacing_mut().button_padding = Vec2::new(6.0, 2.0);
+                            if ui.add(egui::Button::new("🗑").frame_when_inactive(false).min_size(Vec2::splat(24.0))).tip("Delete this card").clicked() { remove = Some(i); }
+                            if i + 1 < n && ui.add(egui::Button::new("↓").frame_when_inactive(false).min_size(Vec2::splat(24.0))).tip("Move down").clicked() { swap = Some((i, i + 1)); }
+                            if i > 0 && ui.add(egui::Button::new("↑").frame_when_inactive(false).min_size(Vec2::splat(24.0))).tip("Move up").clicked() { swap = Some((i, i - 1)); }
                         });
                     });
                     let mut draw_side = |ui: &mut egui::Ui, k: usize, side: &str, text: &mut String, hint: &str| {
@@ -128,7 +129,14 @@ pub(crate) fn deck_view(
                         if k == 1 && r.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
                             add_after = Some(i);
                         }
-                        if text.contains('$') {
+                        let has_markup = text.contains('$')
+                            || text.contains("**")
+                            || text.contains("==")
+                            || text.contains("~~")
+                            || text.contains('`')
+                            || text.contains("[[")
+                            || (text.matches('*').count() >= 2);
+                        if has_markup {
                             egui::Frame::new().inner_margin(egui::Margin { left: 6, right: 0, top: 4, bottom: 0 }).show(ui, |ui| {
                                 let _ = rich::view(ui, text, 14.0, 0, &colors);
                             });

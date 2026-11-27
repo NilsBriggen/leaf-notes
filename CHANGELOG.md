@@ -2,6 +2,31 @@
 
 Each release on GitHub shows its section from this file. Downloads are on the [releases page](https://github.com/NilsBriggen/leaf-notes/releases): `.AppImage` for Linux, `.msi` for Windows, `.apk` for Android.
 
+## 0.4.1 — 2026-11-27
+
+A comprehensive UI, drawing, responsiveness, dark-mode, and localization polish pass resolving 33 visual and interaction quirks across desktop and mobile.
+
+**Drawing, pen & navigation**
+- First-attempt pen drawing now works reliably over text, checklists, tables, and code blocks; right-click no longer drops stray ink dots, and a stylus grace window prevents synthetic mouse events from overriding pen input.
+- Switching to the `Draw` tab from `Type` now arms the pen automatically, while relaunches stay ready for typing.
+- Tightened scribble-to-erase geometry (kept enabled by default) so shading, zig-zags, and spirals aren't accidentally erased while deliberate scratches still work.
+- `Esc` and Android Back now dismiss one layer at a time (popups, then dialogs, then panels, then selections), and switching pages clears stale stroke selections.
+
+**Toolbar, search & responsive layouts**
+- Centered the title-bar search pill, wired the narrow `🔍` icon and `Ctrl+F` directly to full-text search (with an inline search field on phones), added tab overflow arrows for narrow French/German screens, and added a folded-toolbar expand button.
+- Ribbon overflow chevrons now sit in dedicated slots outside the scroll area without covering tool buttons; renamed `"Page on… ▾"` to `"Paper ▾"`.
+- Unified the `600 px` drawer breakpoint (eliminating narrow canvas slivers), slimmed mid-width docked sidebars with automatic canvas zoom fit/restore, locked the Notebooks dropdown width, restored the phone breadcrumb, and fixed `All tasks` count badge truncation.
+- Landscape AI panes (`860×412`) now scroll the banner and prompt chips so the composer and `Send` button stay reachable.
+
+**Canvas, tables, flashcards & modals**
+- Equation editing now opens in a screen-clamped floating editor with zero sibling overlap; tables gain shaded headers, continuous full-width row/column dividers, legible borders, and descender-safe cell padding.
+- Flashcard editors render rich Markdown previews, uniform card actions, and keycap-styled review controls; math fractions/integrals, list bullets, and external links are cleaner.
+- Fixed Phone Settings width and `Language` wrapping, centered the Google Drive sign-in spinner, added solid scrollbars and viewport-clamped scrolling to all dialogs, localized German shortcut keycaps (`Strg`/`Umschalt`/`Entf`), auto-focused Lock prompts, and navigated directly to newly imported Markdown pages.
+
+**Dark mode, High Contrast & localization**
+- Dark-mode pen previews render on dark paper with chalk-adjusted ink, stronger borders/swatch rings, and warmer amber highlights; High Contrast paper rulings and danger buttons are sharper.
+- Search snippets translate LaTeX tokens into readable symbols (`∑`, `∞`, …) and clean up structural markup; fixed German `"Alle Tags"` and added missing DE/FR translations.
+
 ## 0.4.0 — 2026-11-27
 
 A major upgrade to reliability, performance, encryption, sync, AI, audio, PDF export, and the interface across desktop and Android.

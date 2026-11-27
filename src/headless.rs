@@ -305,6 +305,61 @@ mod clickthrough {
         assert_eq!(blocks(&h), before + 1);
     }
 
+    #[test]
+    fn pen_draws_on_first_attempt_and_escape_is_layered() {
+        let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = Harness::new();
+        h.app.st.p.draw_mouse = true;
+        // Start editing a Checklist block, then switch to Draw tab (must auto-arm Pen and clear focus).
+        h.click("Insert");
+        h.click("Checklist");
+        assert!(h.app.st.canvas.editing.is_some());
+        h.click("Draw");
+        assert_eq!(h.app.st.canvas.tool, crate::Tool::Pen, "clicking Draw from Type arms Pen");
+        let strokes_before = h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].strokes.len();
+        // Right-clicking in Pen mode must NOT create an ink dot.
+        let pt = egui::pos2(680.0, 420.0);
+        h.run(vec![
+            egui::Event::PointerMoved(pt),
+            egui::Event::PointerButton { pos: pt, button: egui::PointerButton::Secondary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.run(vec![egui::Event::PointerButton { pos: pt, button: egui::PointerButton::Secondary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert_eq!(h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].strokes.len(), strokes_before, "right-click must not draw");
+        // Attempt 1 primary stroke must draw immediately (no second attempt needed).
+        h.run(vec![
+            egui::Event::PointerMoved(pt),
+            egui::Event::PointerButton { pos: pt, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.run(vec![egui::Event::PointerMoved(pt + egui::vec2(40.0, 15.0))]);
+        h.run(vec![egui::Event::PointerButton { pos: pt + egui::vec2(40.0, 15.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert_eq!(h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].strokes.len(), strokes_before + 1, "Attempt 1 must create ink");
+
+        // Esc must step back one layer at a time (editing -> selected -> search), and respect busy LockPrompt.
+        let drawn_id = h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].strokes.last().unwrap().id;
+        h.app.st.canvas.tool = crate::Tool::Lasso;
+        h.app.st.canvas.selected = vec![drawn_id];
+        h.app.st.nav.search = "sine".into();
+        h.app.st.canvas.editing = Some(1);
+        // Set directly before Esc (simulating active text edit + active selection/search layers).
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(h.app.st.canvas.editing.is_none() && !h.app.st.canvas.selected.is_empty() && !h.app.st.nav.search.is_empty());
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(h.app.st.canvas.selected.is_empty() && !h.app.st.nav.search.is_empty());
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(h.app.st.nav.search.is_empty());
+
+        // LockPrompt cannot be dismissed by Esc while Argon2id encryption is pending.
+        let (_tx, rx) = std::sync::mpsc::channel();
+        h.app.st.locks.pending = Some(crate::state::PendingLockOp::Lock { section: 1, rx });
+        h.app.st.modals.push(ActiveModal::LockPrompt(crate::locks::LockPrompt::for_section(1)));
+        h.run(vec![]);
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(matches!(h.app.st.modals.top(), Some(ActiveModal::LockPrompt(_))), "busy LockPrompt must block Esc");
+        h.app.st.locks.pending = None;
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(h.app.st.modals.is_empty(), "idle LockPrompt closes on Esc");
+    }
+
     fn settings(h: &mut Harness, tab: u8) {
         h.app.st.modals.open_settings(tab);
     }
@@ -328,34 +383,89 @@ mod clickthrough {
         type Scene = (&'static str, fn(&mut Harness));
         let scenes: Vec<Scene> = vec![
             ("home", |_| {}),
-            ("nav", |h| { if h.app.st.nav.narrow { h.try_click("☰"); } }),
-            ("tab-insert", |h| { h.try_click("Insert"); }), ("tab-draw", |h| { h.try_click("Draw"); }), ("tab-ai", |h| { h.try_click("AI"); }),
-            ("tab-study", |h| { h.try_click("Study"); }), ("tab-view", |h| { h.try_click("View"); }),
+            ("nav", |h| { h.app.st.p.show_nav = true; }),
+            ("tab-insert", |h| { h.app.st.tab = crate::Tab::Insert; h.app.st.p.ribbon_open = true; }),
+            ("tab-draw", |h| { h.app.st.tab = crate::Tab::Draw; h.app.st.canvas.tool = crate::Tool::Pen; h.app.st.p.ribbon_open = true; }),
+            ("tab-ai", |h| { h.app.st.tab = crate::Tab::Ai; h.app.st.p.ribbon_open = true; }),
+            ("tab-study", |h| { h.app.st.tab = crate::Tab::Study; h.app.st.p.ribbon_open = true; }),
+            ("tab-view", |h| { h.app.st.tab = crate::Tab::View; h.app.st.p.ribbon_open = true; }),
+            ("ai-pane", |h| { h.app.st.p.show_ai = true; h.app.st.p.show_nav = false; }),
             ("set0", |h| settings(h, 0)), ("set1", |h| settings(h, 1)), ("set2", |h| settings(h, 2)), ("set3", |h| settings(h, 3)), ("set4", |h| settings(h, 4)), ("set5", |h| settings(h, 5)),
-            ("google", |h| { h.try_click("⚙"); h.try_click("Sync"); h.try_click("Google Drive"); h.try_click("Sign in with Google"); }),
+            ("google", |h| {
+                h.app.st.modals.open_settings(5);
+                h.app.st.sync_st.settings.via = crate::sync::Via::Google;
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (ptx, prx) = std::sync::mpsc::channel();
+                std::mem::forget((tx, prx));
+                h.app.st.sync_st.google_rx = Some(("https://accounts.google.com/o/oauth2/v2/auth".into(), rx, ptx));
+            }),
             ("switcher", |h| { key(h, egui::Key::K, egui::Modifiers::COMMAND); h.run(vec![egui::Event::Text("fou".into())]); }),
             ("commands", |h| { key(h, egui::Key::K, egui::Modifiers::COMMAND); h.run(vec![egui::Event::Text(">".into())]); }),
-            ("search", |h| { key(h, egui::Key::F, egui::Modifiers::COMMAND); h.run(vec![]); h.run(vec![egui::Event::Text("sine".into())]); }),
+            ("search", |h| {
+                key(h, egui::Key::F, egui::Modifiers::COMMAND);
+                h.run(vec![]);
+                h.run(vec![egui::Event::Text("sine".into())]);
+            }),
             ("tour0", |h| tour(h, 0)), ("tour1", |h| tour(h, 1)), ("tour2", |h| tour(h, 2)), ("tour3", |h| tour(h, 3)), ("tour4", |h| tour(h, 4)),
-            ("help", |h| { h.try_click("?"); }),
+            ("help", |h| { h.app.st.modals.push(ActiveModal::Help); }),
             ("shortcuts", |h| { h.app.st.modals.push(ActiveModal::Shortcuts); }),
             ("bin", |h| { h.app.st.modals.push(ActiveModal::Trash); }),
-            ("history", |h| { h.try_click("⋯"); h.try_click("Page history…"); }),
-            ("table", |h| { h.try_click("Insert"); h.try_click("Table"); }),
-            ("checklist", |h| { h.try_click("Insert"); h.try_click("Checklist"); }),
-            ("study", |h| { h.try_click("Study"); h.try_click("Review due"); }),
-            ("deck", |h| { if h.app.st.nav.narrow { h.try_click("☰"); } h.try_click("Fourier — flashcards"); }),
+            ("history", |h| {
+                let p = h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].clone();
+                let mut older = p.clone();
+                older.title = format!("{} (earlier)", p.title);
+                h.app.st.modals.push(ActiveModal::History { page: p.id, versions: vec![(crate::now_secs() - 3600, older), (crate::now_secs() - 600, p)], sel: 0 });
+            }),
+            ("table", |h| { h.app.st.tab = crate::Tab::Insert; h.app.st.p.ribbon_open = true; h.run(vec![]); h.try_click("Table"); }),
+            ("checklist", |h| { h.app.st.tab = crate::Tab::Insert; h.app.st.p.ribbon_open = true; h.run(vec![]); h.try_click("Checklist"); }),
+            ("eq-edit", |h| {
+                let id = h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].blocks.iter().find(|b| matches!(b.kind, crate::model::Kind::Math { .. })).map(|b| b.id);
+                h.app.st.canvas.editing = id;
+            }),
+            ("study", |h| { h.app.start_review(); }),
+            ("deck", |h| {
+                for (a, n) in h.app.store.notebooks.iter().enumerate() {
+                    for (b, s) in n.sections.iter().enumerate() {
+                        for (c, p) in s.pages.iter().enumerate() {
+                            if p.kind == crate::model::PageKind::Deck {
+                                (h.app.nb, h.app.sec, h.app.pg) = (a, b, c);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }),
+            ("lock-prompt", |h| {
+                let sid = h.app.store.notebooks[h.app.nb].sections[h.app.sec].id;
+                h.app.st.modals.push(ActiveModal::LockPrompt(crate::locks::LockPrompt::for_section(sid)));
+            }),
+            ("mic", |h| { h.app.st.modals.push(ActiveModal::MicPrompt); }),
+            ("sync-ask", |h| { h.app.st.modals.push(ActiveModal::SyncAsk { pages: 14 }); }),
+            ("news", |h| { h.app.st.modals.push(ActiveModal::News); }),
+            ("crash", |h| { h.app.st.modals.push(ActiveModal::Crash { path: std::path::PathBuf::from("crash.txt"), text: format!("Leaf Notes {}\npanicked at src/lib.rs:1", crate::welcome::VERSION) }); }),
         ];
         let configs = [
-            ("lap", 1280.0, 800.0, 1.5, false, false, "en"), ("lapd", 1280.0, 800.0, 1.5, true, false, "en"), ("lapde", 1280.0, 800.0, 1.5, false, false, "de"),
-            ("nar", 900.0, 700.0, 1.0, false, false, "en"), ("ph", 412.0, 880.0, 2.6, false, true, "en"), ("phd", 412.0, 880.0, 2.6, true, true, "en"), ("phde", 412.0, 880.0, 2.6, false, true, "de"),
+            ("lap", 1280.0, 800.0, 1.5, false, false, false, "en"),
+            ("lapd", 1280.0, 800.0, 1.5, true, false, false, "en"),
+            ("lapde", 1280.0, 800.0, 1.5, false, false, false, "de"),
+            ("laphc", 1280.0, 800.0, 1.5, false, false, true, "en"),
+            ("nar", 900.0, 700.0, 1.0, false, false, false, "en"),
+            ("ai580", 580.0, 700.0, 1.0, false, false, false, "en"),
+            ("land", 860.0, 412.0, 1.0, false, false, false, "en"),
+            ("ph", 412.0, 880.0, 2.6, false, true, false, "en"),
+            ("phd", 412.0, 880.0, 2.6, true, true, false, "en"),
+            ("phde", 412.0, 880.0, 2.6, false, true, false, "de"),
+            ("phfr", 360.0, 800.0, 2.0, false, true, false, "fr"),
         ];
-        for (tag, w, hgt, ppp, dark, touch, lang) in configs {
+        for (tag, w, hgt, ppp, dark, touch, hc, lang) in configs {
             if !only.is_empty() && !only.split(',').any(|o| o == tag) { continue; }
             for (name, scene) in &scenes {
                 let mut h = Harness::sized(egui::vec2(w, hgt), Some(ppp), touch);
+                h.app.st.p.lang = lang.into();
+                h.app.st.p.dark = dark;
+                h.app.st.p.high_contrast = hc;
+                crate::apply_prefs(&h.ctx, &h.app.st.p);
                 crate::i18n::set(lang);
-                if dark { h.app.st.p.dark = true; h.app.st.theme_dirty = true; }
                 for _ in 0..3 { h.run(vec![]); }
                 scene(&mut h);
                 // 16 frames (~0.27 s) so egui's 0.2 s modal fade-in finishes cleanly before capturing.
@@ -363,6 +473,7 @@ mod clickthrough {
                 h.shot(&dir.join(format!("{tag}-{name}.png")));
             }
         }
+        crate::HIGH_CONTRAST.store(false, std::sync::atomic::Ordering::Relaxed);
         crate::i18n::set("en");
     }
 }

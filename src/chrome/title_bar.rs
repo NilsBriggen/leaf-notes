@@ -27,9 +27,10 @@ impl NotesApp {
                     brand + 18.0 + tabs_w + rec + ai + 4.0 * 34.0 + if search_icon { 34.0 } else { 150.0 } + 6.0 * 6.0 + 12.0
                 };
                 let search_icon = full < 480.0 || (need(true, false) > full && need(true, true) <= full);
+                self.st.nav.search_icon_mode = search_icon;
                 let two_rows = need(true, search_icon) > full;
                 let compact = if two_rows { full < 845.0 } else { need(false, search_icon) > full };
-                let rec_w = tw(if recording { "●  00:00  ■" } else if compact { "●" } else { tr("●  Record") }, 14.0) + pad + flag_w;
+                let rec_w = tw(if recording { "●  00:00  ■" } else if compact { tr("● Rec") } else { tr("●  Record") }, 14.0) + pad + flag_w;
                 // Only show the serif brand title when it comfortably fits without crowding search or jumping at 560 px.
                 let show_title = !tight && (if two_rows { full >= 640.0 } else { !compact });
                 ui.horizontal(|ui| {
@@ -42,6 +43,7 @@ impl NotesApp {
                     let acc = accent(ui);
                     if ui.add(egui::Button::new(RichText::new("☰").size(17.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Show or hide notebooks").clicked() {
                         self.st.p.show_nav ^= true;
+                        if self.st.p.show_nav && full < 760.0 { self.st.p.show_ai = false; }
                         self.st.dirty = true;
                     }
                     if !tight {
@@ -78,15 +80,24 @@ impl NotesApp {
                             .min_size(Vec2::new(0.0, 34.0));
                         if ui.add(b).tip("Show or hide the AI assistant").clicked() {
                             self.st.p.show_ai ^= true;
+                            if self.st.p.show_ai && full < 760.0 { self.st.p.show_nav = false; }
                             self.st.dirty = true;
                         }
                         if search_icon {
+                            let open_full_search = |me: &mut Self| {
+                                me.st.p.show_nav = true;
+                                if full < 760.0 { me.st.p.show_ai = false; }
+                                me.st.nav.tasks = false;
+                                me.st.nav.search_open = true;
+                                me.st.nav.focus_id = Some(egui::Id::unique("search-panel-input"));
+                                me.st.dirty = true;
+                            };
                             if self.st.nav.focus_id == Some(egui::Id::unique("search")) {
                                 self.st.nav.focus_id = None;
-                                self.st.modals.push(ActiveModal::Switcher { query: String::new(), sel: 0 });
+                                open_full_search(self);
                             }
-                            if ui.add(egui::Button::new(RichText::new("🔍").size(15.0).color(v.weak_text_color())).frame_when_inactive(false)).tip("Find a page (Ctrl+K)").clicked() {
-                                self.st.modals.push(ActiveModal::Switcher { query: String::new(), sel: 0 });
+                            if ui.add(egui::Button::new(RichText::new("🔍").size(15.0).color(if self.st.nav.search_open { acc } else { v.weak_text_color() })).frame_when_inactive(false)).tip("Search all notes (Ctrl+F)").clicked() {
+                                open_full_search(self);
                             }
                         } else {
                             let w = (ui.available_width() - rec_w - 2.0 * 34.0 - 30.0).clamp(90.0, 300.0);
@@ -95,7 +106,7 @@ impl NotesApp {
                             let focused = ui.memory(|m| m.has_focus(id));
                             ui.painter().rect_filled(pill, 17.0, v.extreme_bg_color);
                             ui.painter().rect_stroke(pill, 17.0, if focused { EStroke::new(1.5, acc) } else { v.widgets.noninteractive.bg_stroke }, egui::StrokeKind::Inside);
-                            ui.painter().text(Pos2::new(pill.left() + 16.0, pill.center().y - 1.0), Align2::CENTER_CENTER, "🔍", FontId::proportional(13.0), v.weak_text_color());
+                            ui.painter().text(Pos2::new(pill.left() + 16.0, pill.center().y), Align2::CENTER_CENTER, "🔍", FontId::proportional(13.0), v.weak_text_color());
                             let key_w = if self.st.nav.search.is_empty() && !focused && w > 170.0 && !self.st.nav.touch_ui {
                                 let g = ui.painter().layout_no_wrap(tr("Ctrl F").into(), FontId::proportional(11.0), v.weak_text_color());
                                 let key = Rect::from_center_size(Pos2::new(pill.right() - 14.0 - g.size().x / 2.0 - 5.0, pill.center().y), g.size() + Vec2::new(10.0, 4.0));
@@ -105,14 +116,17 @@ impl NotesApp {
                             } else {
                                 0.0
                             };
-                            let field = Rect::from_min_max(Pos2::new(pill.left() + 30.0, pill.top() + 2.0), Pos2::new(pill.right() - 14.0 - key_w, pill.bottom() + 2.0));
+                            // Symmetrically center TextEdit inside pill with matched interact_size so placeholder, typed text, and caret align cleanly.
+                            let field = Rect::from_min_max(Pos2::new(pill.left() + 30.0, pill.top()), Pos2::new(pill.right() - 12.0 - key_w, pill.bottom()));
                             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(Layout::left_to_right(Align::Center)));
+                            child.spacing_mut().interact_size.y = 20.0;
                             let r = child.add(
                                 egui::TextEdit::singleline(&mut self.st.nav.search)
                                     .id(id)
                                     .hint_text(tr("Search everything"))
                                     .frame(egui::Frame::NONE)
-                                    .margin(egui::Margin::symmetric(4, 0))
+                                    .align(Align2::LEFT_CENTER)
+                                    .margin(egui::Margin::symmetric(6, 2))
                                     .desired_width(field.width())
                                     .font(FontId::proportional(14.0)),
                             );
@@ -135,10 +149,13 @@ impl NotesApp {
                                 .corner_radius(17)
                                 .min_size(Vec2::new(0.0, 34.0))
                         } else {
-                            egui::Button::new(RichText::new(tr(if compact { "●" } else { "●  Record" })).color(red))
-                                .frame_when_inactive(false)
+                            let label = tr(if compact { "● Rec" } else { "●  Record" });
+                            egui::Button::new(RichText::new(label).size(if compact { 12.5 } else { 14.0 }).color(red))
+                                .fill(if compact { Color32::from_rgba_unmultiplied(220, 50, 47, if v.dark_mode { 36 } else { 20 }) } else { Color32::TRANSPARENT })
+                                .stroke(if compact { EStroke::new(1.0, Color32::from_rgba_unmultiplied(220, 50, 47, 85)) } else { EStroke::NONE })
+                                .frame_when_inactive(compact)
                                 .corner_radius(17)
-                                .min_size(Vec2::new(0.0, 34.0))
+                                .min_size(Vec2::new(0.0, 32.0))
                         };
                         if ui.add(rec_btn).tip("Record audio while you take notes; later, tap any note to hear what was said then").clicked() {
                             self.st.audio.rec_toggle = true;
@@ -174,19 +191,55 @@ impl NotesApp {
         self.tab_names().iter().map(|n| ui.painter().layout_no_wrap(n.clone(), FontId::proportional(14.0), Color32::WHITE).size().x + pad).sum::<f32>() + 8.0
     }
 
-    /// The ribbon tabs as a segmented pill; scrolls horizontally on narrow phones if DE/FR labels exceed width.
+    /// The ribbon tabs as a segmented pill; shrinks padding first and adds visible overflow cue on narrow phones.
     fn tabs(&mut self, ui: &mut egui::Ui) {
-        let avail = ui.available_width();
-        let pad = if avail < 440.0 || self.st.nav.short { 16.0 } else { 30.0 };
+        let show_expand = !self.st.p.ribbon_open;
+        let expand_w = if show_expand { 30.0 } else { 0.0 };
+        let avail = (ui.available_width() - expand_w).max(80.0);
+        let mut pad = if avail < 440.0 || self.st.nav.short { 16.0 } else { 30.0 };
+        if self.tabs_width(ui, pad) > avail + 1.0 {
+            pad = 10.0;
+        }
         let need_w = self.tabs_width(ui, pad);
         if need_w > avail + 1.0 {
-            egui::ScrollArea::horizontal()
+            let nudge_id = egui::Id::unique("tabs-nudge");
+            let pending: Option<f32> = ui.data_mut(|d| d.remove_temp(nudge_id));
+            let mut sa = egui::ScrollArea::horizontal()
                 .id_salt("tabs-scroll")
+                .max_width(avail)
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .auto_shrink([false, true])
-                .show(ui, |ui| self.tabs_inner(ui, pad));
+                .auto_shrink([false, true]);
+            if let Some(off) = pending { sa = sa.horizontal_scroll_offset(off); }
+            let out = sa.show(ui, |ui| self.tabs_inner(ui, pad));
+            let max_x = (out.content_size.x - out.inner_rect.width()).max(0.0);
+            if max_x > 2.0 {
+                let off = out.state.clamped_offset().x;
+                let bg = ui.visuals().panel_fill;
+                let p = ui.painter();
+                let step = (out.inner_rect.width() * 0.5).max(80.0);
+                if off > 2.0 {
+                    let r = Rect::from_center_size(Pos2::new(out.inner_rect.left() + 10.0, out.inner_rect.center().y), Vec2::new(20.0, 26.0));
+                    let resp = ui.interact(r, ui.scope_id().with("tabs-l"), Sense::click());
+                    p.rect(r, 8.0, bg, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
+                    p.text(r.center(), Align2::CENTER_CENTER, "‹", FontId::proportional(15.0), ui.visuals().strong_text_color());
+                    if resp.clicked() { ui.data_mut(|d| d.insert_temp(nudge_id, (off - step).max(0.0))); ui.ctx().request_repaint(); }
+                }
+                if off < max_x - 2.0 {
+                    let r = Rect::from_center_size(Pos2::new(out.inner_rect.right() - 10.0, out.inner_rect.center().y), Vec2::new(20.0, 26.0));
+                    let resp = ui.interact(r, ui.scope_id().with("tabs-r"), Sense::click());
+                    p.rect(r, 8.0, bg, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
+                    p.text(r.center(), Align2::CENTER_CENTER, "›", FontId::proportional(15.0), ui.visuals().strong_text_color());
+                    if resp.clicked() { ui.data_mut(|d| d.insert_temp(nudge_id, (off + step).min(max_x))); ui.ctx().request_repaint(); }
+                }
+            }
         } else {
             self.tabs_inner(ui, pad);
+        }
+        if show_expand
+            && ui.add(egui::Button::new(RichText::new("⌄").size(16.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false)).tip("Show the toolbar").clicked()
+        {
+            self.st.p.ribbon_open = true;
+            self.st.dirty = true;
         }
     }
 
@@ -224,6 +277,10 @@ impl NotesApp {
                 } else {
                     self.st.tab = *t;
                     self.st.p.ribbon_open = true;
+                    // Switching to Draw from Type automatically arms the pen so the user can write immediately.
+                    if *t == Tab::Draw && self.st.canvas.tool == Tool::Type {
+                        self.st.canvas.tool = Tool::Pen;
+                    }
                 }
                 self.st.dirty = true;
             }

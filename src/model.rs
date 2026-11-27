@@ -497,28 +497,53 @@ pub fn flashcards(page: &Page) -> Vec<Card> {
     cards
 }
 
-/// Scratch-out: if `pts` is a scribble (a tight back-and-forth zigzag), the ids of the strokes it
-/// covers, which it erases. Empty when it isn't a scribble or covers nothing (then it stays ink).
+/// Scratch-out: if `pts` is a tight back-and-forth scratch gesture, the ids of the strokes it
+/// covers, which it erases. Empty when it looks like normal drawing (shading, spirals, zig-zags)
+/// or covers nothing (then it stays ink).
 pub fn scratched(pts: &[[f32; 3]], strokes: &[Stroke]) -> Vec<u64> {
-    if pts.len() < 12 { return vec![]; }
+    if pts.len() < 16 { return vec![]; }
     let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
     for p in pts { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
     let (w, h) = (hi[0] - lo[0], hi[1] - lo[1]);
+    let (major, minor) = (w.max(h), w.min(h));
+    // A scratch-out is a localized, band-shaped crossing-out gesture — never a large shading fill or square spiral.
+    if !(14.0..=260.0).contains(&major) || minor > 72.0 || minor > major * 0.65 { return vec![]; }
     let axis = if w >= h { 0 } else { 1 };
     let path: f32 = pts.windows(2).map(|q| (q[1][0] - q[0][0]).hypot(q[1][1] - q[0][1])).sum();
-    // direction changes along the long side, ignoring jitter under 4 points
-    let (mut turns, mut dir, mut run) = (0, 0.0f32, 0.0f32);
+    if path < 4.5 * major { return vec![]; }
+    // Count real direction reversals along the major axis and verify legs actually backtrack across the band.
+    let min_turn = (major * 0.15).clamp(4.0, 12.0);
+    let (mut turns, mut dir, mut run) = (0usize, 0.0f32, 0.0f32);
+    let mut anchor = pts[0][axis];
+    let mut leg_sum = 0.0f32;
+    let mut legs = 0usize;
     for q in pts.windows(2) {
         let d = q[1][axis] - q[0][axis];
-        if d * dir < 0.0 { run += d.abs(); if run > 4.0 { turns += 1; dir = d.signum(); run = 0.0; } }
-        else { if dir == 0.0 { dir = d.signum(); } run = 0.0; }
+        if d * dir < 0.0 {
+            run += d.abs();
+            if run > min_turn {
+                turns += 1;
+                leg_sum += (q[0][axis] - anchor).abs();
+                legs += 1;
+                anchor = q[0][axis];
+                dir = d.signum();
+                run = 0.0;
+            }
+        } else {
+            if dir == 0.0 && d != 0.0 { dir = d.signum(); }
+            run = 0.0;
+        }
     }
-    if turns < 4 || path < 3.5 * w.max(h) || w.max(h) < 12.0 { return vec![]; }
+    let avg_leg = if legs > 0 { leg_sum / legs as f32 } else { 0.0 };
+    if turns < 5 || avg_leg < major * 0.35 { return vec![]; }
     let inside = |p: &[f32; 3]| p[0] >= lo[0] - 4.0 && p[0] <= hi[0] + 4.0 && p[1] >= lo[1] - 4.0 && p[1] <= hi[1] + 4.0;
-    // the scribble must actually run over a stroke (not just near it, as a zigzag arrow or cursive next to it does)
+    // The scribble must tightly cover the stroke (not just graze a wide highlighter or neighboring line).
     let scribble = Stroke { id: 0, points: pts.to_vec(), color: [0; 4], width: 0.0, highlighter: false, pen: PenKind::Ballpoint, t: 0.0 };
-    let covered = |s: &Stroke| s.points.iter().filter(|q| stroke_hit(&scribble, [q[0], q[1]], 6.0 + s.width)).count() * 10 >= s.points.len() * 5;
-    strokes.iter().filter(|s| !s.points.is_empty() && s.points.iter().filter(|p| inside(p)).count() * 10 >= s.points.len() * 6 && covered(s)).map(|s| s.id).collect()
+    let covered = |s: &Stroke| {
+        let hit_r = 4.0 + s.width.min(6.0) * 0.5;
+        s.points.iter().filter(|q| stroke_hit(&scribble, [q[0], q[1]], hit_r)).count() * 10 >= s.points.len() * 6
+    };
+    strokes.iter().filter(|s| !s.points.is_empty() && s.points.iter().filter(|p| inside(p)).count() * 10 >= s.points.len() * 7 && covered(s)).map(|s| s.id).collect()
 }
 
 /// The end of a line from `a` to `b`, made exactly level or upright when it's within 4° of that
@@ -867,7 +892,29 @@ mod tests {
         assert!(scratched(&plain, &[word.clone(), far]).is_empty());
         // a scribble over nothing erases nothing
         let alone: Vec<[f32; 3]> = zag.iter().map(|p| [p[0] + 600.0, p[1] + 600.0, 1.0]).collect();
-        assert!(scratched(&alone, &[word]).is_empty());
+        assert!(scratched(&alone, std::slice::from_ref(&word)).is_empty());
+        // Shading a box (120×100) must NOT delete underlying diagram strokes (Q2 regression).
+        let box_strokes: Vec<Stroke> = (0..5)
+            .map(|k| line(10 + k, (0..20).map(|i| [100.0 + i as f32 * 6.0, 40.0 + k as f32 * 22.0, 1.0]).collect()))
+            .collect();
+        let shade: Vec<[f32; 3]> = (0..40)
+            .map(|i| [if i % 2 == 0 { 100.0 } else { 220.0 }, 40.0 + i as f32 * 2.6, 1.0])
+            .collect();
+        assert!(scratched(&shade, &box_strokes).is_empty(), "shading a diagram box must not erase strokes");
+        // A progressive resistor zig-zag advancing left-to-right must NOT erase underlying lines.
+        let resistor: Vec<[f32; 3]> = (0..24)
+            .map(|i| [100.0 + i as f32 * 5.0, 50.0 + if i % 2 == 0 { -12.0 } else { 12.0 }, 1.0])
+            .collect();
+        assert!(scratched(&resistor, std::slice::from_ref(&word)).is_empty(), "resistor zig-zag must not erase");
+        // A spiral must NOT erase underlying strokes.
+        let spiral: Vec<[f32; 3]> = (0..80)
+            .map(|i| {
+                let a = i as f32 * 0.45;
+                let r = 6.0 + i as f32 * 0.65;
+                [130.0 + r * a.cos(), 50.0 + r * a.sin(), 1.0]
+            })
+            .collect();
+        assert!(scratched(&spiral, &[word]).is_empty(), "spiral must not erase");
     }
     #[test]
     fn rasterizes_and_roundtrips() {

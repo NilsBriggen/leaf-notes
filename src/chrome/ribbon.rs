@@ -31,10 +31,27 @@ impl NotesApp {
                             let groups = (row * 2.0 + 6.0).max(52.0) + if row < 30.0 { 13.0 + gap } else { 0.0 };
                             ui.set_min_height(groups + bar.bar_width + bar.bar_inner_margin + bar.bar_outer_margin);
                             let fold = 16.0 + 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
-                            let w = (ui.available_width() - fold).max(80.0);
                             let tab_key = self.st.tab as u8;
                             let nudge_id = egui::Id::unique(("ribbon-nudge", tab_key));
+                            let edge_id = egui::Id::unique(("ribbon-edges", tab_key));
                             let pending_offset: Option<f32> = ui.data_mut(|d| d.remove_temp(nudge_id));
+                            let (had_left, had_right, last_off, last_max) = ui.data(|d| d.get_temp::<(bool, bool, f32, f32)>(edge_id)).unwrap_or((false, false, 0.0, 0.0));
+                            let chevron_slot = 24.0;
+                            let reserved = (if had_left { chevron_slot } else { 0.0 }) + (if had_right { chevron_slot } else { 0.0 });
+                            let w = (ui.available_width() - fold - reserved).max(80.0);
+                            let step = (w * 0.55).max(140.0);
+                            let mut nudge_to: Option<f32> = None;
+                            // Allocate dedicated scroll chevron buttons OUTSIDE the ScrollArea so they never obscure tools or swatches.
+                            if had_left {
+                                let (r, resp) = ui.allocate_exact_size(Vec2::new(22.0, groups), Sense::click());
+                                let pill = Rect::from_center_size(r.center(), Vec2::new(22.0, 28.0));
+                                let fill = if resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { ui.visuals().faint_bg_color };
+                                ui.painter().rect(pill, 8.0, fill, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
+                                ui.painter().text(pill.center(), Align2::CENTER_CENTER, "‹", FontId::proportional(17.0), ui.visuals().strong_text_color());
+                                if resp.clicked() {
+                                    nudge_to = Some((last_off - step).max(0.0));
+                                }
+                            }
                             let mut sa = egui::ScrollArea::horizontal()
                                 .id_salt(("ribbon-scroll", tab_key))
                                 .max_width(w)
@@ -56,37 +73,33 @@ impl NotesApp {
                                     }
                                 });
                             });
-                            // Soft edge fades + clickable ‹ / › overflow chevrons when content overflows.
                             let max_x = (out.content_size.x - out.inner_rect.width()).max(0.0);
+                            let off = out.state.clamped_offset().x;
+                            let can_left = max_x > 4.0 && off > 2.0;
+                            let can_right = max_x > 4.0 && off < max_x - 2.0;
                             if max_x > 4.0 {
-                                let off = out.state.clamped_offset().x;
                                 let bg = ui.visuals().extreme_bg_color;
                                 let painter = ui.painter();
-                                let step = (out.inner_rect.width() * 0.55).max(140.0);
-                                if off > 2.0 {
-                                    paint_edge_fade(painter, out.inner_rect, true, bg);
-                                    let r = Rect::from_center_size(Pos2::new(out.inner_rect.left() + 13.0, out.inner_rect.center().y), Vec2::new(22.0, 28.0));
-                                    let resp = ui.interact(r, ui.scope_id().with(("rib-l", tab_key)), Sense::click());
-                                    let fill = if resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { bg };
-                                    painter.rect(r, 8.0, fill, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
-                                    painter.text(r.center(), Align2::CENTER_CENTER, "‹", FontId::proportional(17.0), ui.visuals().strong_text_color());
-                                    if resp.clicked() {
-                                        ui.data_mut(|d| d.insert_temp(nudge_id, (off - step).max(0.0)));
-                                        ui.ctx().request_repaint();
-                                    }
+                                if can_left { paint_edge_fade(painter, out.inner_rect, true, bg); }
+                                if can_right { paint_edge_fade(painter, out.inner_rect, false, bg); }
+                            }
+                            if had_right {
+                                let (r, resp) = ui.allocate_exact_size(Vec2::new(22.0, groups), Sense::click());
+                                let pill = Rect::from_center_size(r.center(), Vec2::new(22.0, 28.0));
+                                let fill = if resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { ui.visuals().faint_bg_color };
+                                ui.painter().rect(pill, 8.0, fill, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
+                                ui.painter().text(pill.center(), Align2::CENTER_CENTER, "›", FontId::proportional(17.0), ui.visuals().strong_text_color());
+                                if resp.clicked() {
+                                    nudge_to = Some((off + step).min(max_x.max(last_max)));
                                 }
-                                if off < max_x - 2.0 {
-                                    paint_edge_fade(painter, out.inner_rect, false, bg);
-                                    let r = Rect::from_center_size(Pos2::new(out.inner_rect.right() - 13.0, out.inner_rect.center().y), Vec2::new(22.0, 28.0));
-                                    let resp = ui.interact(r, ui.scope_id().with(("rib-r", tab_key)), Sense::click());
-                                    let fill = if resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { bg };
-                                    painter.rect(r, 8.0, fill, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
-                                    painter.text(r.center(), Align2::CENTER_CENTER, "›", FontId::proportional(17.0), ui.visuals().strong_text_color());
-                                    if resp.clicked() {
-                                        ui.data_mut(|d| d.insert_temp(nudge_id, (off + step).min(max_x)));
-                                        ui.ctx().request_repaint();
-                                    }
-                                }
+                            }
+                            if let Some(target) = nudge_to {
+                                ui.data_mut(|d| d.insert_temp(nudge_id, target));
+                                ui.ctx().request_repaint();
+                            }
+                            ui.data_mut(|d| d.insert_temp(edge_id, (can_left, can_right, off, max_x)));
+                            if (can_left, can_right) != (had_left, had_right) {
+                                ui.ctx().request_repaint();
                             }
                             if ui.add(egui::Button::new(RichText::new("⌃").size(16.0).color(ui.visuals().weak_text_color())).frame_when_inactive(false)).tip("Hide the toolbar (click a tab to show it again)").clicked() {
                                 self.st.p.ribbon_open = false;
@@ -218,7 +231,7 @@ impl NotesApp {
         });
         group(ui, "Page", false, |ui| {
             if rbtn(ui, "+", "Blank page", false).tip("New page (Ctrl+N)").clicked() { self.new_page(None); }
-            let r = rbtn(ui, "▦", "Page on… ▾", false).tip("A new page on the background you pick");
+            let r = rbtn(ui, "▦", "Paper ▾", false).tip("A new page on the background you pick");
             egui::Popup::menu(&r).show(|ui| {
                 for (p, icon, name) in PAPERS {
                     if ui.button(tf!("{icon}  {name}", icon = icon, name = tr(name))).clicked() { self.new_page(Some(p)); ui.close(); }
@@ -385,9 +398,26 @@ impl NotesApp {
                     pts.push([x, y, pr]);
                 }
                 crate::canvas::smooth_passes(&mut pts, stab);
-                let sample = Stroke { id: 0, points: pts, color: pen.color, width: pen.width.min(6.0), highlighter: false, pen: pen.kind, t: 0.0 };
+                let dark = ui.visuals().dark_mode;
+                let preview_col = if dark {
+                    let [r, g, b, a] = pen.color;
+                    if 0.2126 * (r as f32) + 0.7152 * (g as f32) + 0.0722 * (b as f32) < 60.0 {
+                        [226, 230, 228, a]
+                    } else {
+                        pen.color
+                    }
+                } else {
+                    pen.color
+                };
+                let sample = Stroke { id: 0, points: pts, color: preview_col, width: pen.width.min(6.0), highlighter: false, pen: pen.kind, t: 0.0 };
                 let (r, _) = ui.allocate_exact_size(Vec2::new(64.0, 40.0), Sense::hover());
-                ui.painter().rect_filled(r, 8.0, if ui.visuals().dark_mode { Color32::from_rgb(200, 207, 204) } else { ui.visuals().faint_bg_color });
+                ui.painter().rect(
+                    r,
+                    8.0,
+                    if dark { ui.visuals().extreme_bg_color } else { ui.visuals().faint_bg_color },
+                    ui.visuals().widgets.noninteractive.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
                 crate::canvas::paint_stroke(&ui.painter_at(r), &sample, r.min + Vec2::new(6.0, 2.0));
                 if *self.st.pen() != before { self.st.canvas.tool = Tool::Pen; self.st.dirty = true; }
             });
@@ -561,8 +591,17 @@ impl NotesApp {
                 self.st.p.show_ai = focus;
                 self.st.dirty = true;
             }
-            if rbtn(ui, "☰", "Notebooks", self.st.p.show_nav).clicked() { self.st.p.show_nav ^= true; self.st.dirty = true; }
-            if rbtn(ui, "✦", "Assistant", self.st.p.show_ai).clicked() { self.st.p.show_ai ^= true; self.st.dirty = true; }
+            let full_w = ui.ctx().content_rect().width();
+            if rbtn(ui, "☰", "Notebooks", self.st.p.show_nav).clicked() {
+                self.st.p.show_nav ^= true;
+                if self.st.p.show_nav && full_w < 760.0 { self.st.p.show_ai = false; }
+                self.st.dirty = true;
+            }
+            if rbtn(ui, "✦", "Assistant", self.st.p.show_ai).clicked() {
+                self.st.p.show_ai ^= true;
+                if self.st.p.show_ai && full_w < 760.0 { self.st.p.show_nav = false; }
+                self.st.dirty = true;
+            }
         });
         group(ui, "Help", false, |ui| {
             if rbtn(ui, "⌨", "Shortcuts", self.st.modals.has_shortcuts()).clicked() { self.st.modals.toggle(ActiveModal::Shortcuts); }
@@ -575,12 +614,12 @@ impl NotesApp {
 
 /// Soft translucent edge fade indicating horizontally scrolled ribbon content.
 fn paint_edge_fade(painter: &egui::Painter, rect: Rect, left: bool, bg: Color32) {
-    let steps = 6;
-    let total_w = 34.0;
+    let steps = 5;
+    let total_w = 16.0;
     let sw = total_w / steps as f32;
     for i in 0..steps {
         let t = 1.0 - (i as f32 / steps as f32);
-        let alpha = (t * t * 230.0) as u8;
+        let alpha = (t * t * 185.0) as u8;
         let col = Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), alpha);
         let r = if left {
             Rect::from_min_max(

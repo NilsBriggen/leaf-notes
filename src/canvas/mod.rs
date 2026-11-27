@@ -86,23 +86,27 @@ pub(crate) fn page_view(
         .show(ui, |ui| {
             let head_top = ui.cursor().top();
             let head = !(st.canvas.typing_kb && page.kind == PageKind::Notes);
-            if head && (!touch || page.kind == PageKind::Locked) {
+            if head {
                 ui.horizontal_wrapped(|ui| {
-                    if !st.nav.nav_back.is_empty()
-                        && ui.add(egui::Button::new(RichText::new("◂").size(12.0)).frame_when_inactive(false)).tip("Back to the page before (Alt+←)").clicked()
-                    {
-                        action = Some(PageAction::Nav(true));
+                    if !touch {
+                        if !st.nav.nav_back.is_empty()
+                            && ui.add(egui::Button::new(RichText::new("◂").size(12.0)).frame_when_inactive(false)).tip("Back to the page before (Alt+←)").clicked()
+                        {
+                            action = Some(PageAction::Nav(true));
+                        }
+                        if !st.nav.nav_fwd.is_empty()
+                            && ui.add(egui::Button::new(RichText::new("▸").size(12.0)).frame_when_inactive(false)).tip("Forward (Alt+→)").clicked()
+                        {
+                            action = Some(PageAction::Nav(false));
+                        }
                     }
-                    if !st.nav.nav_fwd.is_empty()
-                        && ui.add(egui::Button::new(RichText::new("▸").size(12.0)).frame_when_inactive(false)).tip("Forward (Alt+→)").clicked()
-                    {
-                        action = Some(PageAction::Nav(false));
-                    }
-                    ui.label(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2));
+                    ui.add(egui::Label::new(RichText::new(crumb.to_uppercase()).size(10.5).color(accent(ui)).extra_letter_spacing(1.2)).truncate());
                     if page.kind == PageKind::Locked {
                         return;
                     }
-                    ui.label(RichText::new(format!("·  {}", format_date(page.created, true))).size(11.0).weak());
+                    if !touch {
+                        ui.label(RichText::new(format!("·  {}", format_date(page.created, true))).size(11.0).weak());
+                    }
                     if !backlinks.is_empty() {
                         ui.add_space(10.0);
                         ui.label(RichText::new(tr("↩ Linked from")).size(11.0).weak());
@@ -111,17 +115,6 @@ pub(crate) fn page_view(
                             if ui.add(egui::Button::new(RichText::new(t).size(11.0).color(accent(ui))).corner_radius(9).min_size(Vec2::new(0.0, 18.0))).clicked() {
                                 action = Some(PageAction::Go(at.0, at.1, at.2));
                             }
-                        }
-                    }
-                });
-            }
-            if head && touch && page.kind != PageKind::Locked && !backlinks.is_empty() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(tr("↩ Linked from")).size(11.0).weak());
-                    for (title, at) in backlinks {
-                        let t = if title.trim().is_empty() { tr("Untitled page") } else { title.as_str() };
-                        if ui.add(egui::Button::new(RichText::new(t).size(11.0).color(accent(ui))).corner_radius(9)).clicked() {
-                            action = Some(PageAction::Go(at.0, at.1, at.2));
                         }
                     }
                 });
@@ -241,7 +234,7 @@ pub(crate) fn page_view(
                             if ui.button(tr("⇪  Export as Markdown…")).clicked() { action = Some(PageAction::Export); ui.close(); }
                             if page.kind == PageKind::Deck && ui.button(tr("▶  Study this deck")).clicked() { action = Some(PageAction::Study); ui.close(); }
                             ui.separator();
-                            if ui.button(RichText::new(tr("🗑  Delete page")).color(Color32::from_rgb(200, 60, 50))).clicked() {
+                            if ui.button(RichText::new(tr("🗑  Delete page")).color(crate::chrome::danger_color(ui))).clicked() {
                                 action = Some(PageAction::Delete);
                                 ui.close();
                             }
@@ -262,10 +255,11 @@ pub(crate) fn page_view(
             ui.painter().hline((full.left() - ml as f32)..=(full.right() + 12.0), y, EStroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
             ui.add_space(1.0);
             let head = Rect::from_x_y_ranges((full.left() - ml as f32)..=(full.right() + 12.0), head_top..=y);
-            if st.canvas.input != Input::Mouse
+            if (st.canvas.input != Input::Mouse || st.p.draw_mouse)
                 && matches!(st.canvas.tool, Tool::Pen | Tool::Highlighter | Tool::Shape(_))
                 && !ui.ctx().egui_is_using_pointer()
-                && ui.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| head.contains(p)))
+                && !egui::Popup::is_any_open(ui.ctx())
+                && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary) && i.pointer.press_origin().is_some_and(|p| head.contains(p)))
             {
                 st.say("The page title is up here. Ink goes on the paper below the line.");
             }
@@ -279,19 +273,33 @@ pub(crate) fn page_view(
             let avail = ui.available_size();
             let outer = Rect::from_min_size(ui.cursor().min, avail);
             let mut view = st.canvas.views.get(&page.id).copied().unwrap_or(Rect::from_min_size(Pos2::ZERO, avail));
+            let content_right = page
+                .blocks
+                .iter()
+                .map(|b| b.pos[0] + b.width)
+                .chain(page.strokes.iter().flat_map(|s| s.points.iter().map(|p| p[0])))
+                .fold(0.0, f32::max);
             let mut scale = st.canvas.scales.get(&page.id).copied().unwrap_or_else(|| {
-                let right = page
-                    .blocks
-                    .iter()
-                    .map(|b| b.pos[0] + b.width)
-                    .chain(page.strokes.iter().flat_map(|s| s.points.iter().map(|p| p[0])))
-                    .fold(0.0, f32::max);
-                if avail.x < 600.0 && right > avail.x - 12.0 {
-                    (avail.x / (right + 12.0)).clamp(0.55, 1.0)
+                if avail.x < 600.0 && content_right > avail.x - 12.0 {
+                    (avail.x / (content_right + 16.0)).clamp(0.42, 1.0)
                 } else {
                     1.0
                 }
             });
+            // On narrow desktop/tablet (600..1000 px), auto-fit canvas zoom when Nav squeezes avail.x below content width,
+            // and restore the prior zoom once Nav closes so 2-column pages aren't hard-clipped.
+            let nav_squeezed = st.nav.narrow && st.p.show_nav && avail.x >= 120.0 && content_right > avail.x - 12.0;
+            if nav_squeezed {
+                let fit = (avail.x / (content_right + 16.0)).clamp(0.42, 1.0);
+                if st.canvas.pre_nav_scale.is_none() && scale > fit + 0.02 {
+                    st.canvas.pre_nav_scale = Some((page.id, scale));
+                    scale = fit;
+                }
+            } else if let Some((pid, prev)) = st.canvas.pre_nav_scale.take() {
+                if pid == page.id {
+                    scale = prev;
+                }
+            }
             if let Some(c) = st.canvas.capture.as_mut().filter(|c| c.page == page.id && !c.done()) {
                 let s = c.scale(avail);
                 let th = avail.y / s;
@@ -410,6 +418,27 @@ pub(crate) fn page_view(
                 .max_inner_size(Vec2::splat(75_000.0))
                 .show(ui, &mut view, |ui| canvas(ui, page, st));
             view = view.translate(Vec2::new((-view.left()).max(0.0), (-view.top()).max(0.0)));
+            // Subtle right-edge scroll indicator when page content extends below the visible canvas.
+            if st.canvas.capture.is_none() && avail.y > 80.0 {
+                let content_bottom = page
+                    .blocks
+                    .iter()
+                    .map(|b| b.pos[1] + st.canvas.heights.get(&b.id).copied().unwrap_or(40.0))
+                    .chain(page.strokes.iter().flat_map(|s| s.points.iter().map(|p| p[1])))
+                    .fold(0.0, f32::max)
+                    + 24.0;
+                let total_h = content_bottom.max(view.bottom());
+                if content_bottom > view.bottom() + 16.0 || view.top() > 8.0 {
+                    let frac = (view.height() / total_h.max(1.0)).clamp(0.12, 0.95);
+                    let pos = (view.top() / (total_h - view.height()).max(1.0)).clamp(0.0, 1.0);
+                    let track_h = (outer.height() - 16.0).max(20.0);
+                    let thumb_h = (track_h * frac).max(24.0);
+                    let thumb_y = outer.top() + 8.0 + (track_h - thumb_h) * pos;
+                    let thumb = Rect::from_min_size(Pos2::new(outer.right() - 7.0, thumb_y), Vec2::new(4.0, thumb_h));
+                    let col = if ui.visuals().dark_mode { Color32::from_white_alpha(55) } else { Color32::from_black_alpha(45) };
+                    ui.painter().rect_filled(thumb, 2.0, col);
+                }
+            }
             // Guard against tiny squeezed viewports (e.g. phone nav open) corrupting the saved zoom scale.
             if avail.x >= 120.0 {
                 scale = (avail.x / view.width().max(1.0)).clamp(0.3, 4.0);
@@ -436,9 +465,22 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     let (rect, bg) = ui.allocate_exact_size(size, Sense::click());
     let o = rect.min;
     let dark = ui.visuals().dark_mode;
+    let hc = crate::HIGH_CONTRAST.load(std::sync::atomic::Ordering::Relaxed);
     let clip = ui.clip_rect();
-    let line = if dark { Color32::from_gray(52) } else { Color32::from_rgb(220, 232, 240) };
-    let margin_col = if dark { Color32::from_rgb(90, 50, 50) } else { Color32::from_rgb(248, 200, 196) };
+    let line = if hc {
+        if dark { Color32::from_gray(115) } else { Color32::from_gray(140) }
+    } else if dark {
+        Color32::from_gray(52)
+    } else {
+        Color32::from_rgb(220, 232, 240)
+    };
+    let margin_col = if hc {
+        if dark { Color32::from_rgb(220, 120, 120) } else { Color32::from_rgb(175, 45, 45) }
+    } else if dark {
+        Color32::from_rgb(90, 50, 50)
+    } else {
+        Color32::from_rgb(248, 200, 196)
+    };
     match page.paper {
         Paper::Plain => {}
         Paper::Ruled => {
@@ -472,7 +514,13 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             ui.painter().vline(o.x + 210.0, rect.y_range(), EStroke::new(1.5, margin_col));
         }
         Paper::Music => {
-            let staff = if dark { Color32::from_gray(78) } else { Color32::from_rgb(178, 196, 210) };
+            let staff = if hc {
+                if dark { Color32::from_gray(145) } else { Color32::from_gray(100) }
+            } else if dark {
+                Color32::from_gray(78)
+            } else {
+                Color32::from_rgb(178, 196, 210)
+            };
             let mut y = o.y + 48.0;
             while y < rect.bottom() {
                 if y > clip.top() - 100.0 && y < clip.bottom() + 100.0 {
@@ -497,10 +545,10 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             }
         }
     }
-    let auto_pen = st.canvas.tool == Tool::Type && !st.p.draw_finger && st.p.pen_detect;
+    let auto_pen = st.canvas.tool == Tool::Type && !st.p.draw_finger && (st.p.pen_detect || st.canvas.input == Input::Pen);
     let to_page = ui.ctx().layer_transform_from_global(ui.layer_id()).unwrap_or_default();
-    let pressed_at = ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed())).map(|q| to_page * q);
-    if auto_pen && st.canvas.input == Input::Pen && pressed_at.is_some_and(|p| ui.clip_rect().contains(p) && rect.contains(p)) {
+    let pressed_at = ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.button_pressed(egui::PointerButton::Primary))).map(|q| to_page * q);
+    if auto_pen && st.canvas.input == Input::Pen && !egui::Popup::is_any_open(ui.ctx()) && pressed_at.is_some_and(|p| ui.clip_rect().contains(p) && rect.contains(p)) {
         st.canvas.tool = Tool::Pen;
         st.canvas.editing = None;
         st.say("✏ Picked up your pen. Choose Type in the toolbar to type again.");
@@ -512,6 +560,14 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
         Input::Mouse => st.p.draw_mouse,
     };
     st.canvas.ink_pass = (makes_ink && !allowed) || st.canvas.tool == Tool::Type && auto_pen;
+    // Clear active text focus when a drawing tool is armed so Attempt 1 over any block draws immediately.
+    if st.canvas.tool != Tool::Type && !st.canvas.ink_pass {
+        st.canvas.editing = None;
+        st.canvas.popup = None;
+    }
+    if st.canvas.tool != Tool::Lasso && !st.canvas.selected.is_empty() {
+        st.clear_selection();
+    }
     let paper_click = if st.canvas.ink_pass { ink_input(ui, rect, page, st) } else { None };
     let clicked = bg.clicked() || paper_click.is_some();
     let click_pos = paper_click.or_else(|| bg.interact_pointer_pos());
@@ -576,6 +632,14 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
     if ui.input(|i| i.pointer.any_pressed()) || key_change {
         st.canvas.press_page = Some(page.clone());
     }
+    let siblings: Vec<(u64, Rect)> = page
+        .blocks
+        .iter()
+        .map(|b| {
+            let h = st.canvas.heights.get(&b.id).copied().unwrap_or(40.0);
+            (b.id, Rect::from_min_size(o + Vec2::new(b.pos[0], b.pos[1]), Vec2::new(b.width, h)))
+        })
+        .collect();
     for pictures in [true, false] {
         if !pictures {
             let dark = ui.visuals().dark_mode;
@@ -590,7 +654,7 @@ fn canvas(ui: &mut egui::Ui, page: &mut Page, st: &mut St) {
             }
         }
         for b in page.blocks.iter_mut().filter(|b| matches!(b.kind, Kind::Image { .. }) == pictures) {
-            match block_ui(ui, b, st, o) {
+            match block_ui(ui, b, st, o, &siblings) {
                 BlockAction::Delete => remove = Some(b.id),
                 BlockAction::Duplicate => dup = Some(b.id),
                 BlockAction::Unpin => st.canvas.unpinned = Some(b.id),
@@ -769,7 +833,7 @@ fn locked_view(ui: &mut egui::Ui, st: &mut St) -> Option<String> {
             go = true;
         }
         if !st.locks.unlock_err.is_empty() {
-            ui.label(RichText::new(&st.locks.unlock_err).color(Color32::from_rgb(200, 60, 50)));
+            ui.label(RichText::new(&st.locks.unlock_err).color(crate::chrome::danger_color(ui)));
         }
         ui.add_space(6.0);
         if busy {

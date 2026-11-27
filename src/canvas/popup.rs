@@ -201,6 +201,8 @@ pub(crate) fn popup_ui(
                 if items.is_empty() {
                     ui.label(RichText::new(tr("No matches")).weak());
                 } else {
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                    ui.spacing_mut().scroll.bar_width = 5.0;
                     egui::ScrollArea::vertical()
                         .id_salt(("popup-scroll", block_id))
                         .max_height(max_scroll_h)
@@ -209,6 +211,7 @@ pub(crate) fn popup_ui(
                             for (i, (label, icon, _)) in items.iter().enumerate() {
                                 let r = ui.add(
                                     egui::Button::new(RichText::new(tf!("{icon}   {label}", icon = icon, label = tr(label))).size(13.5))
+                                        .truncate()
                                         .selected(i == sel)
                                         .frame_when_inactive(false)
                                         .min_size(Vec2::new(ui.available_width(), 28.0)),

@@ -355,7 +355,8 @@ fn layout(p: &Painter, n: &Node, size: f32, color: Color32) -> MBox {
         Node::Big(s) => {
             let mut b = text_box(p, s, size * 1.45, false, color);
             let shift = size * 0.12; // centre the big operator on the math axis
-            let mut o = MBox { w: b.w + size * 0.08, asc: b.asc - shift, desc: b.desc + shift, items: vec![] };
+            let pad_r = if s == "∫" { size * 0.16 } else { size * 0.10 };
+            let mut o = MBox { w: b.w + pad_r, asc: b.asc - shift, desc: b.desc + shift, items: vec![] };
             b.w = 0.0;
             o.append(b, 0.0, shift);
             o
@@ -378,8 +379,8 @@ fn layout(p: &Painter, n: &Node, size: f32, color: Color32) -> MBox {
             let s = (size * 0.85).max(9.0);
             let (num, den) = (layout(p, a, s, color), layout(p, b, s, color));
             let w = num.w.max(den.w) + size * 0.3;
-            let axis = size * 0.28;
-            let gap = size * 0.12;
+            let axis = size * 0.24;
+            let gap = size * 0.11;
             let mut out = MBox { w, asc: axis + gap + num.asc + num.desc, desc: den.asc + den.desc + gap - axis, items: vec![] };
             if *bar { out.items.push(Item::Line(Vec2::new(size * 0.05, -axis), Vec2::new(w - size * 0.05, -axis), lw)); }
             let (nw, dw, ndesc, dasc) = (num.w, den.w, num.desc, den.asc);

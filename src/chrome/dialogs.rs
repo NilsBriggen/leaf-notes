@@ -177,37 +177,37 @@ impl NotesApp {
                     self.st.modals.push(ActiveModal::Shortcuts);
                 }
             }
-            ActiveModal::PathPrompt { how, path } => {
-                if let Some(path) = self.path_prompt_window(ctx, how, path) {
-                    self.st.modals.push(ActiveModal::PathPrompt { how, path });
-                }
-            }
         }
     }
 
     fn mic_window(&mut self, ctx: &egui::Context) -> bool {
         let (mut allow, mut no) = (false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(24)).corner_radius(18);
+        let max_modal_h = (ctx.content_rect().height() - 60.0 - self.st.bars[0] - self.st.bars[1]).max(180.0);
         let modal = egui::Modal::new(egui::Id::unique("mic")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 440.0));
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-            let (c, acc) = (r.center(), accent(ui));
-            ui.painter().circle_filled(c, 28.0, ui.visuals().selection.bg_fill);
-            ui.painter().rect_filled(Rect::from_center_size(c - Vec2::new(0.0, 5.0), Vec2::new(13.0, 22.0)), 6.5, acc);
-            let arc: Vec<Pos2> = (0..=16).map(|i| { let t = std::f32::consts::PI * i as f32 / 16.0; c + Vec2::new(-11.0 * t.cos(), -2.0 + 11.0 * t.sin()) }).collect();
-            ui.painter().add(egui::Shape::line(arc, EStroke::new(2.2, acc)));
-            ui.painter().line_segment([c + Vec2::new(0.0, 9.0), c + Vec2::new(0.0, 15.0)], EStroke::new(2.2, acc));
-            ui.painter().line_segment([c + Vec2::new(-6.0, 15.0), c + Vec2::new(6.0, 15.0)], EStroke::new(2.2, acc));
-            ui.add_space(4.0);
-            ui.label(RichText::new(tr("Allow the microphone?")).font(rich::serif(23.0)).color(ui.visuals().strong_text_color()));
-            ui.add_space(4.0);
-            ui.label(tr("Leaf Notes records only while the red Record button is on. Each recording is saved with its page, on this device only, and is linked to the notes you write so you can tap a note to hear that moment again."));
-            #[cfg(target_os = "android")]
-            ui.label(RichText::new(tr("Android will ask you to confirm next.")).weak());
-            ui.add_space(12.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("Allow and record")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(150.0, 34.0))).clicked() { allow = true; }
-                if ui.add(egui::Button::new(tr("Not now")).min_size(Vec2::new(100.0, 34.0))).clicked() { no = true; }
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
+            egui::ScrollArea::vertical().id_salt("mic-outer").max_height(max_modal_h).show(ui, |ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                let (c, acc) = (r.center(), accent(ui));
+                ui.painter().circle_filled(c, 28.0, ui.visuals().selection.bg_fill);
+                ui.painter().rect_filled(Rect::from_center_size(c - Vec2::new(0.0, 5.0), Vec2::new(13.0, 22.0)), 6.5, acc);
+                let arc: Vec<Pos2> = (0..=16).map(|i| { let t = std::f32::consts::PI * i as f32 / 16.0; c + Vec2::new(-11.0 * t.cos(), -2.0 + 11.0 * t.sin()) }).collect();
+                ui.painter().add(egui::Shape::line(arc, EStroke::new(2.2, acc)));
+                ui.painter().line_segment([c + Vec2::new(0.0, 9.0), c + Vec2::new(0.0, 15.0)], EStroke::new(2.2, acc));
+                ui.painter().line_segment([c + Vec2::new(-6.0, 15.0), c + Vec2::new(6.0, 15.0)], EStroke::new(2.2, acc));
+                ui.add_space(4.0);
+                ui.label(RichText::new(tr("Allow the microphone?")).font(rich::serif(23.0)).color(ui.visuals().strong_text_color()));
+                ui.add_space(4.0);
+                ui.label(tr("Leaf Notes records only while the red Record button is on. Each recording is saved with its page, on this device only, and is linked to the notes you write so you can tap a note to hear that moment again."));
+                #[cfg(target_os = "android")]
+                ui.label(RichText::new(tr("Android will ask you to confirm next.")).weak());
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add(egui::Button::new(RichText::new(tr("Allow and record")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(0.0, 34.0))).clicked() { allow = true; }
+                    if ui.add(egui::Button::new(tr("Not now")).min_size(Vec2::new(0.0, 34.0))).clicked() { no = true; }
+                });
             });
         });
         if allow {
@@ -238,86 +238,110 @@ impl NotesApp {
         }
         let mut back = back;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
-        let max_card_h = (ctx.content_rect().height() - 280.0 - self.st.bars[0] - self.st.bars[1]).max(140.0);
+        let max_modal_h = (ctx.content_rect().height() - 60.0 - self.st.bars[0] - self.st.bars[1]).max(180.0);
+        let max_card_h = (max_modal_h - 190.0).max(90.0);
         let modal = egui::Modal::new(egui::Id::unique("study")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 600.0));
-            let acc = accent(ui);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(tr("Study")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
-                ui.add(egui::Label::new(RichText::new(format!("·  {}", sd.title)).size(14.0).weak()).truncate());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).clicked() { close = true; }
-                    if sd.undo.is_some() && ui.add(egui::Button::new(tr("↶ Undo")).frame_when_inactive(false)).tip("Take the last rating back (Backspace)").clicked() { back = true; }
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
+            egui::ScrollArea::vertical().id_salt("study-outer").max_height(max_modal_h).show(ui, |ui| {
+                let acc = accent(ui);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Study")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
+                    ui.add(egui::Label::new(RichText::new(format!("·  {}", sd.title)).size(14.0).weak()).truncate());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).clicked() { close = true; }
+                        if sd.undo.is_some() && ui.add(egui::Button::new(tr("↶ Undo")).frame_when_inactive(false)).tip("Take the last rating back (Backspace)").clicked() { back = true; }
+                    });
                 });
-            });
-            let done = sd.total - sd.queue.len();
-            let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
-            ui.painter().rect_filled(bar, 3.0, ui.visuals().widgets.inactive.weak_bg_fill);
-            ui.painter().rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * done as f32 / sd.total.max(1) as f32, 6.0)), 3.0, acc);
-            ui.add_space(12.0);
-            let colors = rich::Colors::from(ui, acc);
-            match sd.queue.first().copied() {
-                None => {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(20.0);
-                        ui.label(RichText::new(tr("All done 🎉")).font(rich::serif(26.0)));
-                        ui.label(RichText::new(tf!("{total} cards · {x} again · {x2} good · {x3} easy", total = sd.total, x = sd.tally[0], x2 = sd.tally[1], x3 = sd.tally[2])).weak());
-                        let next = sd.cards.iter().filter_map(|c| self.store.study.get(&c.key)).map(|s| s.due).filter(|d| *d > now_secs()).min();
-                        if let Some(d) = next {
-                            ui.label(RichText::new(tf!("Next review: {when}", when = format_date(d, false))).weak());
-                        }
+                let done = sd.total - sd.queue.len();
+                let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+                ui.painter().rect_filled(bar, 3.0, ui.visuals().widgets.inactive.weak_bg_fill);
+                ui.painter().rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * done as f32 / sd.total.max(1) as f32, 6.0)), 3.0, acc);
+                ui.add_space(12.0);
+                let colors = rich::Colors::from(ui, acc);
+                match sd.queue.first().copied() {
+                    None => {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(20.0);
+                            ui.label(RichText::new(tr("All done 🎉")).font(rich::serif(26.0)));
+                            ui.label(RichText::new(tf!("{total} cards · {x} again · {x2} good · {x3} easy", total = sd.total, x = sd.tally[0], x2 = sd.tally[1], x3 = sd.tally[2])).weak());
+                            let next = sd.cards.iter().filter_map(|c| self.store.study.get(&c.key)).map(|s| s.due).filter(|d| *d > now_secs()).min();
+                            if let Some(d) = next {
+                                ui.label(RichText::new(tf!("Next review: {when}", when = format_date(d, false))).weak());
+                            }
+                            ui.add_space(14.0);
+                            ui.horizontal_wrapped(|ui| {
+                                if !sd.missed.is_empty() && ui.add(egui::Button::new(RichText::new(tf!("Practise the {n} missed", n = sd.missed.len())).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(110.0, 32.0))).clicked() {
+                                    sd.queue = std::mem::take(&mut sd.missed);
+                                    sd.total = sd.queue.len();
+                                    sd.tally = [0; 3];
+                                    sd.shown = false;
+                                }
+                                if ui.add(egui::Button::new(tr("Close")).min_size(Vec2::new(100.0, 32.0))).clicked() { close = true; }
+                            });
+                            ui.add_space(10.0);
+                        });
+                    }
+                    Some(i) => {
+                        let card = sd.cards[i].clone();
+                        ui.label(RichText::new(tf!("Card {x} of {total}", x = done + 1, total = sd.total)).size(11.5).weak());
+                        egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(16).inner_margin(egui::Margin::same(20)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            egui::ScrollArea::vertical().id_salt(("study-card", i)).max_height(max_card_h).show(ui, |ui| {
+                                ui.set_min_height(140.0f32.min(max_card_h));
+                                let _ = rich::view(ui, &card.front, 20.0, 0, &colors);
+                                if sd.shown {
+                                    ui.add_space(10.0);
+                                    ui.separator();
+                                    ui.add_space(10.0);
+                                    let _ = rich::view(ui, &card.back, 16.0, 0, &colors);
+                                }
+                            });
+                        });
                         ui.add_space(14.0);
-                        ui.horizontal_wrapped(|ui| {
-                            if !sd.missed.is_empty() && ui.add(egui::Button::new(RichText::new(tf!("Practise the {n} missed", n = sd.missed.len())).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(110.0, 32.0))).clicked() {
-                                sd.queue = std::mem::take(&mut sd.missed);
-                                sd.total = sd.queue.len();
-                                sd.tally = [0; 3];
-                                sd.shown = false;
+                        let keycap_btn = |ui: &mut egui::Ui, label: &str, key_hint: Option<&str>, fill: Color32, w: f32| -> bool {
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 38.0), Sense::click());
+                            let bg = if resp.hovered() { mix(fill, Color32::WHITE, 0.12) } else { fill };
+                            ui.painter().rect_filled(rect, 10.0, bg);
+                            let lg = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), Color32::WHITE);
+                            if let Some(kh) = key_hint {
+                                let kg = ui.painter().layout_no_wrap(kh.to_string(), FontId::monospace(11.0), Color32::WHITE);
+                                let cap_w = kg.size().x + 12.0;
+                                let total_w = lg.size().x + 10.0 + cap_w;
+                                let x0 = rect.center().x - total_w * 0.5;
+                                ui.painter().galley(Pos2::new(x0, rect.center().y - lg.size().y * 0.5), lg, Color32::WHITE);
+                                let cap = Rect::from_center_size(Pos2::new(x0 + total_w - cap_w * 0.5, rect.center().y), Vec2::new(cap_w, 20.0));
+                                ui.painter().rect_filled(cap, 5.0, Color32::from_white_alpha(45));
+                                ui.painter().galley(cap.center() - kg.size() * 0.5, kg, Color32::WHITE);
+                            } else {
+                                ui.painter().galley(rect.center() - lg.size() * 0.5, lg, Color32::WHITE);
                             }
-                            if ui.add(egui::Button::new(tr("Close")).min_size(Vec2::new(100.0, 32.0))).clicked() { close = true; }
-                        });
-                        ui.add_space(10.0);
-                    });
-                }
-                Some(i) => {
-                    let card = sd.cards[i].clone();
-                    ui.label(RichText::new(tf!("Card {x} of {total}", x = done + 1, total = sd.total)).size(11.5).weak());
-                    egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(16).inner_margin(egui::Margin::same(20)).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        egui::ScrollArea::vertical().id_salt(("study-card", i)).max_height(max_card_h).show(ui, |ui| {
-                            ui.set_min_height(140.0f32.min(max_card_h));
-                            let _ = rich::view(ui, &card.front, 20.0, 0, &colors);
-                            if sd.shown {
-                                ui.add_space(10.0);
-                                ui.separator();
-                                ui.add_space(10.0);
-                                let _ = rich::view(ui, &card.back, 16.0, 0, &colors);
-                            }
-                        });
-                    });
-                    ui.add_space(14.0);
-                    ui.horizontal(|ui| {
-                        if !sd.shown {
-                            if ui.add(egui::Button::new(RichText::new(tr(if self.st.nav.touch_ui { "Show answer" } else { "Show answer   Space" })).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 38.0))).clicked() {
-                                sd.shown = true;
-                            }
-                        } else {
-                            let gap = ui.spacing().item_spacing.x;
-                            let w = ((ui.available_width() - 2.0 * gap) / 3.0).max(60.0);
+                            resp.clicked()
+                        };
+                        ui.horizontal(|ui| {
                             let t = self.st.nav.touch_ui;
-                            for (k, (label, col)) in [
-                                (tr(if t { "Again" } else { "Again   1" }), Color32::from_rgb(214, 82, 62)),
-                                (tr(if t { "Good" } else { "Good   2" }), accent_base()),
-                                (tr(if t { "Easy" } else { "Easy   3" }), Color32::from_rgb(21, 128, 61)),
-                            ].into_iter().enumerate() {
-                                if ui.add(egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(col).min_size(Vec2::new(w, 38.0))).clicked() {
-                                    rate = Some(k);
+                            if !sd.shown {
+                                if keycap_btn(ui, tr("Show answer"), (!t).then_some(tr("Space")), accent_base(), ui.available_width()) {
+                                    sd.shown = true;
+                                }
+                            } else {
+                                let gap = ui.spacing().item_spacing.x;
+                                let w = ((ui.available_width() - 2.0 * gap) / 3.0).max(60.0);
+                                for (k, (label, kh, col)) in [
+                                    (tr("Again"), "1", Color32::from_rgb(214, 82, 62)),
+                                    (tr("Good"), "2", accent_base()),
+                                    (tr("Easy"), "3", Color32::from_rgb(21, 128, 61)),
+                                ].into_iter().enumerate() {
+                                    if keycap_btn(ui, label, (!t).then_some(kh), col, w) {
+                                        rate = Some(k);
+                                    }
                                 }
                             }
-                        }
-                    });
+                        });
+                    }
                 }
-            }
+            });
         });
         if back {
             if let Some(u) = sd.undo.take() {
@@ -420,16 +444,21 @@ impl NotesApp {
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)).corner_radius(16);
         let id = egui::Id::unique("switcher");
         let top = self.st.bars[0] + if self.st.nav.narrow { 12.0 } else { (ctx.content_rect().height() * 0.12).min(120.0) };
-        let room = ctx.content_rect().height() - top - self.st.bars[1] - 140.0;
+        let raw_room = (ctx.content_rect().height() - top - self.st.bars[1] - 156.0).max(100.0);
+        // Snap list height to whole rows (44 px + 6 px spacing = 50 px) so short windows never slice a row mid-text.
+        let rows_fit = ((raw_room + 6.0) / 50.0).floor().max(2.0);
+        let room = rows_fit * 50.0 - 6.0;
         let area = egui::Modal::default_area(id).anchor(Align2::CENTER_TOP, Vec2::new(0.0, top));
         let modal = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 520.0));
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
             let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tr("Jump to a page… (> for commands)")).font(FontId::proportional(18.0)).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
             if !r.has_focus() { r.request_focus(); }
             if r.changed() { sel = 0; }
             ui.separator();
             ui.label(RichText::new(tr(if cmd_only { "COMMANDS" } else { "PAGES" })).size(10.5).weak());
-            egui::ScrollArea::vertical().max_height(room.max(132.0)).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
                 for (i, (_, title, path, at)) in hits.iter().enumerate() {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
                     if i == sel || resp.hovered() {
@@ -556,10 +585,12 @@ impl NotesApp {
             if self.store.trash.is_empty() {
                 ui.label(RichText::new(tr("Nothing here. Deleted pages, sections and notebooks wait here until you empty the bin.")).weak());
             }
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
             egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
                 for (i, t) in self.store.trash.iter().enumerate().rev() {
                     ui.horizontal(|ui| {
-                        // Place action buttons first in right-to-left layout so long labels truncate cleanly instead of pushing buttons off-screen.
+                        // Place action buttons first in right-to-left layout so long labels wrap/truncate cleanly instead of pushing buttons off-screen.
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let sure_id = egui::Id::unique("purge-one-sure");
                             if ui.data(|d| d.get_temp::<usize>(sure_id)) == Some(i) {
@@ -577,7 +608,7 @@ impl NotesApp {
                             }
                             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                                 ui.vertical(|ui| {
-                                    ui.add(egui::Label::new(&t.label).truncate());
+                                    ui.add(egui::Label::new(&t.label).wrap()).tip(&t.label);
                                     ui.add(egui::Label::new(RichText::new(tf!("Deleted {x}", x = format_date(t.deleted, true))).size(11.0).weak()).truncate());
                                 });
                             });
@@ -616,8 +647,11 @@ impl NotesApp {
     fn shortcuts_window(&mut self, ctx: &egui::Context) -> bool {
         let mut close = false;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)).corner_radius(18);
-        let max_h = (ctx.content_rect().height() - 180.0 - self.st.bars[0] - self.st.bars[1]).max(160.0);
-        let m = egui::Modal::new(egui::Id::unique("shortcuts")).frame(frame).show(ctx, |ui| {
+        let top = self.st.bars[0] + (ctx.content_rect().height() * 0.06).min(52.0);
+        let max_h = (ctx.content_rect().height() - top - self.st.bars[1] - 120.0).clamp(140.0, 620.0);
+        let id = egui::Id::unique("shortcuts");
+        let area = egui::Modal::default_area(id).anchor(Align2::CENTER_TOP, Vec2::new(0.0, top));
+        let m = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 580.0));
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Keyboard shortcuts")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
@@ -626,19 +660,36 @@ impl NotesApp {
                 });
             });
             ui.add_space(6.0);
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
+            let key_label = |k: &str| -> String {
+                let s = tr(k);
+                if crate::i18n::code() == "de" {
+                    s.replace("Ctrl", "Strg").replace("Shift", "Umschalt")
+                } else if crate::i18n::code() == "fr" {
+                    s.replace("Shift", "Maj")
+                } else {
+                    s.to_string()
+                }
+            };
             egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).striped(true).show(ui, |ui| {
                     for (k, what) in [
                         ("Ctrl+N", "New page"), ("Ctrl+F", "Search all notes"), ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
-                        ("Ctrl+B / Ctrl+I", "Bold / italic"), ("Ctrl+Shift+H", "Highlight"), ("Ctrl+M", "Inline math"), ("Ctrl+`", "Inline code"),
-                        ("T  P  H  E  L", "Type, pen, highlighter, eraser, select ink"), ("Delete", "Delete selected ink"), ("Esc", "Clear selection and search"),
+                        ("Ctrl+B / Ctrl+I", "Bold / italic"), ("Ctrl+Shift+H", "Highlight"), ("Ctrl+M", "Inline math"), ("Ctrl + `", "Inline code"),
+                        ("T  P  H  E  L", "Type, pen, highlighter, eraser, select ink"), ("Del", "Delete selected ink"), ("Esc", "Clear selection and search"),
                         ("Ctrl + / Ctrl −", "Make everything larger or smaller"), ("Ctrl+K", "Jump to a page"), ("Two fingers", "Scroll while drawing (touch screens)"), ("Click empty paper", "Start a new note there"),
                         ("- , 1. , [ ] , #", "Start a list, checkbox or heading while typing"), ("/", "Insert menu while typing"), ("[[", "Link to another page while typing"),
                         ("Space · 1 2 3", "Flashcards: show the answer, then rate it"), ("Alt+← / Alt+→", "Back / forward between pages"),
                         ("Ctrl+D", "Duplicate this page"), ("F2", "Rename this page"), ("Ctrl+Shift+T", "All tasks"), ("Ctrl+Shift+R", "Review due flashcards"),
                         ("Ctrl+,", "Settings"), ("F1", "This list"),
                     ] {
-                        ui.label(RichText::new(tr(k)).monospace());
+                        let kstr = key_label(k);
+                        egui::Frame::new()
+                            .fill(ui.visuals().faint_bg_color)
+                            .corner_radius(4)
+                            .inner_margin(egui::Margin::symmetric(5, 1))
+                            .show(ui, |ui| { ui.label(RichText::new(kstr).monospace().strong()); });
                         ui.add(egui::Label::new(tr(what)).wrap());
                         ui.end_row();
                     }
@@ -646,39 +697,5 @@ impl NotesApp {
             });
         });
         !(close || m.should_close())
-    }
-
-    fn path_prompt_window(&mut self, ctx: &egui::Context, how: Ins, mut path: String) -> Option<String> {
-        let mut go = false;
-        let mut cancel = false;
-        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)).corner_radius(18);
-        let title = tr(match how {
-            Ins::Picture => "Insert picture",
-            Ins::Printout => "Insert printout",
-            Ins::Attach => "Attach file",
-        });
-        let m = egui::Modal::new(egui::Id::unique("path-prompt")).frame(frame).show(ctx, |ui| {
-            ui.set_width(crate::fit_w(ui.ctx(), 420.0));
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(title).font(rich::serif(20.0)).color(ui.visuals().strong_text_color()));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { cancel = true; }
-                });
-            });
-            ui.add_space(6.0);
-            ui.label(tr("File path on this device:"));
-            let r = ui.add(egui::TextEdit::singleline(&mut path).desired_width(f32::INFINITY));
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) { go = true; }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("Insert")).color(Color32::WHITE)).fill(accent_base())).clicked() { go = true; }
-                if ui.button(tr("Cancel")).clicked() { cancel = true; }
-            });
-        });
-        if go {
-            self.insert_file(std::path::Path::new(&path), how);
-            return None;
-        }
-        if cancel || m.should_close() { None } else { Some(path) }
     }
 }

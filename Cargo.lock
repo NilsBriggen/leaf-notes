@@ -2272,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "leafnotes"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "android-activity",
  "argon2",

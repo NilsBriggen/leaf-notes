@@ -110,8 +110,9 @@ pub(crate) const PEN_COLORS: [[u8; 4]; 8] = [
 pub(crate) fn swatch(ui: &mut egui::Ui, c: [u8; 4], selected: bool) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
     ui.painter().circle_filled(r.center(), 7.0, c4([c[0], c[1], c[2], 255]));
-    if ui.visuals().dark_mode && c[0].max(c[1]).max(c[2]) < 80 {
-        ui.painter().circle_stroke(r.center(), 7.0, EStroke::new(1.0, Color32::from_white_alpha(90)));
+    let lum = 0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32;
+    if ui.visuals().dark_mode && lum < 95.0 {
+        ui.painter().circle_stroke(r.center(), 7.0, EStroke::new(1.0, Color32::from_white_alpha(150)));
     }
     if selected || resp.hovered() {
         ui.painter().circle_stroke(r.center(), 8.5, EStroke::new(1.5, ui.visuals().text_color()));
@@ -510,5 +511,12 @@ mod tests {
             assert_eq!(super::without_year(&super::format_utc(1_793_793_555, false)), want);
         }
         assert!(super::local_offset(1_793_793_555).abs() <= 14 * 3600);
+    }
+
+    #[test]
+    fn search_snippet_cleans_latex() {
+        let s = super::search_tasks::clean_snippet(r"$$\sum_{k=0}^{\infty} \frac{\sin((2k+1)t)}{2k+1}$$");
+        assert!(s.contains('∑') && s.contains('∞'), "{s}");
+        assert!(!s.contains("fracsin"), "must not concatenate stripped LaTeX tokens: {s}");
     }
 }

@@ -307,9 +307,11 @@ pub(crate) fn apply_theme(ctx: &egui::Context, dark: bool) {
         v.selection.bg_fill = mix(accent_base(), Color32::from_rgb(17, 20, 21), 0.55);
         v.selection.stroke = EStroke::new(1.0, a);
         v.hyperlink_color = a;
-        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(38, 48, 48);
-        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(34, 40, 41);
-        v.widgets.noninteractive.bg_stroke = EStroke::new(1.0, Color32::from_rgb(40, 46, 47));
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(44, 55, 56);
+        v.widgets.hovered.bg_stroke = EStroke::new(1.0, Color32::from_rgb(88, 104, 106));
+        v.widgets.inactive.bg_fill = Color32::from_rgb(42, 50, 52);
+        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(40, 48, 50);
+        v.widgets.noninteractive.bg_stroke = EStroke::new(1.0, Color32::from_rgb(62, 72, 74));
     } else {
         v.panel_fill = Color32::from_rgb(236, 240, 238);
         v.window_fill = Color32::WHITE;
@@ -328,7 +330,7 @@ pub(crate) fn apply_theme(ctx: &egui::Context, dark: bool) {
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = CornerRadius::same(8);
     }
-    v.widgets.inactive.bg_stroke = EStroke::NONE;
+    v.widgets.inactive.bg_stroke = if dark { EStroke::new(1.0, Color32::from_rgb(62, 72, 74)) } else { EStroke::NONE };
     v.text_edit_bg_color = Some(if dark { Color32::from_rgb(38, 45, 46) } else { Color32::from_rgb(240, 244, 242) });
     v.window_corner_radius = CornerRadius::same(16);
     v.menu_corner_radius = CornerRadius::same(10);
@@ -373,6 +375,8 @@ pub(crate) const TEMPLATES: [(&str, Paper, &str); 3] = [
 fn rec_marker(id: u64) -> PathBuf { data_dir().join("files").join(format!("{id}.rec.part")) }
 
 pub(crate) static HIGH_CONTRAST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Width threshold below which Nav and AI panes act as full-width drawers covering the canvas.
+pub(crate) const DRAWER_COVER_W: f32 = 600.0;
 
 impl NotesApp {
     pub fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
@@ -532,7 +536,7 @@ impl NotesApp {
         }
         // Keep audio player playing across page switches (controlled via the global mini-player bar).
         self.st.audio.fade_after = None;
-        self.st.canvas.selected.clear();
+        self.st.clear_selection();
         self.st.canvas.editing = None;
         self.st.canvas.last_text = None;
         self.st.cache.derived_dirty = true;
@@ -1552,15 +1556,21 @@ impl NotesApp {
         // Android's Back: closes whatever is on top, one layer per press.
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::BrowserBack)) { self.back(ctx); return; }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            let lock_busy = matches!(self.st.locks.pending, Some(PendingLockOp::Lock { .. }));
             if self.st.canvas.popup.take().is_some() { return; }
             if self.st.canvas.capture.is_some() { self.cancel_capture("PDF export cancelled."); return; }
             if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); return; }
-            if self.st.modals.handle_escape() { return; }
-            self.st.canvas.selected.clear();
-            self.st.canvas.editing = None;
-            self.st.nav.search.clear();
-            self.st.nav.tag_filter = None;
-            self.st.canvas.current = None;
+            if self.st.modals.handle_escape(lock_busy) { return; }
+            if self.st.nav.rename.take().is_some() { return; }
+            if self.st.canvas.current.take().is_some() { self.st.canvas.anchor = None; return; }
+            if self.st.canvas.editing.take().is_some() { return; }
+            if !self.st.canvas.selected.is_empty() { self.st.clear_selection(); return; }
+            if !self.st.nav.search.is_empty() || self.st.nav.tag_filter.is_some() || self.st.nav.search_open {
+                self.st.nav.search.clear();
+                self.st.nav.tag_filter = None;
+                self.st.nav.search_open = false;
+                return;
+            }
             return;
         }
         // Global canvas/navigation/window shortcuts pause whenever any modal dialog is open.
@@ -1621,17 +1631,34 @@ impl NotesApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) { self.st.nav.tasks ^= true; if self.st.nav.tasks { self.st.p.show_nav = true; } }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R)) { self.start_review(); }
         if cmd(Key::Comma) { self.st.modals.open_settings(0); }
-        if cmd(Key::F) { if self.st.nav.narrow { self.st.p.show_nav = true; } self.st.nav.focus_id = Some(egui::Id::unique("search")); }
+        if cmd(Key::F) {
+            if self.st.nav.search_icon_mode {
+                self.st.p.show_nav = true;
+                if ctx.content_rect().width() < 760.0 { self.st.p.show_ai = false; }
+                self.st.nav.tasks = false;
+                self.st.nav.search_open = true;
+                self.st.nav.focus_id = Some(egui::Id::unique("search-panel-input"));
+            } else {
+                if self.st.nav.narrow { self.st.p.show_nav = true; }
+                self.st.nav.focus_id = Some(egui::Id::unique("search"));
+            }
+        }
         if cmd(Key::K) || cmd(Key::P) { self.st.modals.push(ActiveModal::Switcher { query: String::new(), sel: 0 }); }
     }
 
     fn back(&mut self, ctx: &egui::Context) {
+        let lock_busy = matches!(self.st.locks.pending, Some(PendingLockOp::Lock { .. }));
         if egui::Popup::is_any_open(ctx) { egui::Popup::close_all(ctx); }
         else if self.st.canvas.popup.take().is_some() {}
         else if self.st.canvas.capture.is_some() { self.cancel_capture("PDF export cancelled."); }
-        else if self.st.modals.handle_escape() || self.st.canvas.editing.take().is_some() || !std::mem::take(&mut self.st.canvas.selected).is_empty() {}
+        else if self.st.modals.handle_escape(lock_busy) || self.st.nav.rename.take().is_some() || self.st.canvas.editing.take().is_some() {}
+        else if !self.st.canvas.selected.is_empty() { self.st.clear_selection(); }
         else if self.st.nav.narrow && self.st.p.show_ai { self.st.p.show_ai = false; }
-        else if !self.st.nav.search.is_empty() || self.st.nav.tag_filter.is_some() { self.st.nav.search.clear(); self.st.nav.tag_filter = None; }
+        else if !self.st.nav.search.is_empty() || self.st.nav.tag_filter.is_some() || self.st.nav.search_open {
+            self.st.nav.search.clear();
+            self.st.nav.tag_filter = None;
+            self.st.nav.search_open = false;
+        }
         else if self.st.nav.narrow && self.st.p.show_nav { self.st.p.show_nav = false; }
         else if !self.st.nav.nav_back.is_empty() { self.go_back(true); }
         else {
@@ -1723,7 +1750,11 @@ impl eframe::App for NotesApp {
                     }
                     egui::Event::Touch { force, phase, .. } => {
                         let (pressure, erase) = match *force { Some(f) if f < 0.0 => (Some(-f), true), Some(f) if f > 1.0 => (Some(f - 1.0), true), f => (f, false) };
-                        if let Some(f) = pressure { self.st.canvas.force = Some(f); self.st.canvas.frame_force = Some(f); }
+                        if let Some(f) = pressure {
+                            self.st.canvas.force = Some(f);
+                            self.st.canvas.frame_force = Some(f);
+                            self.st.canvas.last_pen_at = i.time;
+                        }
                         if *phase == egui::TouchPhase::Start && erase && self.st.canvas.tool_before_erase.is_none() {
                             self.st.canvas.tool_before_erase = Some(self.st.canvas.tool);
                             self.st.canvas.tool = Tool::Eraser;
@@ -1733,10 +1764,12 @@ impl eframe::App for NotesApp {
                         }
                         if *phase == egui::TouchPhase::Start {
                             self.st.canvas.input = if force.is_some() { Input::Pen } else { Input::Finger };
-                            if force.is_none() && !self.st.p.pen_detect { self.st.p.pen_detect = true; self.st.dirty = true; }
+                            if !self.st.p.pen_detect { self.st.p.pen_detect = true; self.st.dirty = true; }
                         }
                     }
-                    egui::Event::PointerButton { pressed: true, .. } if !touched => self.st.canvas.input = Input::Mouse,
+                    egui::Event::PointerButton { pressed: true, .. } if !touched && i.time - self.st.canvas.last_pen_at > 0.25 => {
+                        self.st.canvas.input = Input::Mouse;
+                    }
                     egui::Event::WindowFocused(false) => self.st.canvas.fingers.clear(),
                     _ => {}
                 }
@@ -1860,7 +1893,8 @@ impl eframe::App for NotesApp {
             self.st.p.ribbon_open = !short;
         }
         let touch = cfg!(target_os = "android") || matches!(self.st.canvas.input, Input::Finger | Input::Pen);
-        if touch != self.st.nav.touch_ui {
+        // Defer touch_ui layout spacing shift while an active stroke is in flight so coordinates don't jump mid-stroke.
+        if touch != self.st.nav.touch_ui && self.st.canvas.current.is_none() {
             self.st.nav.touch_ui = touch;
             ctx.all_styles_mut(|s| {
                 s.spacing.interact_size.y = if touch { 36.0 } else { 26.0 };
@@ -1916,8 +1950,12 @@ impl eframe::App for NotesApp {
         let backlinks = self.st.cache.backlinks.clone();
         let fav = self.st.p.favorites.contains(&here_id);
         let conflict = self.st.cache.conflict_pair;
-        // On phones, when a full-width drawer (Nav or AI) is open, skip CentralPanel so no narrow sliver renders.
-        let phone_covered = ctx.content_rect().width() < 560.0 && (self.st.p.show_nav || self.st.p.show_ai);
+        // Keep Nav and AI mutually exclusive on narrower windows so sidebars never crush the canvas.
+        if ctx.content_rect().width() < 760.0 && self.st.p.show_nav && self.st.p.show_ai {
+            self.st.p.show_ai = false;
+        }
+        // On phones / narrow drawers, when a full-width drawer (Nav or AI) is open, skip CentralPanel so no sliver renders.
+        let phone_covered = ctx.content_rect().width() < DRAWER_COVER_W && (self.st.p.show_nav || self.st.p.show_ai);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if phone_covered { return; }
             if !self.st.persist && self.screenshot.is_none() {

@@ -8,7 +8,7 @@ impl NotesApp {
     pub(crate) fn ai_pane(&mut self, ui: &mut egui::Ui) {
         let full = ui.ctx().content_rect().width();
         let panel = egui::Panel::right("ai").show_separator_line(false);
-        let panel = if full < 600.0 {
+        let panel = if full < crate::DRAWER_COVER_W {
             panel.exact_size((full - 28.0).max(220.0)).resizable(false)
         } else {
             panel.default_size(284.0).size_range(240.0..=520.0)
@@ -33,46 +33,68 @@ impl NotesApp {
                         }
                     });
                 });
-                if self.st.ai.ready() {
-                    ui.label(RichText::new(tf!("{model} · your own key", model = self.st.ai.model)).size(11.0).weak());
-                } else {
-                    egui::Frame::new().fill(ui.visuals().selection.bg_fill).corner_radius(8).inner_margin(10).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(RichText::new(tr("Bring your own AI key")).strong());
-                        ui.label(RichText::new(tr("Works with Anthropic, OpenAI, OpenRouter or a local model. Your key stays on this device.")).size(12.0));
-                        if ui.button(tr("Add a key…")).clicked() { self.st.modals.open_settings(3); }
+                let short_pane = ui.available_height() < 340.0;
+                let mut open_ai_settings = false;
+                let mut chip_prompt: Option<String> = None;
+                let render_top_extras = |ui: &mut egui::Ui, ai: &crate::ai::AiSettings, prompts: &str, open_settings: &mut bool, picked: &mut Option<String>| {
+                    if ai.ready() {
+                        ui.label(RichText::new(tf!("{model} · your own key", model = ai.model)).size(11.0).weak());
+                    } else {
+                        egui::Frame::new().fill(ui.visuals().selection.bg_fill).corner_radius(8).inner_margin(10).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new(tr("Bring your own AI key")).strong());
+                            ui.label(RichText::new(tr("Works with Anthropic, OpenAI, OpenRouter or a local model. Your key stays on this device.")).size(12.0));
+                            if ui.button(tr("Add a key…")).clicked() { *open_settings = true; }
+                        });
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                        for (label, prompt) in [
+                            ("Summarize", "Summarize this page in a few bullet points."),
+                            ("Action items", "List the action items from this page as a checklist."),
+                            ("Quiz me", "Write 3 short quiz questions about this page. Put the answers at the end."),
+                            ("Explain", "Explain the main idea of this page simply, with one example."),
+                        ] {
+                            if ui.add(egui::Button::new(RichText::new(tr(label)).size(12.0)).corner_radius(10)).clicked() {
+                                *picked = Some(tr(prompt).into());
+                            }
+                        }
+                        for p in prompts.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from) {
+                            let label: String = p.chars().take(24).collect();
+                            if ui.add(egui::Button::new(RichText::new(label).size(12.0)).corner_radius(10)).tip(&p).clicked() {
+                                *picked = Some(p);
+                            }
+                        }
                     });
+                    ui.add_space(4.0);
+                };
+                if !short_pane {
+                    let prompts = self.st.p.prompts.clone();
+                    render_top_extras(ui, &self.st.ai, &prompts, &mut open_ai_settings, &mut chip_prompt);
                 }
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                    for (label, prompt) in [
-                        ("Summarize", "Summarize this page in a few bullet points."),
-                        ("Action items", "List the action items from this page as a checklist."),
-                        ("Quiz me", "Write 3 short quiz questions about this page. Put the answers at the end."),
-                        ("Explain", "Explain the main idea of this page simply, with one example."),
-                    ] {
-                        if ui.add(egui::Button::new(RichText::new(tr(label)).size(12.0)).corner_radius(10)).clicked() {
-                            self.chat(tr(prompt).into());
-                        }
-                    }
-                    for p in self.st.p.prompts.clone().lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from) {
-                        let label: String = p.chars().take(24).collect();
-                        if ui.add(egui::Button::new(RichText::new(label).size(12.0)).corner_radius(10)).tip(&p).clicked() {
-                            self.chat(p);
-                        }
-                    }
-                });
-                ui.add_space(4.0);
                 let mut insert = None;
                 let colors = rich::Colors::from(ui, acc);
-                // Dynamically reserve footer height based on actual font/touch size instead of hardcoded 96 px.
-                let footer_h = if self.st.nav.touch_ui { 114.0 } else { 104.0 };
-                let h = (ui.available_height() - footer_h).max(60.0);
+                // Keep the prompt input and Send ➤ footer permanently visible even on short landscape viewports (< 420 px).
+                let prompt_rows = if short_pane { 1 } else { 2 };
+                let footer_h = if self.st.nav.touch_ui {
+                    if short_pane { 82.0 } else { 114.0 }
+                } else if short_pane {
+                    76.0
+                } else {
+                    104.0
+                };
+                let h = (ui.available_height() - footer_h).max(40.0);
                 let streaming_idx = self.st.jobs.ai_jobs.iter().find_map(|j| matches!(j.kind, AiJobKind::Chat).then_some(j.chat_idx).flatten());
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                ui.spacing_mut().scroll.bar_width = 4.0;
                 egui::ScrollArea::vertical().id_salt("ai-scroll").max_height(h).stick_to_bottom(true).auto_shrink([false; 2]).show(ui, |ui| {
+                    if short_pane {
+                        let prompts = self.st.p.prompts.clone();
+                        render_top_extras(ui, &self.st.ai, &prompts, &mut open_ai_settings, &mut chip_prompt);
+                    }
                     if self.st.jobs.ai_log.is_empty() {
-                        ui.add_space(30.0);
+                        if !short_pane { ui.add_space(24.0); }
                         ui.vertical_centered(|ui| ui.label(RichText::new(tr("Ask anything about this page.\nAnswers can be inserted as notes,\nincluding equations and checklists.")).weak()));
                     }
                     let w = ui.available_width();
@@ -118,6 +140,8 @@ impl NotesApp {
                         });
                     }
                 });
+                if open_ai_settings { self.st.modals.open_settings(3); }
+                if let Some(p) = chip_prompt { self.chat(p); }
                 if let Some(i) = insert {
                     let t = self.st.jobs.ai_log[i].1.clone();
                     self.insert_markdown(&t);
@@ -127,7 +151,7 @@ impl NotesApp {
                 let input_id = egui::Id::unique("ai-input");
                 let focused = ui.memory(|m| m.has_focus(input_id));
                 let enter = focused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
-                ui.add(egui::TextEdit::multiline(&mut self.st.jobs.ai_prompt).id(input_id).hint_text(tr("Ask about this page…")).desired_rows(2).desired_width(f32::INFINITY));
+                ui.add(egui::TextEdit::multiline(&mut self.st.jobs.ai_prompt).id(input_id).hint_text(tr("Ask about this page…")).desired_rows(prompt_rows).desired_width(f32::INFINITY));
                 ui.horizontal_wrapped(|ui| {
                     let send = ui.add(egui::Button::new(RichText::new(tr("Send ➤")).color(Color32::WHITE)).fill(accent_base())).clicked();
                     if !self.st.nav.touch_ui {

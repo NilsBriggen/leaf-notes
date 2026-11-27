@@ -17,79 +17,85 @@ impl NotesApp {
     pub(crate) fn history_window(&mut self, ctx: &egui::Context, id: u64, versions: &[(u64, Page)], sel: &mut usize) -> bool {
         let (mut close, mut restore, mut as_copy) = (false, None, None);
         let narrow = ctx.content_rect().width() < 600.0;
-        let max_h = (ctx.content_rect().height() - 150.0 - self.st.bars[0] - self.st.bars[1]).clamp(220.0, 520.0);
+        let max_modal_h = (ctx.content_rect().height() - 60.0 - self.st.bars[0] - self.st.bars[1]).max(180.0);
+        let max_h = (max_modal_h - 60.0).clamp(130.0, 520.0);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(if narrow { 14 } else { 20 })).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("history")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ctx, 780.0));
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(tr("Page history")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { close = true; }
-                });
-            });
-            ui.add_space(6.0);
-            if versions.is_empty() {
-                ui.label(RichText::new(tr("No older versions yet. Leaf Notes keeps the previous version each time a page changes, at most every 10 minutes.")).weak());
-                return;
-            }
-            *sel = (*sel).min(versions.len() - 1);
-            let render_list = |ui: &mut egui::Ui, sel: &mut usize, h: f32| {
-                ScrollArea::vertical().id_salt("history-list").max_height(h).show(ui, |ui| {
-                    for (i, (t, p)) in versions.iter().enumerate() {
-                        let words = p.plain_text().split_whitespace().count();
-                        let text = tf!("{when}\n{words} words · {strokes} ink strokes", when = chrome::format_date(*t, true), words = words, strokes = p.strokes.len());
-                        if ui.selectable_label(i == *sel, text).clicked() { *sel = i; }
-                    }
-                });
-            };
-            let render_preview = |ui: &mut egui::Ui, sel: usize, h: f32, restore: &mut Option<usize>, as_copy: &mut Option<usize>| {
-                let p = &versions[sel].1;
-                ui.label(RichText::new(if p.title.is_empty() { tr("Untitled page") } else { &p.title }).size(17.0).strong());
-                ScrollArea::vertical().id_salt("history-preview").max_height(h).show(ui, |ui| {
-                    if !p.strokes.is_empty() {
-                        let (lo, hi) = p.strokes.iter().flat_map(|s| s.points.iter()).fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), q| ([lo[0].min(q[0]), lo[1].min(q[1])], [hi[0].max(q[0]), hi[1].max(q[1])]));
-                        let w = ui.available_width().clamp(80.0, 480.0);
-                        let k = (w / (hi[0] - lo[0] + 20.0)).min(1.0);
-                        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ((hi[1] - lo[1] + 20.0) * k).clamp(32.0, 320.0)), egui::Sense::hover());
-                        let painter = ui.painter_at(rect);
-                        let dark = ui.visuals().dark_mode;
-                        painter.rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
-                        for s in &p.strokes {
-                            let pts: Vec<Pos2> = s.points.iter().map(|q| rect.min + Vec2::new((q[0] - lo[0] + 10.0) * k, (q[1] - lo[1] + 10.0) * k)).collect();
-                            // Chalk ink in dark mode so dark pen strokes remain legible in history preview.
-                            let col = if dark && !s.highlighter && s.color[0].max(s.color[1]).max(s.color[2]) < 90 {
-                                Color32::from_rgba_unmultiplied(230, 234, 232, s.color[3])
-                            } else {
-                                Color32::from_rgba_unmultiplied(s.color[0], s.color[1], s.color[2], s.color[3])
-                            };
-                            painter.add(egui::Shape::line(pts, EStroke::new((s.width * k).max(1.0), col)));
-                        }
-                    }
-                    ui.label(p.plain_text());
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
+            ScrollArea::vertical().id_salt("history-outer").max_height(max_modal_h).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Page history")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { close = true; }
+                    });
                 });
                 ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button(tr("↺  Restore this version")).clicked() { *restore = Some(sel); }
-                    if ui.button(tr("Restore as a new page")).clicked() { *as_copy = Some(sel); }
-                });
-                ui.label(RichText::new(tr("The page as it is now goes to Undo, so you can switch back.")).size(11.5).weak());
-            };
-            if narrow {
-                render_list(ui, sel, (max_h * 0.35).max(90.0));
-                ui.separator();
-                render_preview(ui, *sel, (max_h * 0.45).max(120.0), &mut restore, &mut as_copy);
-            } else {
-                ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(240.0);
-                        render_list(ui, sel, (max_h - 40.0).max(160.0));
+                if versions.is_empty() {
+                    ui.label(RichText::new(tr("No older versions yet. Leaf Notes keeps the previous version each time a page changes, at most every 10 minutes.")).weak());
+                    return;
+                }
+                *sel = (*sel).min(versions.len() - 1);
+                let render_list = |ui: &mut egui::Ui, sel: &mut usize, h: f32| {
+                    ScrollArea::vertical().id_salt("history-list").max_height(h).show(ui, |ui| {
+                        for (i, (t, p)) in versions.iter().enumerate() {
+                            let words = p.plain_text().split_whitespace().count();
+                            let text = tf!("{when}\n{words} words · {strokes} ink strokes", when = chrome::format_date(*t, true), words = words, strokes = p.strokes.len());
+                            if ui.selectable_label(i == *sel, text).clicked() { *sel = i; }
+                        }
                     });
+                };
+                let render_preview = |ui: &mut egui::Ui, sel: usize, h: f32, restore: &mut Option<usize>, as_copy: &mut Option<usize>| {
+                    let p = &versions[sel].1;
+                    ui.label(RichText::new(if p.title.is_empty() { tr("Untitled page") } else { &p.title }).size(17.0).strong());
+                    ScrollArea::vertical().id_salt("history-preview").max_height(h).show(ui, |ui| {
+                        if !p.strokes.is_empty() {
+                            let (lo, hi) = p.strokes.iter().flat_map(|s| s.points.iter()).fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), q| ([lo[0].min(q[0]), lo[1].min(q[1])], [hi[0].max(q[0]), hi[1].max(q[1])]));
+                            let w = ui.available_width().clamp(80.0, 480.0);
+                            let k = (w / (hi[0] - lo[0] + 20.0)).min(1.0);
+                            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ((hi[1] - lo[1] + 20.0) * k).clamp(32.0, 320.0)), egui::Sense::hover());
+                            let painter = ui.painter_at(rect);
+                            let dark = ui.visuals().dark_mode;
+                            painter.rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                            for s in &p.strokes {
+                                let pts: Vec<Pos2> = s.points.iter().map(|q| rect.min + Vec2::new((q[0] - lo[0] + 10.0) * k, (q[1] - lo[1] + 10.0) * k)).collect();
+                                // Chalk ink in dark mode so dark pen strokes remain legible in history preview.
+                                let col = if dark && !s.highlighter && s.color[0].max(s.color[1]).max(s.color[2]) < 90 {
+                                    Color32::from_rgba_unmultiplied(230, 234, 232, s.color[3])
+                                } else {
+                                    Color32::from_rgba_unmultiplied(s.color[0], s.color[1], s.color[2], s.color[3])
+                                };
+                                painter.add(egui::Shape::line(pts, EStroke::new((s.width * k).max(1.0), col)));
+                            }
+                        }
+                        ui.label(p.plain_text());
+                        ui.add_space(6.0);
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(tr("↺  Restore this version")).clicked() { *restore = Some(sel); }
+                        if ui.button(tr("Restore as a new page")).clicked() { *as_copy = Some(sel); }
+                    });
+                    ui.label(RichText::new(tr("The page as it is now goes to Undo, so you can switch back.")).size(11.5).weak());
+                };
+                if narrow {
+                    render_list(ui, sel, (max_h * 0.35).max(80.0));
                     ui.separator();
-                    ui.vertical(|ui| {
-                        render_preview(ui, *sel, (max_h - 110.0).max(140.0), &mut restore, &mut as_copy);
+                    render_preview(ui, *sel, (max_h * 0.45).max(100.0), &mut restore, &mut as_copy);
+                } else {
+                    ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_width(240.0);
+                            render_list(ui, sel, (max_h - 40.0).max(120.0));
+                        });
+                        ui.separator();
+                        ui.vertical(|ui| {
+                            render_preview(ui, *sel, (max_h - 120.0).max(110.0), &mut restore, &mut as_copy);
+                        });
                     });
-                });
-            }
+                }
+            });
         });
         if let Some(i) = as_copy {
             if let Some((a, b, c)) = self.locate(id) {
@@ -206,6 +212,7 @@ impl NotesApp {
         };
         let is_md = |p: &std::path::Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown") || e.eq_ignore_ascii_case("txt"));
         let (mut pages, mut sections) = (0, 0);
+        let mut target_at: Option<(usize, usize, usize)> = None;
         for path in paths {
             if path.is_dir() {
                 let mut files: Vec<_> = std::fs::read_dir(&path).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| is_md(p)).collect();
@@ -216,11 +223,18 @@ impl NotesApp {
                 pages += new.len();
                 sections += 1;
                 let color = PALETTE[(self.store.notebooks[self.nb].sections.len()) % PALETTE.len()];
+                let sec_idx = self.store.notebooks[self.nb].sections.len();
                 self.store.notebooks[self.nb].sections.push(Section { id: new_id(), name, color, pages: new, lock: None, locked_files: vec![] });
+                if target_at.is_none() { target_at = Some((self.nb, sec_idx, 0)); }
             } else if let Some(p) = read(&path).filter(|_| !self.section().sealed()) {
+                let pg_idx = self.section().pages.len();
                 self.section().pages.push(p);
+                target_at = Some((self.nb, self.sec, pg_idx));
                 pages += 1;
             }
+        }
+        if let Some((a, b, c)) = target_at {
+            self.go_to(a, b, c);
         }
         self.st.dirty = true;
         self.st.cache.derived_dirty = true;
@@ -257,38 +271,43 @@ impl NotesApp {
         let (Some(a), Some(b)) = (get(orig), get(copy)) else { return false };
         let (mut close, mut choice) = (false, None);
         let narrow = ctx.content_rect().width() < 620.0;
-        let max_h = (ctx.content_rect().height() - 220.0 - self.st.bars[0] - self.st.bars[1]).clamp(120.0, 380.0);
+        let max_modal_h = (ctx.content_rect().height() - 60.0 - self.st.bars[0] - self.st.bars[1]).max(180.0);
+        let max_h = (max_modal_h - 140.0).clamp(90.0, 380.0);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(if narrow { 14 } else { 20 })).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("compare")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ctx, 900.0));
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(tr("Two versions of this page")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { close = true; }
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
+            ScrollArea::vertical().id_salt("compare-outer").max_height(max_modal_h).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Two versions of this page")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { close = true; }
+                    });
                 });
-            });
-            ui.add_space(6.0);
-            let mut render_col = |ui: &mut egui::Ui, k: usize, p: &Page, label: &str, h: f32| {
-                ui.label(RichText::new(label).size(12.0).weak());
-                ui.label(RichText::new(&p.title).size(16.0).strong());
-                ui.label(RichText::new(tf!("{words} words · {strokes} ink strokes", words = p.plain_text().split_whitespace().count(), strokes = p.strokes.len())).size(11.5).weak());
-                ScrollArea::vertical().id_salt(("compare", k)).max_height(h).show(ui, |ui| { ui.label(p.plain_text()); });
-                if ui.button(tr("Keep only this version")).clicked() { choice = Some(k); }
-            };
-            if narrow {
-                render_col(ui, 0, &a, tr("This device"), (max_h * 0.45).max(90.0));
+                ui.add_space(6.0);
+                let mut render_col = |ui: &mut egui::Ui, k: usize, p: &Page, label: &str, h: f32| {
+                    ui.label(RichText::new(label).size(12.0).weak());
+                    ui.label(RichText::new(&p.title).size(16.0).strong());
+                    ui.label(RichText::new(tf!("{words} words · {strokes} ink strokes", words = p.plain_text().split_whitespace().count(), strokes = p.strokes.len())).size(11.5).weak());
+                    ScrollArea::vertical().id_salt(("compare", k)).max_height(h).show(ui, |ui| { ui.label(p.plain_text()); });
+                    if ui.button(tr("Keep only this version")).clicked() { choice = Some(k); }
+                };
+                if narrow {
+                    render_col(ui, 0, &a, tr("This device"), (max_h * 0.45).max(80.0));
+                    ui.separator();
+                    render_col(ui, 1, &b, tr("The other device"), (max_h * 0.45).max(80.0));
+                } else {
+                    ui.columns(2, |cols| {
+                        render_col(&mut cols[0], 0, &a, tr("This device"), max_h);
+                        render_col(&mut cols[1], 1, &b, tr("The other device"), max_h);
+                    });
+                }
                 ui.separator();
-                render_col(ui, 1, &b, tr("The other device"), (max_h * 0.45).max(90.0));
-            } else {
-                ui.columns(2, |cols| {
-                    render_col(&mut cols[0], 0, &a, tr("This device"), max_h);
-                    render_col(&mut cols[1], 1, &b, tr("The other device"), max_h);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(tr("Keep both as separate pages")).clicked() { choice = Some(2); }
+                    ui.label(RichText::new(tr("The version you don't keep goes to Recently deleted.")).size(11.5).weak());
                 });
-            }
-            ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(tr("Keep both as separate pages")).clicked() { choice = Some(2); }
-                ui.label(RichText::new(tr("The version you don't keep goes to Recently deleted.")).size(11.5).weak());
             });
         });
         match choice {

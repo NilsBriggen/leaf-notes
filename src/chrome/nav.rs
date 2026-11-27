@@ -7,9 +7,9 @@ use eframe::egui::{Align, Align2, FontId, Layout, Rect, RichText, Sense};
 
 impl NotesApp {
     pub(crate) fn nav(&mut self, ui: &mut egui::Ui) {
-        let full = ui.available_width();
-        let phone = full < 560.0;
-        let sec_w = if phone { 150.0 } else { 204.0 };
+        let full = ui.ctx().content_rect().width();
+        let phone = full < crate::DRAWER_COVER_W;
+        let sec_w = if phone { 150.0 } else if self.st.nav.narrow { 172.0 } else { 204.0 };
         egui::Panel::left("sections")
             .show_separator_line(false)
             .resizable(false)
@@ -19,20 +19,36 @@ impl NotesApp {
                 self.notebook_switcher(ui);
                 ui.add_space(6.0);
                 let jump = ui.add(
-                    egui::Button::new(RichText::new(tr(if phone { "↗  Find a page" } else { "↗  Jump to a page…" })).size(13.0).color(ui.visuals().weak_text_color()))
+                    egui::Button::new(RichText::new(tr("↗  Jump to a page…")).size(13.0).color(ui.visuals().weak_text_color()))
                         .truncate()
                         .frame_when_inactive(false)
                         .min_size(Vec2::new(ui.available_width(), 30.0)),
                 ).tip("Quick switcher (Ctrl+K)");
                 if jump.clicked() { self.st.modals.push(ActiveModal::Switcher { query: String::new(), sel: 0 }); }
                 let open_tasks = self.st.cache.open_tasks_n;
-                let t = ui.add(
-                    egui::Button::new(RichText::new(tf!("☑  All tasks{x}", x = if open_tasks > 0 { format!("  ·  {open_tasks}") } else { String::new() })).size(13.0).color(if self.st.nav.tasks { accent(ui) } else { ui.visuals().weak_text_color() }))
-                        .truncate()
-                        .frame_when_inactive(false)
-                        .selected(self.st.nav.tasks)
-                        .min_size(Vec2::new(ui.available_width(), 30.0)),
-                ).tip("Every open to-do from every notebook");
+                let (t_rect, t) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+                let tv = ui.visuals();
+                if self.st.nav.tasks {
+                    ui.painter().rect_filled(t_rect, 8.0, tv.selection.bg_fill);
+                } else if t.hovered() {
+                    ui.painter().rect_filled(t_rect, 8.0, tv.widgets.hovered.weak_bg_fill);
+                }
+                let tcol = if self.st.nav.tasks { accent(ui) } else { tv.weak_text_color() };
+                let count_str = if open_tasks > 0 { format!("· {open_tasks}") } else { String::new() };
+                let count_g = if !count_str.is_empty() {
+                    Some(ui.painter().layout_no_wrap(count_str, FontId::proportional(12.0), tcol))
+                } else {
+                    None
+                };
+                let count_w = count_g.as_ref().map_or(0.0, |g| g.size().x + 8.0);
+                let label_w = (t_rect.width() - 16.0 - count_w).max(20.0);
+                let label_g = one_line(ui.painter(), &format!("☑  {}", tr("All tasks")), FontId::proportional(13.0), tcol, label_w);
+                ui.painter().galley(Pos2::new(t_rect.left() + 8.0, t_rect.center().y - label_g.size().y / 2.0), label_g, tcol);
+                if let Some(cg) = count_g {
+                    ui.painter().galley(Pos2::new(t_rect.right() - 8.0 - cg.size().x, t_rect.center().y - cg.size().y / 2.0), cg, tcol);
+                }
+                focus_ring(ui, &t, t_rect, 8.0);
+                let t = t.tip("Every open to-do from every notebook");
                 if t.clicked() { self.st.nav.tasks ^= true; }
                 let favs: Vec<(u64, String, (usize, usize, usize))> = self.st.p.favorites.iter().filter_map(|id| self.locate(*id).map(|at| {
                     let p = &self.store.notebooks[at.0].sections[at.1].pages[at.2];
@@ -109,8 +125,11 @@ impl NotesApp {
                             if ui.button(tr("Rename")).clicked() { self.st.nav.rename = Some((0, s.id, s.name.clone())); ui.close(); }
                             ui.horizontal(|ui| {
                                 for c in PALETTE {
-                                    let (rect, cr) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
-                                    ui.painter().rect_filled(rect, 4.0, c3(c));
+                                    let (rect, cr) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                                    ui.painter().rect_filled(rect.shrink(1.0), 4.0, c3(c));
+                                    if s.color == c {
+                                        ui.painter().rect_stroke(rect, 5.0, EStroke::new(2.0, ui.visuals().strong_text_color()), egui::StrokeKind::Outside);
+                                    }
                                     if cr.clicked() { recolor = Some((i, c)); ui.close(); }
                                 }
                             });
@@ -213,6 +232,8 @@ impl NotesApp {
         let pages = egui::Panel::left("pages").show_separator_line(false);
         let pages = if phone {
             pages.resizable(false).exact_size((full - sec_w - 6.0).max(140.0))
+        } else if self.st.nav.narrow {
+            pages.resizable(true).default_size(204.0).size_range(160.0..=320.0)
         } else {
             pages.resizable(true).default_size(236.0).size_range(170.0..=400.0)
         };
@@ -220,7 +241,7 @@ impl NotesApp {
             .frame(crate::card(ui).inner_margin(egui::Margin { left: 10, right: 10, top: 12, bottom: 10 }).outer_margin(egui::Margin { left: 0, right: 6, top: 0, bottom: 12 }))
             .show(ui, |ui| {
                 if self.st.nav.tasks { self.tasks_panel(ui); return; }
-                if !self.st.nav.search.trim().is_empty() || self.st.nav.tag_filter.is_some() { self.search_panel(ui); return; }
+                if self.st.nav.search_open || !self.st.nav.search.trim().is_empty() || self.st.nav.tag_filter.is_some() { self.search_panel(ui); return; }
                 let name = self.store.notebooks[self.nb].sections[self.sec].name.clone();
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
@@ -289,8 +310,10 @@ impl NotesApp {
         let r = r.tip("Switch notebook");
         let mut pick = None;
         let mut action = 0;
+        let cur_color = self.store.notebooks[self.nb].color;
         egui::Popup::menu(&r).show(|ui| {
-            ui.set_min_width(200.0);
+            // Fix exact width so nav_item's available_width() never stretches the dropdown to ~600 px.
+            ui.set_width(236.0);
             ui.label(RichText::new(tr("NOTEBOOKS")).size(10.5).weak());
             for (i, n) in self.store.notebooks.iter().enumerate() {
                 let r = nav_item(ui, &mut self.st, 3, n.id, &n.name, Some(c3(n.color)), i == self.nb, 0, None);
@@ -302,8 +325,11 @@ impl NotesApp {
             if ui.button(tr("🗑  Recently deleted")).clicked() { action = 3; ui.close(); }
             ui.horizontal(|ui| {
                 for c in PALETTE {
-                    let (rect, cr) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
-                    ui.painter().rect_filled(rect, 4.0, c3(c));
+                    let (rect, cr) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                    ui.painter().rect_filled(rect.shrink(1.0), 4.0, c3(c));
+                    if cur_color == c {
+                        ui.painter().rect_stroke(rect, 5.0, EStroke::new(2.0, ui.visuals().strong_text_color()), egui::StrokeKind::Outside);
+                    }
                     if cr.clicked() { action = 10 + PALETTE.iter().position(|x| *x == c).unwrap_or(0); ui.close(); }
                 }
             });

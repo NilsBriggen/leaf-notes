@@ -53,35 +53,45 @@ fn bar_icon(p: &egui::Painter, c: Pos2, icon: BarIcon, col: Color32) {
     }
 }
 
-pub(crate) fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -> BlockAction {
+pub(crate) fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2, siblings: &[(u64, Rect)]) -> BlockAction {
     let mut act = BlockAction::None;
     let (tag0, kind0) = (b.tag, std::mem::discriminant(&b.kind));
     let h = st.canvas.heights.get(&b.id).copied().unwrap_or(40.0);
     let outer = Rect::from_min_size(o + Vec2::new(b.pos[0], b.pos[1]), Vec2::new(b.width, h));
     let (bw, bh) = if st.nav.touch_ui { (44.0, 36.0) } else { (30.0, 26.0) };
     let bar_w = 4.0 * bw + 6.0;
-    let mut bar = Rect::from_min_size(Pos2::new(outer.right() - bar_w, outer.top() - bh - 6.0), Vec2::new(bar_w, bh));
+    let above = Rect::from_min_size(Pos2::new(outer.right() - bar_w, outer.top() - bh - 6.0), Vec2::new(bar_w, bh));
+    let below = Rect::from_min_size(Pos2::new(outer.right() - bar_w, outer.bottom() + 6.0), Vec2::new(bar_w, bh));
     let clip = ui.clip_rect();
-    // If the toolbar would sit above the viewport (top-of-page notes), place it cleanly below the block instead of covering line 1.
-    if bar.top() < clip.top() + 2.0 {
-        let below = Rect::from_min_size(Pos2::new(outer.right() - bar_w, outer.bottom() + 6.0), Vec2::new(bar_w, bh));
-        if below.bottom() <= clip.bottom() - 2.0 {
-            bar = below;
+    let hits_sibling = |r: Rect| siblings.iter().any(|(sid, sr)| *sid != b.id && sr.expand(2.0).intersects(r));
+    // Place the floating toolbar above the block unless it clips the viewport or obscures a sibling block above;
+    // in that case prefer below, or dock unobtrusively to the right / inside-top if both above and below are occupied.
+    let mut bar = if above.top() >= clip.top() + 2.0 && !hits_sibling(above) {
+        above
+    } else if below.bottom() <= clip.bottom() - 2.0 && !hits_sibling(below) {
+        below
+    } else {
+        let right_side = Rect::from_min_size(Pos2::new(outer.right() + 6.0, outer.top()), Vec2::new(bar_w, bh));
+        if right_side.right() <= clip.right() - 2.0 && !hits_sibling(right_side) {
+            right_side
+        } else if below.bottom() <= clip.bottom() - 2.0 {
+            below
         } else {
-            bar = bar.translate(Vec2::new(0.0, clip.top() + 2.0 - bar.top()));
+            Rect::from_min_size(Pos2::new(outer.right() - bar_w, outer.top().max(clip.top() + 2.0)), Vec2::new(bar_w, bh))
         }
-    }
+    };
     if bar.left() < clip.left() + 2.0 {
         bar = bar.translate(Vec2::new(clip.left() + 2.0 - bar.left(), 0.0));
     }
-    let body = ui.interact(outer, ui.scope_id().with(("blockbg", b.id)), Sense::click());
     let typing = st.canvas.tool == Tool::Type || st.canvas.ink_pass;
-    let active = st.canvas.editing == Some(b.id);
+    let body = ui.interact(outer, ui.scope_id().with(("blockbg", b.id)), if typing { Sense::click() } else { Sense::hover() });
+    let active = typing && st.canvas.editing == Some(b.id);
+    let popup_here = st.canvas.popup.as_ref().is_some_and(|pp| pp.block == b.id);
     let hovered = typing && st.canvas.capture.is_none() && ui.rect_contains_pointer(outer.union(bar).expand(8.0));
     let acc = accent(ui);
     let v = ui.visuals().clone();
     let mut menu_from: Option<egui::Response> = None;
-    if (hovered || active) && st.canvas.capture.is_none() {
+    if (hovered || active) && !popup_here && st.canvas.capture.is_none() {
         ui.painter().rect_stroke(
             outer.expand(4.0),
             8.0,
@@ -98,7 +108,7 @@ pub(crate) fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -
                 ui.painter().rect_filled(r.shrink(1.0), 6.0, v.widgets.hovered.weak_bg_fill);
             }
             let col = if matches!(icon, BarIcon::Delete) && resp.hovered() {
-                Color32::from_rgb(214, 70, 60)
+                crate::chrome::danger_color(ui)
             } else if resp.hovered() || resp.dragged() {
                 acc
             } else {
@@ -200,7 +210,7 @@ pub(crate) fn block_ui(ui: &mut egui::Ui, b: &mut Block, st: &mut St, o: Pos2) -
                 Tag::None => {}
             }
             ui.vertical(|ui| {
-                if block_body(ui, b, st, hovered || active) && matches!(act, BlockAction::None) {
+                if block_body(ui, b, st, hovered || active, typing) && matches!(act, BlockAction::None) {
                     act = BlockAction::Changed;
                 }
             });
@@ -320,7 +330,7 @@ fn block_menu_items(ui: &mut egui::Ui, b: &mut Block, act: &mut BlockAction, rot
         }
     }
     ui.separator();
-    if ui.button(RichText::new(tr("🗑  Delete")).color(Color32::from_rgb(200, 60, 50))).clicked() {
+    if ui.button(RichText::new(tr("🗑  Delete")).color(crate::chrome::danger_color(ui))).clicked() {
         *act = BlockAction::Delete;
         ui.close();
     }
@@ -344,7 +354,7 @@ pub(crate) fn insert_snippet(text: &mut String, a: usize, b: usize, snippet: &st
     (a + c, a + c)
 }
 
-fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bool {
+fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool, typing: bool) -> bool {
     let w = ui.available_width();
     let id = egui::Id::unique(("ed", b.id));
     let ctx = ui.ctx().clone();
@@ -397,7 +407,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 changed |= apply_popup(&ctx, id, b.id, text, i, st);
             }
             let popup_open_here = st.canvas.popup.as_ref().is_some_and(|pp| pp.block == b.id);
-            if st.canvas.editing == Some(b.id) || st.nav.focus_id == Some(id) || has_focus || popup_open_here {
+            if typing && (st.canvas.editing == Some(b.id) || st.nav.focus_id == Some(id) || has_focus || popup_open_here) {
                 let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
                     let mut job = rich::edit_job(buf.as_str(), size, hd, &colors);
                     job.wrap.max_width = wrap;
@@ -494,46 +504,68 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
             }
         }
         Kind::Math { src } => {
-            if st.canvas.editing == Some(b.id) {
-                egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(8).inner_margin(10).show(ui, |ui| {
-                    ui.set_width((w - 20.0).max(80.0));
-                    if src.trim().is_empty() {
-                        ui.label(RichText::new(tr("Type LaTeX below, or tap the symbols.")).weak());
-                    } else {
-                        math::math_label(ui, src, 22.0);
-                    }
-                    let unknown = math::unknown_commands(src);
-                    if !unknown.is_empty() {
-                        ui.label(RichText::new(tf!("Not known here: {cmds} (a typo?)", cmds = unknown.join(", "))).size(11.5).color(Color32::from_rgb(214, 70, 60)));
-                    }
-                    ui.add_space(6.0);
-                    let r = ui.add(egui::TextEdit::multiline(src).id(id).code_editor().desired_rows(1).desired_width(f32::INFINITY).hint_text(tr(r"e.g. \frac{a}{b} or x^2 + y^2 = r^2")));
-                    focus(&r, st);
-                    changed |= r.changed();
-                    ui.add_space(4.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
-                        for (label, snip) in MATH_PALETTE {
-                            if ui.add(egui::Button::new(RichText::new(*label).size(13.0)).min_size(Vec2::new(28.0, 24.0))).tip(*snip).clicked() {
-                                rich::edit_at_cursor(&ctx, id, src, |t, a, b| insert_snippet(t, a, b, snip));
-                                st.nav.focus_id = Some(id);
-                                changed = true;
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
-                    if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base())).clicked() {
-                        st.canvas.editing = None;
-                    }
-                });
-            } else if src.trim().is_empty() {
-                if ui.add(egui::Label::new(RichText::new(tr("∑  Empty equation — click to write one")).weak()).sense(Sense::click())).clicked() {
-                    st.canvas.editing = Some(b.id);
-                    st.nav.focus_id = Some(id);
-                }
-            } else if math::math_label(ui, src, 22.0).tip("Click to edit").clicked() {
+            let preview_resp = if src.trim().is_empty() {
+                ui.add(egui::Label::new(RichText::new(tr("∑  Empty equation — click to write one")).weak()).sense(if typing { Sense::click() } else { Sense::hover() }))
+            } else {
+                math::math_label(ui, src, 22.0).tip("Click to edit")
+            };
+            if typing && preview_resp.clicked() {
                 st.canvas.editing = Some(b.id);
                 st.nav.focus_id = Some(id);
+            }
+            if typing && st.canvas.editing == Some(b.id) {
+                // Render the LaTeX editor and symbol palette in a foreground popup card anchored below the equation
+                // so it never collides with or gets overlapped by sibling blocks below.
+                let to_global = ctx.layer_transform_to_global(ui.layer_id()).unwrap_or_default();
+                let anchor_below = to_global * (preview_resp.rect.left_bottom() + Vec2::new(0.0, 8.0));
+                let anchor_above = to_global * (preview_resp.rect.left_top() - Vec2::new(0.0, 8.0));
+                let screen = ctx.content_rect();
+                let pop_w = w.clamp(280.0, 480.0).min((screen.width() - 16.0).max(220.0));
+                let est_h = 220.0;
+                let top_bound = screen.top() + st.bars[0] + 8.0;
+                let bot_bound = screen.bottom() - st.bars[1] - 8.0;
+                let y = if bot_bound - anchor_below.y >= est_h || bot_bound - anchor_below.y >= anchor_above.y - top_bound {
+                    anchor_below.y.clamp(top_bound, (bot_bound - 140.0).max(top_bound))
+                } else {
+                    (anchor_above.y - est_h).max(top_bound)
+                };
+                let x = anchor_below.x.clamp(screen.left() + 8.0, (screen.right() - pop_w - 8.0).max(screen.left() + 8.0));
+                egui::Area::new(egui::Id::unique(("math-editor", b.id)))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(Pos2::new(x, y))
+                    .show(&ctx, |ui| {
+                        egui::Frame::popup(ui.style()).corner_radius(10).inner_margin(10).show(ui, |ui| {
+                            ui.set_width((pop_w - 20.0).max(180.0));
+                            if src.trim().is_empty() {
+                                ui.label(RichText::new(tr("Type LaTeX below, or tap the symbols.")).weak());
+                            } else {
+                                math::math_label(ui, src, 20.0);
+                            }
+                            let unknown = math::unknown_commands(src);
+                            if !unknown.is_empty() {
+                                ui.label(RichText::new(tf!("Not known here: {cmds} (a typo?)", cmds = unknown.join(", "))).size(11.5).color(crate::chrome::danger_color(ui)));
+                            }
+                            ui.add_space(6.0);
+                            let r = ui.add(egui::TextEdit::multiline(src).id(id).code_editor().desired_rows(1).desired_width(f32::INFINITY).hint_text(tr(r"e.g. \frac{a}{b} or x^2 + y^2 = r^2")));
+                            focus(&r, st);
+                            changed |= r.changed();
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                                for (label, snip) in MATH_PALETTE {
+                                    if ui.add(egui::Button::new(RichText::new(*label).size(13.0)).min_size(Vec2::new(28.0, 24.0))).tip(*snip).clicked() {
+                                        rich::edit_at_cursor(&ctx, id, src, |t, a, b| insert_snippet(t, a, b, snip));
+                                        st.nav.focus_id = Some(id);
+                                        changed = true;
+                                    }
+                                }
+                            });
+                            ui.add_space(4.0);
+                            if ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base())).clicked() {
+                                st.canvas.editing = None;
+                            }
+                        });
+                    });
             }
         }
         Kind::Checklist { items } => {
@@ -557,6 +589,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                         .frame(egui::Frame::NONE)
                         .desired_rows(1)
                         .desired_width(te_w)
+                        .interactive(typing)
                         .hint_text(tr("To do…"));
                     if *done {
                         te = te.text_color(ui.visuals().weak_text_color());
@@ -636,10 +669,23 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 .collect();
             let sum: f32 = natural.iter().sum::<f32>().max(1.0);
             let colw: Vec<f32> = natural.iter().map(|&cw| (cw * inner_w / sum).max(26.0)).collect();
-            egui::Frame::new().stroke(ui.visuals().widgets.noninteractive.bg_stroke).corner_radius(6).inner_margin(6).show(ui, |ui| {
+            let dark = ui.visuals().dark_mode;
+            let hc = crate::HIGH_CONTRAST.load(std::sync::atomic::Ordering::Relaxed);
+            let tbl_stroke = if hc {
+                ui.visuals().widgets.noninteractive.bg_stroke
+            } else if dark {
+                EStroke::new(1.0, Color32::from_rgb(66, 76, 78))
+            } else {
+                ui.visuals().widgets.noninteractive.bg_stroke
+            };
+            let head_fill = if dark { Color32::from_rgb(38, 46, 48) } else { ui.visuals().faint_bg_color };
+            let frame_resp = egui::Frame::new().stroke(tbl_stroke).corner_radius(6).inner_margin(6).show(ui, |ui| {
                 ui.set_width((w - 12.0).max(80.0));
                 let n_rows = rows.len();
-                egui::Grid::new(("tbl", b.id)).striped(true).spacing([spacing_x, 6.0]).show(ui, |ui| {
+                let header_bg_slot = ui.painter().add(egui::Shape::Noop);
+                let mut row_bounds: Vec<(f32, f32)> = vec![(f32::MAX, f32::MIN); n_rows];
+                let mut col_rights: Vec<f32> = vec![0.0; cols];
+                egui::Grid::new(("tbl", b.id)).striped(false).spacing([spacing_x, 6.0]).show(ui, |ui| {
                     for (ri, row) in rows.iter_mut().enumerate() {
                         for (ci, cell) in row.iter_mut().enumerate() {
                             let cell_id = egui::Id::unique(("cell", b.id, ri, ci));
@@ -663,18 +709,19 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                                 }
                             }
                             let cw = colw[ci.min(cols - 1)];
-                            ui.allocate_ui_with_layout(Vec2::new(cw, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let cell_resp = ui.allocate_ui_with_layout(Vec2::new(cw, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                                 ui.set_width(cw);
                                 let mut te = egui::TextEdit::multiline(cell)
                                     .desired_rows(1)
                                     .desired_width(cw)
                                     .frame(egui::Frame::NONE)
+                                    .margin(egui::Margin::symmetric(4, 4))
+                                    .interactive(typing)
                                     .id(cell_id);
                                 if ri == 0 {
                                     te = te.font(head_font.clone()).text_color(acc);
                                 }
                                 let r = ui.add(te);
-                                ui.painter().hline(r.rect.x_range(), r.rect.bottom() + 2.0, ui.visuals().widgets.noninteractive.bg_stroke);
                                 if (ri == 0 && ci == 0 && st.nav.focus_id == Some(id)) || st.nav.focus_id == Some(r.id) {
                                     r.request_focus();
                                     st.nav.focus_id = None;
@@ -684,12 +731,44 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                                     st.canvas.want_snap = true;
                                 }
                                 changed |= r.changed();
+                                r.rect
                             });
+                            let cr = cell_resp.inner;
+                            row_bounds[ri].0 = row_bounds[ri].0.min(cr.top());
+                            row_bounds[ri].1 = row_bounds[ri].1.max(cr.bottom());
+                            if ci < cols {
+                                col_rights[ci] = col_rights[ci].max(cr.right());
+                            }
                         }
                         ui.end_row();
                     }
                 });
+                (header_bg_slot, row_bounds, col_rights)
             });
+            let (header_bg_slot, row_bounds, col_rights) = frame_resp.inner;
+            let tbl_rect = frame_resp.response.rect;
+            if let Some(&(top0, bot0)) = row_bounds.first().filter(|(t, b)| t < b) {
+                let hr = Rect::from_min_max(
+                    Pos2::new(tbl_rect.left() + 1.0, tbl_rect.top() + 1.0),
+                    Pos2::new(tbl_rect.right() - 1.0, (bot0 + 3.0).min(tbl_rect.bottom() - 1.0)),
+                );
+                let _ = top0;
+                ui.painter().set(header_bg_slot, egui::Shape::rect_filled(hr, egui::CornerRadius { nw: 5, ne: 5, sw: 0, se: 0 }, head_fill));
+            }
+            for ri in 0..row_bounds.len().saturating_sub(1) {
+                let (_, bot) = row_bounds[ri];
+                let (next_top, _) = row_bounds[ri + 1];
+                if bot < f32::MAX && next_top < f32::MAX {
+                    let y = (bot + next_top) * 0.5;
+                    ui.painter().hline((tbl_rect.left() + 1.0)..=(tbl_rect.right() - 1.0), y, tbl_stroke);
+                }
+            }
+            for &rx in col_rights.iter().take(cols.saturating_sub(1)) {
+                let x = rx + spacing_x * 0.5;
+                if x > tbl_rect.left() + 2.0 && x < tbl_rect.right() - 2.0 {
+                    ui.painter().vline(x, (tbl_rect.top() + 1.0)..=(tbl_rect.bottom() - 1.0), tbl_stroke);
+                }
+            }
             if let Some((ri, ci)) = next_cell {
                 st.nav.focus_id = Some(egui::Id::unique(("cell", b.id, ri, ci)));
             }
@@ -721,8 +800,17 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                 .inner_margin(8)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().interact_size.y = 20.0;
                         ui.label(RichText::new("{ }").size(11.0).color(acc));
-                        let r = ui.add(egui::TextEdit::singleline(lang).desired_width(90.0).font(egui::TextStyle::Small).frame(egui::Frame::NONE));
+                        let r = ui.add(
+                            egui::TextEdit::singleline(lang)
+                                .desired_width(90.0)
+                                .font(egui::TextStyle::Small)
+                                .align(egui::Align2::LEFT_CENTER)
+                                .margin(egui::Margin::symmetric(4, 2))
+                                .frame(egui::Frame::NONE)
+                                .interactive(typing),
+                        );
                         if r.gained_focus() {
                             st.canvas.editing = Some(bid);
                             st.canvas.want_snap = true;
@@ -734,7 +822,7 @@ fn block_body(ui: &mut egui::Ui, b: &mut Block, st: &mut St, active: bool) -> bo
                             }
                         });
                     });
-                    let r = ui.add(egui::TextEdit::multiline(code).id(id).code_editor().desired_rows(2).desired_width((w - 16.0).max(60.0)).frame(egui::Frame::NONE));
+                    let r = ui.add(egui::TextEdit::multiline(code).id(id).code_editor().desired_rows(2).desired_width((w - 16.0).max(60.0)).frame(egui::Frame::NONE).interactive(typing));
                     focus(&r, st);
                     changed |= r.changed();
                 });

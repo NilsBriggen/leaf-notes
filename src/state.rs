@@ -69,8 +69,6 @@ pub(crate) enum ActiveModal {
     DropPdf { path: PathBuf },
     Trash,
     Shortcuts,
-    #[allow(dead_code)]
-    PathPrompt { how: Ins, path: String },
 }
 
 impl ActiveModal {
@@ -94,7 +92,6 @@ impl ActiveModal {
             Self::DropPdf { .. } => 15,
             Self::Trash => 16,
             Self::Shortcuts => 17,
-            Self::PathPrompt { .. } => 18,
         }
     }
 
@@ -185,10 +182,11 @@ impl ModalStack {
     }
 
     /// Dismiss the topmost modal on Esc/Back. Returns true if a modal was present
-    /// (whether dismissed or blocking dismissal like `SyncAsk`).
-    pub(crate) fn handle_escape(&mut self) -> bool {
+    /// (whether dismissed or blocking dismissal like `SyncAsk` or a busy `LockPrompt`).
+    pub(crate) fn handle_escape(&mut self, lock_busy: bool) -> bool {
         let Some(top) = self.stack.last() else { return false };
-        if !top.blocks_escape() {
+        let blocked = top.blocks_escape() || (lock_busy && matches!(top, ActiveModal::LockPrompt(_)));
+        if !blocked {
             self.stack.pop();
         }
         true
@@ -224,8 +222,15 @@ pub(crate) struct CanvasState {
     pub last_text: Option<u64>,
     pub fmt: Option<Fmt>,
     pub input: Input,
+    /// Timestamp (`egui::InputState::time`) of the most recent stylus touch event, to ignore
+    /// synthetic mouse pointer-button events arriving on adjacent frames.
+    pub last_pen_at: f64,
     /// A pen tool is selected but this input (mouse/finger) doesn't draw: it works as usual instead.
     pub ink_pass: bool,
+    /// True when the current status toast is the lasso selection prompt (cleared when selection clears).
+    pub status_is_sel: bool,
+    /// Saved canvas zoom before opening Nav on narrow (`600..1000 px`) viewports, restored on close.
+    pub pre_nav_scale: Option<(u64, f32)>,
     pub mouse_hint: bool,
     /// Visible part of each page's canvas (zoom and pan), in page coordinates.
     pub views: HashMap<u64, egui::Rect>,
@@ -285,7 +290,10 @@ impl Default for CanvasState {
             last_text: None,
             fmt: None,
             input: Input::Mouse,
+            last_pen_at: -10.0,
             ink_pass: false,
+            status_is_sel: false,
+            pre_nav_scale: None,
             mouse_hint: false,
             views: HashMap::new(),
             pan: Vec2::ZERO,
@@ -323,6 +331,10 @@ pub(crate) struct NavState {
     /// The all-tasks list is showing in the page column.
     pub tasks: bool,
     pub search: String,
+    /// Explicit full-text search panel open (used when the title-bar search bar collapses to an icon).
+    pub search_open: bool,
+    /// Whether the title bar is currently showing the compact search icon instead of the inline pill.
+    pub search_icon_mode: bool,
     /// Where search looks: 0 everywhere, 1 this notebook, 2 this section.
     pub search_scope: u8,
     pub tag_filter: Option<Tag>,
@@ -352,6 +364,8 @@ impl Default for NavState {
             touch_ui: false,
             tasks: false,
             search: String::new(),
+            search_open: false,
+            search_icon_mode: false,
             search_scope: 0,
             tag_filter: None,
             rename: None,
@@ -713,6 +727,15 @@ impl St {
         let m = msg.into();
         self.status = tr(&m).to_string();
         self.status_age = 0.0;
+        self.canvas.status_is_sel = false;
+    }
+
+    pub(crate) fn clear_selection(&mut self) {
+        self.canvas.selected.clear();
+        if self.canvas.status_is_sel {
+            self.status.clear();
+            self.canvas.status_is_sel = false;
+        }
     }
 
     /// The chosen pen (there is always at least one).

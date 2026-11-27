@@ -18,10 +18,11 @@ impl NotesApp {
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(if narrow { 12 } else { 22 })).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("settings")).frame(frame).show(ctx, |ui| {
             let size = Vec2::new(
-                if narrow { (ctx.content_rect().width() - 40.0).max(240.0) } else { (ctx.content_rect().width() - 80.0).clamp(560.0, 800.0) },
-                (ctx.content_rect().height() - 120.0 - self.st.bars[0] - self.st.bars[1]).clamp(200.0, 560.0),
+                if narrow { (ctx.content_rect().width() - 32.0).max(240.0) } else { (ctx.content_rect().width() - 80.0).clamp(560.0, 800.0) },
+                (ctx.content_rect().height() - 108.0 - self.st.bars[0] - self.st.bars[1]).clamp(160.0, 560.0),
             );
             ui.set_width(size.x);
+            ui.set_max_width(size.x);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Settings")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -32,32 +33,46 @@ impl NotesApp {
             ui.horizontal_top(|ui| {
                 ui.set_height(size.y);
                 let side_w = if narrow { 40.0 } else { 182.0 };
-                ui.vertical(|ui| {
-                    ui.set_width(side_w);
-                    for (i, (icon, name)) in [("🎨", "Appearance"), ("✏", "Pen & input"), ("¶", "Notes & pages"), ("✦", "AI"), ("💾", "Your data"), ("🔄", "Sync")].iter().enumerate() {
-                        let sel = *settings_tab == i as u8;
-                        let (rect, r) = ui.allocate_exact_size(Vec2::new(if narrow { 38.0 } else { side_w - 4.0 }, if narrow { 40.0 } else { 34.0 }), Sense::click());
-                        if sel || r.hovered() {
-                            ui.painter().rect_filled(rect, 8.0, if sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill });
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                ui.spacing_mut().scroll.bar_width = 5.0;
+                let mut draw_tabs = |ui: &mut egui::Ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(side_w);
+                        ui.set_max_width(side_w);
+                        for (i, (icon, name)) in [("🎨", "Appearance"), ("✏", "Pen & input"), ("¶", "Notes & pages"), ("✦", "AI"), ("💾", "Your data"), ("🔄", "Sync")].iter().enumerate() {
+                            let sel = *settings_tab == i as u8;
+                            let (rect, r) = ui.allocate_exact_size(Vec2::new(if narrow { 38.0 } else { side_w - 4.0 }, if narrow { 40.0 } else { 34.0 }), Sense::click());
+                            if sel || r.hovered() {
+                                ui.painter().rect_filled(rect, 8.0, if sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill });
+                            }
+                            let col = if sel { accent(ui) } else { ui.visuals().text_color() };
+                            ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), egui::Align2::CENTER_CENTER, *icon, egui::FontId::proportional(14.0), col);
+                            if !narrow {
+                                let label_left = rect.left() + 38.0;
+                                let room = (rect.right() - 6.0 - label_left).max(20.0);
+                                let g = one_line(ui.painter(), tr(name), egui::FontId::proportional(14.0), col, room);
+                                ui.painter().galley(Pos2::new(label_left, rect.center().y - g.size().y / 2.0), g, col);
+                            }
+                            crate::chrome::focus_ring(ui, &r, rect, 8.0);
+                            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, sel, tr(name)));
+                            let r = if narrow { r.tip(*name) } else { r };
+                            if r.clicked() { *settings_tab = i as u8; }
                         }
-                        let col = if sel { accent(ui) } else { ui.visuals().text_color() };
-                        ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), egui::Align2::CENTER_CENTER, *icon, egui::FontId::proportional(14.0), col);
-                        if !narrow {
-                            let label_left = rect.left() + 38.0;
-                            let room = (rect.right() - 6.0 - label_left).max(20.0);
-                            let g = one_line(ui.painter(), tr(name), egui::FontId::proportional(14.0), col, room);
-                            ui.painter().galley(Pos2::new(label_left, rect.center().y - g.size().y / 2.0), g, col);
-                        }
-                        crate::chrome::focus_ring(ui, &r, rect, 8.0);
-                        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, sel, tr(name)));
-                        let r = if narrow { r.tip(*name) } else { r };
-                        if r.clicked() { *settings_tab = i as u8; }
-                    }
-                });
+                    });
+                };
+                if size.y < 260.0 {
+                    egui::ScrollArea::vertical().id_salt("settings-tabs").max_width(side_w + 10.0).max_height(size.y).auto_shrink([true, false]).show(ui, |ui| draw_tabs(ui));
+                } else {
+                    draw_tabs(ui);
+                }
                 ui.add_space(if narrow { 2.0 } else { 8.0 });
                 ui.separator();
                 ui.add_space(if narrow { 2.0 } else { 8.0 });
-                egui::ScrollArea::vertical().id_salt("settings-scroll").auto_shrink([false, false]).max_height(size.y).show(ui, |ui| ui.vertical(|ui| {
+                // Clamp inner scroll width to remaining modal room so rows wrap cleanly on 412 px phones.
+                let content_w = (ui.available_width() - 10.0).max(160.0);
+                egui::ScrollArea::vertical().id_salt("settings-scroll").auto_shrink([false, false]).max_width(ui.available_width()).max_height(size.y).show(ui, |ui| ui.vertical(|ui| {
+                    ui.set_width(content_w);
+                    ui.set_max_width(content_w);
                     ui.spacing_mut().item_spacing.y = 10.0;
                     let p = &mut self.st.p;
                     match *settings_tab {
@@ -77,6 +92,8 @@ impl NotesApp {
                                     if resp.tip(name).clicked() { p.accent = c; }
                                 }
                                 let mut col = c3(p.accent);
+                                ui.add_space(2.0);
+                                ui.label(RichText::new("🎨").size(13.0));
                                 if ui.color_edit_button_srgba(&mut col).tip("Any colour").changed() { p.accent = [col.r(), col.g(), col.b()]; }
                                 ui.label(RichText::new(tr("Any colour")).size(12.0).weak());
                             });
@@ -254,16 +271,19 @@ impl NotesApp {
                                         ui.label(RichText::new(tr("Google Drive sign-in isn't set up in this build yet.")).weak());
                                     } else if s.google_token.is_empty() {
                                         ui.label(RichText::new(tr("Your notes go to a “Leaf Notes” folder in your Google Drive. Leaf Notes can only see the files it made itself, nothing else in your Drive.")).size(12.0).weak());
-                                        ui.horizontal_wrapped(|ui| {
-                                            match &self.st.sync_st.google_rx {
-                                                Some((url, _, paste)) => {
+                                        match &self.st.sync_st.google_rx {
+                                            Some((url, _, paste)) => {
+                                                ui.horizontal(|ui| {
                                                     ui.spinner();
                                                     ui.label(tr("Finish signing in in your browser…"));
+                                                });
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                                                     ui.hyperlink_to(tr("Open the page again"), url);
                                                     if ui.button(tr("Cancel")).clicked() { g_cancel = true; }
-                                                    ui.end_row();
-                                                    ui.label(RichText::new(tr("Browser stuck on a page that won't load after signing in? Copy its address and paste it here:")).size(12.0).weak());
-                                                    ui.end_row();
+                                                });
+                                                ui.label(RichText::new(tr("Browser stuck on a page that won't load after signing in? Copy its address and paste it here:")).size(12.0).weak());
+                                                ui.horizontal_wrapped(|ui| {
                                                     let field = ui.add(egui::TextEdit::singleline(&mut self.st.sync_st.google_paste).hint_text("http://127.0.0.1:…").desired_width(ui.available_width().min(320.0)));
                                                     let go = ui.button(tr("Finish")).clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                                                     if go && !self.st.sync_st.google_paste.trim().is_empty() {
@@ -273,13 +293,15 @@ impl NotesApp {
                                                             self.st.sync_st.err = tr("That address has no sign-in code in it — copy the whole address from the browser's address bar.").into();
                                                         }
                                                     }
-                                                }
-                                                None => {
+                                                });
+                                            }
+                                            None => {
+                                                ui.horizontal_wrapped(|ui| {
                                                     if ui.add(egui::Button::new(RichText::new(tr("Sign in with Google")).color(Color32::WHITE)).fill(accent_base()).corner_radius(8)).clicked() { g_start = true; }
                                                     ui.hyperlink_to(RichText::new(tr("Privacy policy")).size(12.0), "https://leafnotes.briggen.dev/privacy");
-                                                }
+                                                });
                                             }
-                                        });
+                                        }
                                     } else {
                                         let who = if s.google_email.is_empty() { tr("your Google account").to_string() } else { s.google_email.clone() };
                                         row(ui, "Google Drive", &tf!("Signed in as {who}. Notes are in the “Leaf Notes” folder.", who = who), |ui| { if ui.button(tr("Sign out")).clicked() { g_out = true; } });

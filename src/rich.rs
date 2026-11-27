@@ -145,7 +145,7 @@ impl Colors {
         let v = ui.visuals();
         Colors {
             text: v.text_color(), strong: v.strong_text_color(), dim: v.weak_text_color().gamma_multiply(0.8), accent,
-            mark: if v.dark_mode { Color32::from_rgba_unmultiplied(200, 170, 0, 90) } else { Color32::from_rgb(255, 240, 150) },
+            mark: if v.dark_mode { Color32::from_rgba_unmultiplied(234, 179, 8, 125) } else { Color32::from_rgb(255, 240, 150) },
             code_bg: if v.dark_mode { Color32::from_gray(45) } else { Color32::from_rgb(238, 241, 243) },
         }
     }
@@ -244,7 +244,11 @@ pub fn view_ticks(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Col
                             if !job.is_empty() { *clicked |= ui.label(std::mem::take(&mut job)).clicked(); }
                             let exists = KNOWN_TITLES.with(|k| { let k = k.borrow(); k.is_empty() || k.contains(&l.trim().to_lowercase()) });
                             let col = if exists { c.accent } else { c.dim };
-                            let r = ui.add(egui::Label::new(egui::RichText::new(format!("↗ {l}")).size(size).color(col).underline()).sense(egui::Sense::click()))
+                            let lh = Some(size * if heading > 0 || matches!(kind, LineKind::Heading(_)) { 1.3 } else { line_height() });
+                            let mut ljob = LayoutJob::default();
+                            ljob.append("↗ ", 0.0, TextFormat { font_id: FontId::proportional(size), color: col, line_height: lh, ..Default::default() });
+                            ljob.append(&l, 0.0, TextFormat { font_id: FontId::proportional(size), color: col, underline: Stroke::new(1.0, col), line_height: lh, ..Default::default() });
+                            let r = ui.add(egui::Label::new(ljob).sense(egui::Sense::click()))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand).tip(if exists { "Open this page" } else { "No page with this name yet — click to create it" });
                             if r.clicked() { *link = Some(l); }
                         }
@@ -280,7 +284,10 @@ pub fn view_ticks(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Col
                 ui.spacing_mut().item_spacing.x = 0.0;
                 if indent > 0.0 { ui.add_space(indent); }
                 if let Some(l) = lead {
-                    let r = ui.add(egui::Label::new(egui::RichText::new(l).size(size).color(c.accent)).sense(egui::Sense::click()));
+                    let mut ljob = LayoutJob::default();
+                    let lh = Some(size * if heading > 0 || matches!(kind, LineKind::Heading(_)) { 1.3 } else { line_height() });
+                    ljob.append(&l, 0.0, TextFormat { font_id: FontId::proportional(size), color: c.accent, line_height: lh, ..Default::default() });
+                    let r = ui.add(egui::Label::new(ljob).sense(egui::Sense::click()));
                     if matches!(kind, LineKind::Check(_)) {
                         if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { tick = Some(li); }
                     } else if r.clicked() {

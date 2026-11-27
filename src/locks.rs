@@ -394,29 +394,41 @@ impl NotesApp {
         let busy = matches!(self.st.locks.pending, Some(PendingLockOp::Lock { .. }));
         let (mut go, mut cancel) = (false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
+        let max_modal_h = (ctx.content_rect().height() - 60.0 - self.st.bars[0] - self.st.bars[1]).max(180.0);
         let modal = egui::Modal::new(egui::Id::unique("lock-section")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 420.0));
-            ui.label(RichText::new(tr("Lock this section")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
-            ui.add_space(6.0);
-            ui.label(tr("Its pages are encrypted with this password. You'll need it to open them, also on your other devices."));
-            ui.label(RichText::new(tr("If you forget the password, these pages can't be recovered. Nobody can reset it.")).color(danger_color(ui)));
-            ui.label(RichText::new(tr("Pictures, PDFs and recordings on these pages are not encrypted.")).weak());
-            ui.add_space(8.0);
-            ui.add_enabled_ui(!busy, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut lp.pw).password(true).hint_text(tr("Password")).desired_width(f32::INFINITY));
-                let r = ui.add(egui::TextEdit::singleline(&mut lp.again).password(true).hint_text(tr("The same password again")).desired_width(f32::INFINITY));
-                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { go = true; }
-            });
-            if !lp.error.is_empty() { ui.label(RichText::new(&lp.error).color(danger_color(ui))); }
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                if busy {
-                    ui.spinner();
-                    ui.label(tr("Encrypting…"));
-                } else {
-                    if ui.add(egui::Button::new(RichText::new(tr("🔒  Lock")).color(Color32::WHITE)).fill(accent_base())).clicked() { go = true; }
-                    if ui.button(tr("Cancel")).clicked() { cancel = true; }
-                }
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
+            egui::ScrollArea::vertical().id_salt("lock-outer").max_height(max_modal_h).show(ui, |ui| {
+                ui.label(RichText::new(tr("Lock this section")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
+                ui.add_space(6.0);
+                ui.label(tr("Its pages are encrypted with this password. You'll need it to open them, also on your other devices."));
+                ui.label(RichText::new(tr("If you forget the password, these pages can't be recovered. Nobody can reset it.")).color(danger_color(ui)));
+                ui.label(RichText::new(tr("Pictures, PDFs and recordings on these pages are not encrypted.")).weak());
+                ui.add_space(8.0);
+                let pw_id = egui::Id::unique(("lock-pw", lp.section));
+                let again_id = egui::Id::unique(("lock-again", lp.section));
+                ui.add_enabled_ui(!busy, |ui| {
+                    let r1 = ui.add(egui::TextEdit::singleline(&mut lp.pw).id(pw_id).password(true).hint_text(tr("Password")).desired_width(f32::INFINITY));
+                    let r2 = ui.add(egui::TextEdit::singleline(&mut lp.again).id(again_id).password(true).hint_text(tr("The same password again")).desired_width(f32::INFINITY));
+                    if ui.memory(|m| m.focused().is_none()) {
+                        r1.request_focus();
+                    }
+                    if (r1.has_focus() || r2.has_focus() || r1.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        go = true;
+                    }
+                });
+                if !lp.error.is_empty() { ui.label(RichText::new(&lp.error).color(danger_color(ui))); }
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if busy {
+                        ui.spinner();
+                        ui.label(tr("Encrypting…"));
+                    } else {
+                        if ui.add(egui::Button::new(RichText::new(tr("🔒  Lock")).color(Color32::WHITE)).fill(accent_base())).clicked() { go = true; }
+                        if ui.button(tr("Cancel")).clicked() { cancel = true; }
+                    }
+                });
             });
         });
         if !busy && (cancel || modal.should_close()) { return None; }

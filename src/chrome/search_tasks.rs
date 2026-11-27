@@ -1,6 +1,6 @@
 //! Full-text search, tag filtering, and cross-notebook open tasks panels.
 
-use super::{danger_color, due_day, local_offset, one_line, SearchHit};
+use super::{danger_color, due_day, local_offset, one_line, want_focus, SearchHit};
 use crate::*;
 use eframe::egui::{Align, FontId, Layout, RichText, Sense};
 
@@ -27,6 +27,42 @@ pub(crate) fn map_lower_span(text: &str, low_start: usize, low_end: usize) -> (u
     let s = orig_start.unwrap_or(text.len());
     let e = orig_end.unwrap_or(text.len()).max(s);
     (s, e)
+}
+
+/// Convert raw page text (including inline Markdown & LaTeX) into a readable single-line search snippet.
+pub(crate) fn clean_snippet(t: &str) -> String {
+    let mut s = t.replace('\n', " ");
+    for (cmd, sym) in [
+        (r"\sum", "∑"), (r"\int", "∫"), (r"\infty", "∞"), (r"\pi", "π"),
+        (r"\alpha", "α"), (r"\beta", "β"), (r"\gamma", "γ"), (r"\theta", "θ"),
+        (r"\omega", "ω"), (r"\lambda", "λ"), (r"\sigma", "σ"), (r"\Delta", "Δ"),
+        (r"\cdot", "·"), (r"\times", "×"), (r"\pm", "±"), (r"\le", "≤"), (r"\ge", "≥"),
+        (r"\ne", "≠"), (r"\approx", "≈"), (r"\to", "→"), (r"\Rightarrow", "⇒"),
+        (r"\frac", " "), (r"\sqrt", "√"), (r"\left", ""), (r"\right", ""),
+        (r"\begin{cases}", " "), (r"\end{cases}", " "), (r"\begin{pmatrix}", " "), (r"\end{pmatrix}", " "),
+    ] {
+        if s.contains(cmd) {
+            s = s.replace(cmd, sym);
+        }
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        let mapped = match ch {
+            '\\' | '{' | '}' | '^' | '_' | '$' | '*' | '=' | '`' | '#' => ' ',
+            c => c,
+        };
+        if mapped.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(mapped);
+            prev_space = false;
+        }
+    }
+    out
 }
 
 pub(crate) type OpenTask = ((usize, usize, usize), String, u64, usize, String, bool);
@@ -128,14 +164,26 @@ impl NotesApp {
 
     pub(crate) fn search_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(tr(if self.st.nav.tag_filter.is_some() && self.st.nav.search.trim().is_empty() { "Tags" } else { "Search" })).size(15.0).strong());
+            ui.label(RichText::new(tr(if self.st.nav.tag_filter.is_some() && self.st.nav.search.trim().is_empty() && !self.st.nav.search_open { "Tags" } else { "Search" })).size(15.0).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.add(egui::Button::new("✕").frame_when_inactive(false)).tip("Close (Esc)").clicked() {
                     self.st.nav.search.clear();
                     self.st.nav.tag_filter = None;
+                    self.st.nav.search_open = false;
                 }
             });
         });
+        // On phones and narrow windows where the title-bar search bar collapses to 🔍, show an inline search box here.
+        if self.st.nav.search_icon_mode || self.st.nav.search_open {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.st.nav.search)
+                    .id(egui::Id::unique("search-panel-input"))
+                    .hint_text(tr("Search everything"))
+                    .desired_width(f32::INFINITY),
+            );
+            want_focus(&mut self.st, &r);
+            ui.add_space(4.0);
+        }
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
             for (t, label) in [
@@ -166,7 +214,7 @@ impl NotesApp {
         let (scope, here) = (self.st.nav.search_scope, (self.nb, self.sec));
         let in_scope = move |ni: usize, si: usize| match scope { 1 => ni == here.0, 2 => (ni, si) == here, _ => true };
         let acc = accent(ui);
-        let mark = if ui.visuals().dark_mode { Color32::from_rgba_unmultiplied(200, 170, 0, 90) } else { Color32::from_rgb(255, 236, 140) };
+        let mark = if ui.visuals().dark_mode { Color32::from_rgba_unmultiplied(234, 179, 8, 125) } else { Color32::from_rgb(255, 236, 140) };
         let mut go = None;
         let mut toggle = None;
         let mut found = 0;
@@ -242,16 +290,23 @@ impl NotesApp {
                 let strong = ui.visuals().strong_text_color();
                 painter.galley(rect.min + Vec2::new(8.0, 6.0), one_line(&painter, if title.is_empty() { tr("Untitled page") } else { title.as_str() }, FontId::proportional(14.0), strong, rect.width() - 16.0), strong);
                 painter.galley(rect.min + Vec2::new(8.0, 24.0), one_line(&painter, path, FontId::proportional(10.5), acc, rect.width() - 16.0), acc);
-                let start = text.get(..at).unwrap_or("").char_indices().rev().nth(24).map_or(0, |(i, _)| i);
+                let mut start = text.get(..at).unwrap_or("").char_indices().rev().nth(24).map_or(0, |(i, _)| i);
+                if start > 0 {
+                    // Snap forward to a nearby word boundary so we don't start mid-word when room allows.
+                    if let Some(ws) = text.get(start..at).and_then(|s| s.find(char::is_whitespace)).filter(|&ws| ws > 0 && ws <= 10) {
+                        start += ws;
+                    }
+                }
                 let tail_end = text.get(end..).and_then(|t| t.char_indices().nth(40)).map_or(text.len(), |(i, _)| end + i);
                 if text.is_char_boundary(start) && text.is_char_boundary(at) && text.is_char_boundary(end) && text.is_char_boundary(tail_end) {
                     let mut job = egui::text::LayoutJob::default();
                     let f = |c: Color32, bg: Color32| egui::TextFormat { font_id: FontId::proportional(11.5), color: c, background: bg, ..Default::default() };
                     let weak = ui.visuals().weak_text_color();
-                    let plain = |t: &str| t.replace('\n', " ").replace(['*', '=', '$', '`', '\\', '{', '}', '^', '#'], "");
-                    job.append(&plain(&text[start..at]), 0.0, f(weak, Color32::TRANSPARENT));
+                    let before = clean_snippet(&text[start..at]);
+                    let before = if start > 0 { format!("…{}", before.trim_start()) } else { before.trim_start().to_string() };
+                    job.append(&before, 0.0, f(weak, Color32::TRANSPARENT));
                     job.append(&text[at..end].replace('\n', " "), 0.0, f(ui.visuals().text_color(), mark));
-                    job.append(&plain(&text[end..tail_end]), 0.0, f(weak, Color32::TRANSPARENT));
+                    job.append(&clean_snippet(&text[end..tail_end]), 0.0, f(weak, Color32::TRANSPARENT));
                     job.wrap.max_width = rect.width() - 16.0;
                     job.wrap.max_rows = 1;
                     let g = painter.layout_job(job);
@@ -279,6 +334,7 @@ impl NotesApp {
             if filter.is_none() {
                 self.st.canvas.find_text = Some(q.clone()).filter(|q| !q.is_empty());
                 self.st.nav.search.clear();
+                self.st.nav.search_open = false;
             }
         }
     }

@@ -8,6 +8,13 @@ const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.4.1", &[
+        "Pen drawing works on the first stroke over any note, switching to Draw arms the pen, and scribble-to-erase ignores shading and diagrams.",
+        "Esc and Back close one layer at a time; narrow search (🔍 / Ctrl+F) opens full-text search directly, and toolbar arrows no longer cover buttons.",
+        "Tables have shaded headers and clean borders; equations edit in a floating popup that never overlaps nearby notes.",
+        "Smoother phones, landscape AI chat, and narrow windows: Settings, shortcuts, drawers, breadcrumbs, and solid scrollbars all fit cleanly.",
+        "Dark-mode pen previews, sharper High Contrast paper rulings, cleaner LaTeX search snippets, and German/French polish.",
+    ]),
     ("0.4.0", &[
         "Tables fill their full width with wrapping cells; audio keeps playing across pages in a compact mini-player.",
         "Cleaner scrolling toolbar with overflow arrows, stacked dialogs, and dark-mode and maths fixes.",
@@ -94,7 +101,13 @@ impl NotesApp {
             ui.set_width(w);
             let big = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).font(rich::serif(26.0)).color(ui.visuals().strong_text_color())); ui.add_space(6.0); };
             let text = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).size(15.0)); ui.add_space(4.0); };
-            let min_h = (if w < 480.0 { 260.0_f32 } else { 230.0_f32 }).min(body_max_h);
+            let min_h = if step == 4 && !fresh {
+                0.0
+            } else {
+                (if w < 480.0 { 260.0_f32 } else { 230.0_f32 }).min(body_max_h)
+            };
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
             egui::ScrollArea::vertical().id_salt(("tour-body", step)).max_height(body_max_h).show(ui, |ui| {
                 ui.vertical(|ui| {
                     ui.set_min_height(min_h);
@@ -219,6 +232,8 @@ impl NotesApp {
                 });
             });
             ui.add_space(6.0);
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
             egui::ScrollArea::vertical().min_scrolled_height(max_h).max_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
                 if let Some((_, items)) = CHANGES.iter().find(|(v, _)| *v == VERSION) {
                     for item in *items {
@@ -248,8 +263,8 @@ impl NotesApp {
             ("Locked sections", "Right-click a section ▸ Lock with a password. Its pages are encrypted; without the password they can't be opened, by anyone."),
             ("Keyboard", "Settings ▸ Your data ▸ Keyboard shortcuts lists them all."),
         ];
-        let top = self.st.bars[0] + (ctx.content_rect().height() * 0.08).min(64.0);
-        let max_h = (ctx.content_rect().height() - top - self.st.bars[1] - 190.0).clamp(140.0, 420.0);
+        let top = self.st.bars[0] + (ctx.content_rect().height() * 0.06).min(52.0);
+        let max_h = (ctx.content_rect().height() - top - self.st.bars[1] - 185.0).clamp(120.0, 640.0);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)).corner_radius(18);
         let id = egui::Id::unique("help");
         let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, top));
@@ -262,14 +277,24 @@ impl NotesApp {
                 });
             });
             ui.add_space(6.0);
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
             egui::ScrollArea::vertical().min_scrolled_height(max_h).max_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
                 for (title, body) in topics {
                     ui.label(RichText::new(tr(title)).size(16.0).strong());
-                    let body = if self.st.nav.touch_ui && !tr(body).contains(tr("Long-press")) {
-                        tr(body).replace("Right-click", tr("Long-press")).replace("Rechtsklick", tr("Long-press")).replace("Clic droit", tr("Long-press"))
-                    } else {
-                        tr(body).to_string()
-                    };
+                    let mut body = tr(body).to_string();
+                    if self.st.nav.touch_ui {
+                        if !body.contains(tr("Long-press")) {
+                            body = body.replace("Right-click", tr("Long-press")).replace("Rechtsklick", tr("Long-press")).replace("Clic droit", tr("Long-press"));
+                        }
+                        body = body
+                            .replace("Click empty paper", tr("Tap empty paper"))
+                            .replace("Klicke auf leeres Papier", tr("Tap empty paper"))
+                            .replace("Cliquez sur une zone vide", tr("Tap empty paper"))
+                            .replace(" Ctrl+K jumps to any page.", "")
+                            .replace(" Strg+K springt zu jeder Seite.", "")
+                            .replace(" Ctrl+K ouvre n'importe quelle page.", "");
+                    }
                     ui.label(body);
                     ui.add_space(8.0);
                 }
@@ -353,19 +378,24 @@ impl NotesApp {
     pub(crate) fn crash_window(&mut self, ctx: &egui::Context, _path: &std::path::Path, text: &str) -> bool {
         let (mut send, mut delete, mut later) = (false, false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
+        let max_modal_h = (ctx.content_rect().height() - 60.0 - self.st.bars[0] - self.st.bars[1]).max(180.0);
         let modal = egui::Modal::new(egui::Id::unique("crash")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 520.0));
-            ui.label(RichText::new(tr("Leaf Notes closed unexpectedly")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
-            ui.label(tr("Your notes were saved up to a few seconds before. A short report of what went wrong can help fix it; it contains no notes, only where in the program it happened. You'll see it before it's sent."));
-            ui.add_space(6.0);
-            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                ui.label(RichText::new(report_part(text)).monospace().size(11.0).weak());
-            });
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent_base())).clicked() { send = true; }
-                if ui.button(tr("Delete it")).clicked() { delete = true; }
-                if ui.button(tr("Not now")).clicked() { later = true; }
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_width = 5.0;
+            egui::ScrollArea::vertical().id_salt("crash-outer").max_height(max_modal_h).show(ui, |ui| {
+                ui.label(RichText::new(tr("Leaf Notes closed unexpectedly")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
+                ui.label(tr("Your notes were saved up to a few seconds before. A short report of what went wrong can help fix it; it contains no notes, only where in the program it happened. You'll see it before it's sent."));
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height((max_modal_h * 0.4).clamp(72.0, 160.0)).show(ui, |ui| {
+                    ui.label(RichText::new(report_part(text)).monospace().size(11.0).weak());
+                });
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent_base())).clicked() { send = true; }
+                    if ui.button(tr("Delete it")).clicked() { delete = true; }
+                    if ui.button(tr("Not now")).clicked() { later = true; }
+                });
             });
         });
         if later || modal.should_close() { return false; }

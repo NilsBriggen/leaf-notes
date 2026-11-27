@@ -260,22 +260,45 @@ pub(crate) fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut
         // egui::Scene already applies multi-touch pan/zoom; do not double-pan here.
         return None;
     }
-    let resp = ui.interact(rect, ui.scope_id().with("ink"), if st.canvas.ink_pass { Sense::click_and_drag() } else { Sense::drag() });
+    // Never draw through an open dropdown/popup menu; clicking dismisses the popup cleanly.
+    if egui::Popup::is_any_open(ui.ctx()) {
+        return None;
+    }
+    let resp = ui.interact(rect, ui.scope_id().with("ink"), Sense::click_and_drag());
     let o = rect.min;
     if st.canvas.ink_pass {
-        if resp.dragged() {
+        if resp.dragged_by(egui::PointerButton::Primary) {
             st.canvas.pan += resp.drag_delta();
         }
-        if resp.drag_started() && st.canvas.input == Input::Mouse && !st.canvas.mouse_hint && st.canvas.tool != Tool::Type {
+        if resp.drag_started_by(egui::PointerButton::Primary) && st.canvas.input == Input::Mouse && !st.canvas.mouse_hint && st.canvas.tool != Tool::Type {
             st.canvas.mouse_hint = true;
             st.say("Tip: your stylus draws and the mouse works as usual. To draw with the mouse too, switch it on in Settings ▸ Pen & input.");
         }
         return resp.clicked().then(|| resp.interact_pointer_pos()).flatten();
     }
     let shift = ui.input(|i| i.modifiers.shift);
-    if let Some(pos) = resp.interact_pointer_pos() {
+    let (primary_pressed, primary_down, primary_released) = ui.input(|i| (
+        i.pointer.button_pressed(egui::PointerButton::Primary),
+        i.pointer.button_down(egui::PointerButton::Primary),
+        i.pointer.button_released(egui::PointerButton::Primary),
+    ));
+    let pointer_pos = resp.interact_pointer_pos().or_else(|| {
+        if st.canvas.current.is_some() || primary_pressed {
+            ui.input(|i| i.pointer.latest_pos()).map(|q| from_global * q)
+        } else {
+            None
+        }
+    });
+    if let Some(pos) = pointer_pos {
         let p = pos - o.to_vec2();
-        if resp.drag_started() {
+        let pen_like = matches!(st.canvas.tool, Tool::Pen | Tool::Highlighter);
+        // Start pen/highlighter strokes immediately on primary press (no drag-threshold drop on Attempt 1 or dots).
+        let started = if pen_like {
+            st.canvas.current.is_none() && ((primary_pressed && resp.contains_pointer()) || resp.drag_started_by(egui::PointerButton::Primary))
+        } else {
+            resp.drag_started_by(egui::PointerButton::Primary)
+        };
+        if started {
             match st.canvas.tool {
                 Tool::Pen | Tool::Highlighter => {
                     let hl = st.canvas.tool == Tool::Highlighter;
@@ -311,7 +334,7 @@ pub(crate) fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut
                         st.snap(page);
                     } else {
                         st.canvas.lasso = vec![p];
-                        st.canvas.selected.clear();
+                        st.clear_selection();
                     }
                 }
                 Tool::Shape(_) => {
@@ -330,7 +353,12 @@ pub(crate) fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut
                 Tool::Type => {}
             }
         }
-        if resp.dragged() {
+        let active_draw = if pen_like {
+            primary_down && st.canvas.current.is_some()
+        } else {
+            resp.dragged_by(egui::PointerButton::Primary)
+        };
+        if active_draw {
             match st.canvas.tool {
                 Tool::Pen | Tool::Highlighter => {
                     if let Some(s) = &mut st.canvas.current {
@@ -452,7 +480,9 @@ pub(crate) fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut
             }
         }
     }
-    if resp.drag_stopped() {
+    let stopped = resp.drag_stopped_by(egui::PointerButton::Primary)
+        || (primary_released && (st.canvas.current.is_some() || !st.canvas.lasso.is_empty() || st.canvas.moving || st.canvas.sel_press.is_some()));
+    if stopped {
         match st.canvas.tool {
             Tool::Pen | Tool::Highlighter | Tool::Shape(_) => {
                 if let Some(mut s) = st.canvas.current.take() {
@@ -515,13 +545,17 @@ pub(crate) fn ink_input(ui: &mut egui::Ui, rect: Rect, page: &mut Page, st: &mut
                         })
                         .map(|s| s.id)
                         .collect();
-                    st.say(if st.canvas.selected.is_empty() {
-                        "Nothing selected — draw a loop around the ink.".to_string()
+                    if st.canvas.selected.is_empty() {
+                        st.say("Nothing selected — draw a loop around the ink.");
+                    } else if st.canvas.selected.len() == 1 {
+                        st.say("1 stroke selected — drag to move, or convert it.");
+                        st.canvas.status_is_sel = true;
                     } else {
-                        tf!("{n} strokes selected — drag to move, or convert them.", n = st.canvas.selected.len())
-                    });
+                        st.say(tf!("{n} strokes selected — drag to move, or convert them.", n = st.canvas.selected.len()));
+                        st.canvas.status_is_sel = true;
+                    }
                 } else {
-                    st.canvas.selected.clear();
+                    st.clear_selection();
                 }
                 st.canvas.lasso.clear();
             }

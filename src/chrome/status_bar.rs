@@ -73,7 +73,11 @@ impl NotesApp {
                     let is_deck = page.kind == PageKind::Deck;
                     let words: usize = page.blocks.iter().map(|b| b.kind.summary().split_whitespace().count().max(match &b.kind { Kind::Text { text, .. } => text.split_whitespace().count(), _ => 0 })).sum();
                     let info = if is_deck {
-                        tf!("{n} cards · {ready} ready to study", n = page.cards.len(), ready = page.deck().len())
+                        let cards = crate::i18n::fill(tr(if page.cards.len() == 1 { "{n} card" } else { "{n} cards" }), &[("n", &page.cards.len())]);
+                        tf!("{cards} · {ready} ready to study", cards = cards, ready = page.deck().len())
+                    } else if full_w < 440.0 {
+                        // Compact phone stats so word/note/stroke counts never truncate mid-word on 412 px screens.
+                        format!("{}w · {}n · {}✎", words, page.blocks.len(), page.strokes.len())
                     } else {
                         [(words, tr("{n} word"), tr("{n} words")), (page.blocks.len(), tr("{n} note"), tr("{n} notes")), (page.strokes.len(), tr("{n} ink stroke"), tr("{n} ink strokes"))]
                             .iter()
@@ -179,7 +183,7 @@ impl NotesApp {
                             if msg {
                                 if ui.available_width() > 520.0 { ui.add_space(12.0); }
                                 let col = if self.st.status.starts_with('⚠') { danger_color(ui) } else { accent(ui) };
-                                ui.add(egui::Label::new(RichText::new(&self.st.status).size(11.5).color(col)).truncate());
+                                ui.add(egui::Label::new(RichText::new(&self.st.status).size(11.5).color(col)).truncate()).tip(&self.st.status);
                             }
                         });
                     });
