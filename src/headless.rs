@@ -31,7 +31,7 @@ pub fn screenshot(path: &Path, frames: usize, size: egui::Vec2, ppp: f32) -> Res
         for (id, deltas) in &out.textures_delta.set { for d in deltas { apply(&mut textures, *id, d); } }
         last = (ctx.tessellate(out.shapes, out.pixels_per_point), out.pixels_per_point);
         for id in &out.textures_delta.free { textures.remove(id); }
-        out.textures_delta.clear(); // handled above (egui checks that every texture change is used)
+        out.textures_delta.clear();
     }
     let (prims, ppp) = last;
     let (w, h) = ((size.x * ppp).round() as usize, (size.y * ppp).round() as usize);
@@ -71,14 +71,14 @@ fn sample((tw, th, pixels): &Tex, u: f32, v: f32) -> [f32; 4] {
 }
 
 fn paint(px: &mut [[f32; 4]], w: usize, h: usize, ppp: f32, p: &epaint::ClippedPrimitive, textures: &HashMap<TextureId, Tex>) {
-    let epaint::Primitive::Mesh(mesh) = &p.primitive else { return }; // custom GPU callbacks can't be drawn here
+    let epaint::Primitive::Mesh(mesh) = &p.primitive else { return };
     let tex = textures.get(&mesh.texture_id);
     let cx0 = (p.clip_rect.min.x * ppp).floor().max(0.0) as usize;
     let cy0 = (p.clip_rect.min.y * ppp).floor().max(0.0) as usize;
     let cx1 = ((p.clip_rect.max.x * ppp).ceil().max(0.0) as usize).min(w);
     let cy1 = ((p.clip_rect.max.y * ppp).ceil().max(0.0) as usize).min(h);
     let edge = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-    for t in mesh.indices.chunks_exact(3) {
+    for t in mesh.indices.as_chunks::<3>().0 {
         let v = [t[0], t[1], t[2]].map(|i| &mesh.vertices[i as usize]);
         let q = v.map(|v| [v.pos.x * ppp, v.pos.y * ppp]);
         let area = edge(q[0], q[1], q[2]);
@@ -107,15 +107,13 @@ fn paint(px: &mut [[f32; 4]], w: usize, h: usize, ppp: f32, p: &epaint::ClippedP
     }
 }
 
-/// Click-through tests: the real app, driven by its accessibility tree (buttons are found by
-/// their names, as a screen reader would), without a window.
+/// Click-through tests: the real app, driven by its accessibility tree.
 #[cfg(test)]
 mod clickthrough {
+    use crate::state::ActiveModal;
     use eframe::egui::{self, accesskit};
     use std::collections::HashMap;
 
-    /// The app, its accessibility tree (control names and where they are), and, for pictures, the
-    /// drawn frame. `touch`: taps come as touches, so the app lays itself out for fingers.
     struct Harness {
         ctx: egui::Context, app: crate::NotesApp, frame: eframe::Frame, t: f64, nodes: HashMap<accesskit::NodeId, (String, egui::Rect)>,
         size: egui::Vec2, touch: bool, pixels: Option<(HashMap<egui::TextureId, super::Tex>, Vec<egui::epaint::ClippedPrimitive>, f32)>,
@@ -129,7 +127,7 @@ mod clickthrough {
             ctx.enable_accesskit();
             let app = crate::NotesApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(std::env::temp_dir().join("ln-click.png")));
             let mut h = Harness { ctx, app, frame: eframe::Frame::_new_kittest(), t: 0.0, nodes: HashMap::new(), size, touch, pixels: ppp.map(|p| (HashMap::new(), vec![], p)) };
-            if touch { h.app.st.input = crate::Input::Finger; }
+            if touch { h.app.st.canvas.input = crate::Input::Finger; }
             h.run(vec![]);
             h.run(vec![]);
             h
@@ -155,11 +153,9 @@ mod clickthrough {
                 }
             }
         }
-        /// Click the control with this name (the topmost-left one if there are several).
         fn click(&mut self, label: &str) {
             if !self.try_click(label) { panic!("no control named {label:?}; there are: {:?}", self.nodes.values().map(|v| &v.0).collect::<Vec<_>>()); }
         }
-        /// Click a control by its name (or its translation, or the start of it); false if there's none.
         fn try_click(&mut self, label: &str) -> bool {
             let names = [label, crate::tr(label)];
             let top_left = |a: &egui::Rect, b: &egui::Rect| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap();
@@ -174,7 +170,6 @@ mod clickthrough {
             self.run(vec![]);
             true
         }
-        /// Save the last frame as a PNG (only for a harness made with a pixel density).
         fn shot(&self, path: &std::path::Path) {
             use eframe::App;
             let Some((tex, prims, ppp)) = &self.pixels else { return };
@@ -190,21 +185,17 @@ mod clickthrough {
     fn main_tasks_by_clicking() {
         let _turn = crate::i18n::tests::LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = Harness::new();
-        // a new page from the pages column
         let before = h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages.len();
         h.click("+ Page");
         assert_eq!(h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages.len(), before + 1);
-        // Insert ▸ Checklist puts a checklist on the page
         h.click("Insert");
         h.click("Checklist");
         let page = &h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg];
         assert!(page.blocks.iter().any(|b| matches!(b.kind, crate::model::Kind::Checklist { .. })));
-        // another section from the side panel
         h.click("Ideas");
         assert_eq!(h.app.store.notebooks[h.app.nb].sections[h.app.sec].name, "Ideas");
-        // the help window
         h.click("?");
-        assert!(h.app.st.show_help);
+        assert!(h.app.st.modals.has_help());
     }
 
     #[test]
@@ -214,11 +205,11 @@ mod clickthrough {
         let before = h.app.store.notebooks.len();
         h.click("?");
         h.click("Show the welcome tour");
-        h.run(vec![]); // the tour's modal shows a frame later
+        h.run(vec![]);
         for _ in 0..10 { if h.nodes.values().any(|(l, _)| l == "Next") { h.click("Next"); } }
         assert!(!h.nodes.values().any(|(l, _)| l == "Start with an empty notebook"), "only offered on the first start");
         h.click("Done");
-        assert!(h.app.st.tour.is_none() && h.app.store.notebooks.len() == before);
+        assert!(!h.app.st.modals.has_tour() && h.app.store.notebooks.len() == before);
     }
 
     fn key(h: &mut Harness, key: egui::Key, modifiers: egui::Modifiers) {
@@ -235,16 +226,20 @@ mod clickthrough {
         h.click("Checklist");
         let (nb, sec, pg) = (h.app.nb, h.app.sec, h.app.pg);
         let with_list = blocks(&h, nb, sec, pg);
-        h.app.st.editing = None;
-        // another page in front: Ctrl+Z there must not quietly undo the checklist here
+        h.app.st.canvas.editing = None;
         h.click("Ideas");
         key(&mut h, egui::Key::Z, egui::Modifiers::COMMAND);
         assert_eq!(blocks(&h, nb, sec, pg), with_list);
-        // Esc closes Settings ("Close (Esc)")
+        // Esc pops stacked modals one layer at a time: Settings -> Trash -> Esc -> Settings -> Esc -> page
         h.click("⚙");
-        assert!(h.app.st.show_settings);
+        assert!(h.app.st.modals.has_settings());
+        h.app.st.modals.push(ActiveModal::Trash);
+        h.run(vec![]);
+        assert!(h.app.st.modals.has_trash() && h.app.st.modals.has_settings());
         key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
-        assert!(!h.app.st.show_settings);
+        assert!(!h.app.st.modals.has_trash() && h.app.st.modals.has_settings());
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.st.modals.has_settings());
     }
 
     #[test]
@@ -253,7 +248,7 @@ mod clickthrough {
         let mut h = Harness::new();
         h.click("Insert");
         h.click("Checklist");
-        let id = h.app.st.editing.expect("the new checklist is being edited");
+        let id = h.app.st.canvas.editing.expect("the new checklist is being edited");
         let block = |h: &Harness| h.app.store.notebooks[h.app.nb].sections[h.app.sec].pages[h.app.pg].blocks.iter().find(|b| b.id == id).cloned().unwrap();
         h.run(vec![egui::Event::Text("milk".into())]);
         h.run(vec![]);
@@ -277,13 +272,12 @@ mod clickthrough {
             let top = |h: &Harness| h.nodes.values().find(|(l, _)| l == "+ Page").map(|(_, r)| r.top()).expect("the page list's + Page");
             let home = top(&h);
             for tab in ["Insert", "AI", "Study ·", "View", "Draw"] { h.click(tab); assert_eq!(top(&h), home, "the {tab} tab (touch: {touch})"); }
-            // a pen's button switches to the eraser mid-stroke; a pen that reports pressure adds its slider: the page stays put
             for tool in [crate::Tool::Pen, crate::Tool::Eraser, crate::Tool::Highlighter, crate::Tool::Lasso, crate::Tool::Type] {
-                h.app.st.tool = tool;
+                h.app.st.canvas.tool = tool;
                 for _ in 0..6 { h.run(vec![]); }
                 assert_eq!(top(&h), home, "with {tool:?} in hand (touch: {touch})");
             }
-            (h.app.st.p.pressure, h.app.st.force, h.app.st.tool) = (true, Some(0.5), crate::Tool::Pen);
+            (h.app.st.p.pressure, h.app.st.canvas.force, h.app.st.canvas.tool) = (true, Some(0.5), crate::Tool::Pen);
             h.run(vec![]);
             h.run(vec![]);
             assert_eq!(top(&h), home, "with pen pressure (touch: {touch})");
@@ -303,7 +297,6 @@ mod clickthrough {
         h.run(vec![touch(1, 900.0, egui::TouchPhase::Start), touch(2, 1000.0, egui::TouchPhase::Start)]);
         h.run(vec![touch(1, 900.0, egui::TouchPhase::End), touch(2, 1000.0, egui::TouchPhase::End)]);
         assert_eq!(blocks(&h), before, "a quick two-finger tap undoes");
-        // a two-finger drag (scrolling) does not (the Insert tab is still open)
         h.click("Checklist");
         assert_eq!(blocks(&h), before + 1);
         h.run(vec![touch(1, 900.0, egui::TouchPhase::Start), touch(2, 1000.0, egui::TouchPhase::Start)]);
@@ -313,8 +306,7 @@ mod clickthrough {
     }
 
     fn settings(h: &mut Harness, tab: u8) {
-        h.app.st.show_settings = true;
-        h.app.st.settings_tab = tab;
+        h.app.st.modals.open_settings(tab);
     }
 
     fn tour(h: &mut Harness, step: usize) {
@@ -325,8 +317,7 @@ mod clickthrough {
     }
 
     /// Draws the main screens at laptop, narrow and phone sizes, light and dark, English and German, to
-    /// look the layout over (not a check). By hand, one at a time:
-    /// LEAFNOTES_DATA=<empty dir> LEAFNOTES_SHOTS=<dir> [LEAFNOTES_SHOTS_ONLY=ph,lapd] cargo test --release render_gallery -- --ignored
+    /// look the layout over (not a check).
     #[test]
     #[ignore]
     fn render_gallery() {
@@ -337,7 +328,7 @@ mod clickthrough {
         type Scene = (&'static str, fn(&mut Harness));
         let scenes: Vec<Scene> = vec![
             ("home", |_| {}),
-            ("nav", |h| { if h.app.st.narrow { h.try_click("☰"); } }),
+            ("nav", |h| { if h.app.st.nav.narrow { h.try_click("☰"); } }),
             ("tab-insert", |h| { h.try_click("Insert"); }), ("tab-draw", |h| { h.try_click("Draw"); }), ("tab-ai", |h| { h.try_click("AI"); }),
             ("tab-study", |h| { h.try_click("Study"); }), ("tab-view", |h| { h.try_click("View"); }),
             ("set0", |h| settings(h, 0)), ("set1", |h| settings(h, 1)), ("set2", |h| settings(h, 2)), ("set3", |h| settings(h, 3)), ("set4", |h| settings(h, 4)), ("set5", |h| settings(h, 5)),
@@ -347,16 +338,18 @@ mod clickthrough {
             ("search", |h| { key(h, egui::Key::F, egui::Modifiers::COMMAND); h.run(vec![]); h.run(vec![egui::Event::Text("sine".into())]); }),
             ("tour0", |h| tour(h, 0)), ("tour1", |h| tour(h, 1)), ("tour2", |h| tour(h, 2)), ("tour3", |h| tour(h, 3)), ("tour4", |h| tour(h, 4)),
             ("help", |h| { h.try_click("?"); }),
-            ("shortcuts", |h| { h.app.st.show_shortcuts = true; }),
-            ("bin", |h| { h.app.st.show_trash = true; }),
+            ("shortcuts", |h| { h.app.st.modals.push(ActiveModal::Shortcuts); }),
+            ("bin", |h| { h.app.st.modals.push(ActiveModal::Trash); }),
             ("history", |h| { h.try_click("⋯"); h.try_click("Page history…"); }),
             ("table", |h| { h.try_click("Insert"); h.try_click("Table"); }),
             ("checklist", |h| { h.try_click("Insert"); h.try_click("Checklist"); }),
             ("study", |h| { h.try_click("Study"); h.try_click("Review due"); }),
-            ("deck", |h| { if h.app.st.narrow { h.try_click("☰"); } h.try_click("Fourier — flashcards"); }),
+            ("deck", |h| { if h.app.st.nav.narrow { h.try_click("☰"); } h.try_click("Fourier — flashcards"); }),
         ];
-        let configs = [("lap", 1280.0, 800.0, 1.5, false, false, "en"), ("lapd", 1280.0, 800.0, 1.5, true, false, "en"), ("lapde", 1280.0, 800.0, 1.5, false, false, "de"),
-            ("nar", 900.0, 700.0, 1.0, false, false, "en"), ("ph", 412.0, 880.0, 2.6, false, true, "en"), ("phd", 412.0, 880.0, 2.6, true, true, "en"), ("phde", 412.0, 880.0, 2.6, false, true, "de")];
+        let configs = [
+            ("lap", 1280.0, 800.0, 1.5, false, false, "en"), ("lapd", 1280.0, 800.0, 1.5, true, false, "en"), ("lapde", 1280.0, 800.0, 1.5, false, false, "de"),
+            ("nar", 900.0, 700.0, 1.0, false, false, "en"), ("ph", 412.0, 880.0, 2.6, false, true, "en"), ("phd", 412.0, 880.0, 2.6, true, true, "en"), ("phde", 412.0, 880.0, 2.6, false, true, "de"),
+        ];
         for (tag, w, hgt, ppp, dark, touch, lang) in configs {
             if !only.is_empty() && !only.split(',').any(|o| o == tag) { continue; }
             for (name, scene) in &scenes {
@@ -365,7 +358,8 @@ mod clickthrough {
                 if dark { h.app.st.p.dark = true; h.app.st.theme_dirty = true; }
                 for _ in 0..3 { h.run(vec![]); }
                 scene(&mut h);
-                for _ in 0..6 { h.run(vec![]); }
+                // 16 frames (~0.27 s) so egui's 0.2 s modal fade-in finishes cleanly before capturing.
+                for _ in 0..16 { h.run(vec![]); }
                 h.shot(&dir.join(format!("{tag}-{name}.png")));
             }
         }

@@ -8,11 +8,15 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 
 const FILE: &str = "search-index.json";
+/// Wait this long after ink on a page stops changing before running offline OCR.
+const OCR_DEBOUNCE_SECS: f64 = 6.0;
 
 #[derive(Default)]
 pub struct Index {
     /// page id → (what the text was made from, the text)
     pub map: HashMap<u64, (u64, String)>,
+    /// page id → (latest seen hash, timestamp when this hash was first seen)
+    pending: HashMap<u64, (u64, f64)>,
     job: Option<(u64, u64, Receiver<String>)>,
     cursor: usize,
     dirty: bool,
@@ -68,8 +72,33 @@ impl Index {
                 continue;
             }
             let h = source_hash(p);
-            if self.map.get(&p.id).is_some_and(|(old, _)| *old == h) { continue; }
-            if p.strokes.is_empty() && pdfs(p).is_empty() { self.map.insert(p.id, (h, String::new())); continue; }
+            if self.map.get(&p.id).is_some_and(|(old, _)| *old == h) {
+                self.pending.remove(&p.id);
+                continue;
+            }
+            if p.strokes.is_empty() && pdfs(p).is_empty() {
+                self.pending.remove(&p.id);
+                if self.map.get(&p.id).is_some_and(|(_, t)| !t.is_empty()) {
+                    self.dirty = true;
+                }
+                self.map.insert(p.id, (h, String::new()));
+                continue;
+            }
+            // Debounce OCR while the user is actively writing ink so we don't spin the CNN on every stroke.
+            if now > 0.0 {
+                match self.pending.get(&p.id).copied() {
+                    Some((ph, since)) if ph == h => {
+                        if now >= since && now - since < OCR_DEBOUNCE_SECS {
+                            continue;
+                        }
+                    }
+                    _ => {
+                        self.pending.insert(p.id, (h, now));
+                        continue;
+                    }
+                }
+            }
+            self.pending.remove(&p.id);
             let (strokes, pdfs, files) = (p.strokes.clone(), pdfs(p), files.clone());
             let (tx, rx) = channel();
             std::thread::spawn(move || {
@@ -98,14 +127,30 @@ impl Index {
     /// Drop these pages and write the file at once (their section was just locked).
     pub fn forget(&mut self, ids: &[u64], persist: bool) {
         if self.job.as_ref().is_some_and(|(id, ..)| ids.contains(id)) { self.job = None; }
-        for id in ids { self.map.remove(id); }
+        for id in ids {
+            self.map.remove(id);
+            self.pending.remove(id);
+        }
         self.dirty = true;
         self.flush(persist);
     }
 
+    /// Write what changed now (on the way out), pruning deleted pages if `store` is supplied.
+    pub fn flush_with(&mut self, store: Option<&Store>, persist: bool) {
+        if let Some(store) = store {
+            let ids: std::collections::HashSet<u64> = store.notebooks.iter().flat_map(|n| &n.sections)
+                .filter(|s| s.lock.is_none()).flat_map(|s| &s.pages).map(|p| p.id).collect();
+            let before = self.map.len();
+            self.map.retain(|id, _| ids.contains(id));
+            self.pending.retain(|id, _| ids.contains(id));
+            if self.map.len() != before { self.dirty = true; }
+        }
+        if persist && self.dirty { let _ = save(FILE, &self.map); self.dirty = false; }
+    }
+
     /// Write what changed now (on the way out).
     pub fn flush(&mut self, persist: bool) {
-        if persist && self.dirty { let _ = save(FILE, &self.map); self.dirty = false; }
+        self.flush_with(None, persist);
     }
 }
 
@@ -128,19 +173,30 @@ pub fn fuzzy_find(hay: &str, q: &str) -> Option<(usize, usize, bool)> {
 }
 
 /// Edit distance between `a` and `b` is at most `k` (letters added, dropped, changed, or two neighbours swapped).
+/// Uses a flat 3-row rolling buffer to avoid O(|a|*|b|) nested Vec allocations per candidate word.
 fn within(a: &str, b: &str, k: usize) -> bool {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for i in 0..=a.len() { d[i][0] = i; }
-    for j in 0..=b.len() { d[0][j] = j; }
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let cols = b.len() + 1;
+    let mut buf = vec![0usize; 3 * cols];
+    for (j, slot) in buf.iter_mut().enumerate().take(cols) { *slot = j; }
     for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            d[i][j] = (d[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1])).min(d[i - 1][j] + 1).min(d[i][j - 1] + 1);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] { d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1); }
+        let (r0, r1, r2) = ((i % 3) * cols, ((i - 1) % 3) * cols, (i.wrapping_sub(2) % 3) * cols);
+        buf[r0] = i;
+        let mut row_min = i;
+        for j in 1..cols {
+            let mut v = (buf[r1 + j - 1] + usize::from(a[i - 1] != b[j - 1]))
+                .min(buf[r1 + j] + 1)
+                .min(buf[r0 + j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(buf[r2 + j - 2] + 1);
+            }
+            buf[r0 + j] = v;
+            row_min = row_min.min(v);
         }
-        if d[i].iter().min().is_some_and(|m| *m > k) { return false; }
+        if row_min > k { return false; }
     }
-    d[a.len()][b.len()] <= k
+    buf[(a.len() % 3) * cols + b.len()] <= k
 }
 
 #[cfg(test)]
@@ -182,7 +238,7 @@ mod tests {
         assert!(ix.map.contains_key(&inked), "the page with ink was read");
         // locking a section drops its pages from the index
         let sec = &mut store.notebooks[0].sections[0];
-        sec.lock = Some(Lock { salt: String::new(), nonce: String::new(), data: String::new() });
+        sec.lock = Some(Lock { v: 0, salt: String::new(), nonce: String::new(), data: String::new() });
         for i in 0..20 { ix.tick(&store, files.clone(), false, 300.0 + i as f64); }
         assert!(!ix.map.contains_key(&inked));
     }

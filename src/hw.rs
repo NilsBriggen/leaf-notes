@@ -26,7 +26,7 @@ fn parse_model(b: &[u8]) -> Model {
     let (flat, hidden) = if v2 { (128 * 3 * 3, 256) } else { (64 * 7 * 7, 128) };
     let mut off = 13 + ll;
     let mut take = |len: usize| -> Vec<f32> {
-        let v = b[off..off + len * 4].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        let v = b[off..off + len * 4].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
         off += len * 4;
         v
     };
@@ -209,12 +209,15 @@ fn chars<'a>(strokes: &[&'a Stroke]) -> Vec<(BBox, Vec<&'a Stroke>)> {
     let boxes: Vec<BBox> = strokes.iter().map(|s| BBox::of(&[s])).collect();
     let u = unit(strokes);
     let mut parent: Vec<usize> = (0..n).collect();
-    fn root(p: &mut Vec<usize>, i: usize) -> usize { let mut r = i; while p[r] != r { r = p[r]; } p[i] = r; r }
+    fn root(p: &mut [usize], i: usize) -> usize { let mut r = i; while p[r] != r { r = p[r]; } p[i] = r; r }
     for i in 0..n {
         for j in i + 1..n {
             let (a, b) = (&boxes[i], &boxes[j]);
             let overlap = a.x1.min(b.x1) - a.x0.max(b.x0);
-            let stacked = overlap >= 0.5 * a.w().min(b.w()).max(1.0) || (b.cx() >= a.x0 && b.cx() <= a.x1) || (a.cx() >= b.x0 && a.cx() <= b.x1);
+            // Don't let a wide, flat underline glue every character of a word into one mega-glyph.
+            let is_underline = |wide: &BBox, other: &BBox| wide.w() > u * 1.8 && wide.h() < u * 0.25 && wide.w() > other.w() * 1.8;
+            let stacked = !is_underline(a, b) && !is_underline(b, a)
+                && (overlap >= 0.5 * a.w().min(b.w()).max(1.0) || (b.cx() >= a.x0 && b.cx() <= a.x1) || (a.cx() >= b.x0 && a.cx() <= b.x1));
             let near = overlap > -u * 0.1 && a.y1.min(b.y1) - a.y0.max(b.y0) > -u * 0.1 && touches(strokes[i], strokes[j], u * 0.08);
             if stacked || near { let (ri, rj) = (root(&mut parent, i), root(&mut parent, j)); parent[ri] = rj; }
         }
@@ -256,17 +259,29 @@ fn seg_dist(p1: [f32; 2], p2: [f32; 2], q1: [f32; 2], q2: [f32; 2]) -> f32 {
     pt(p1, q1, q2).min(pt(p2, q1, q2)).min(pt(q1, p1, p2)).min(pt(q2, p1, p2))
 }
 
+type RefinedChar<'a> = (BBox, Vec<&'a Stroke>, Option<Vec<f32>>);
+
 /// Join neighbouring pieces when the recognizer reads them better as one character than as two.
-fn refine<'a>(mut cs: Vec<(BBox, Vec<&'a Stroke>)>, hu: f32) -> Vec<(BBox, Vec<&'a Stroke>)> {
-    let conf = |g: &[&Stroke]| best(&probs(&render(g)), |_| true).1;
+/// Caches any CNN probability vectors computed during refinement so `recognize_text` doesn't re-run the CNN.
+fn refine<'a>(cs: Vec<(BBox, Vec<&'a Stroke>)>, hu: f32) -> Vec<RefinedChar<'a>> {
+    let mut cs: Vec<RefinedChar<'a>> = cs.into_iter().map(|(b, g)| (b, g, None)).collect();
     let mut i = 0;
     while i + 1 < cs.len() {
-        let (a, b) = (&cs[i], &cs[i + 1]);
-        let joined = a.0.union(&b.0);
-        if b.0.x0 - a.0.x1 < hu * 0.2 && joined.w() < hu * 1.3 && a.0.w().max(b.0.w()) < hu * 0.9 {
-            let both: Vec<&Stroke> = a.1.iter().chain(b.1.iter()).copied().collect();
-            if conf(&both) > conf(&a.1).min(conf(&b.1)) + 0.15 {
-                cs[i] = (joined, both);
+        let joined = cs[i].0.union(&cs[i + 1].0);
+        if cs[i + 1].0.x0 - cs[i].0.x1 < hu * 0.2 && joined.w() < hu * 1.3 && cs[i].0.w().max(cs[i + 1].0.w()) < hu * 0.9 {
+            let ca = {
+                let (_, g, p) = &mut cs[i];
+                best(p.get_or_insert_with(|| probs(&render(g))), |_| true).1
+            };
+            let cb = {
+                let (_, g, p) = &mut cs[i + 1];
+                best(p.get_or_insert_with(|| probs(&render(g))), |_| true).1
+            };
+            let both: Vec<&Stroke> = cs[i].1.iter().chain(cs[i + 1].1.iter()).copied().collect();
+            let pb = probs(&render(&both));
+            let cboth = best(&pb, |_| true).1;
+            if cboth > ca.min(cb) + 0.15 {
+                cs[i] = (joined, both, Some(pb));
                 cs.remove(i + 1);
                 continue;
             }
@@ -377,7 +392,7 @@ pub fn recognize_text(strokes: &[Stroke]) -> String {
         // words: a gap clearly wider than this writer's usual letter gap
         let gaps: Vec<f32> = cs.windows(2).map(|w| w[1].0.x0 - w[0].0.x1).collect();
         let word_gap = (hu * 0.5).max((median(gaps.into_iter().filter(|g| *g > 0.0).collect()) * 2.2).min(hu * 1.1));
-        let mut words: Vec<Vec<(BBox, Vec<&Stroke>)>> = vec![];
+        let mut words: Vec<Vec<RefinedChar<'_>>> = vec![];
         let mut prev_x1 = f32::MIN;
         for c in cs {
             if c.0.x0 - prev_x1 > word_gap || words.is_empty() { words.push(vec![]); }
@@ -388,19 +403,19 @@ pub fn recognize_text(strokes: &[Stroke]) -> String {
         for word in words {
             let mut ps = vec![];
             let mut accents = vec![];
-            for (b, g) in &word {
+            for (b, g, cached_p) in &word {
                 let small = b.w().max(b.h()) < hu * 0.25;
                 // an accent is kept apart (the letter is read again without it, if it's needed later)
                 let (body, above, below) = split_marks(g, hu);
                 accents.push(accent_of(&above, &below, hu).map(|a| (a, body)));
-                ps.push(if small { None } else { Some(probs(&render(g))) });
+                ps.push(if small { None } else { Some(cached_p.clone().unwrap_or_else(|| probs(&render(g)))) });
             }
             // decide digits vs letters for the whole word, then read each character in that mode
             let (mut dsum, mut lsum) = (0.0, 0.0);
             for p in ps.iter().flatten() { dsum += best(p, is_digit).1; lsum += best(p, is_letter).1; }
             let numeric = dsum > lsum;
             let mut w = String::new();
-            for (((b, g), p), acc) in word.iter().zip(&ps).zip(&accents) {
+            for (((b, g, _), p), acc) in word.iter().zip(&ps).zip(&accents) {
                 let at = w.len();
                 let Some(p) = p else {
                     w.push(if b.y1 > baseline + hu * 0.15 { ',' } else if b.y1 < baseline - hu * 0.5 { '\'' } else { '.' });
@@ -450,6 +465,48 @@ const OPERATORS: &[&str] = &["+", "-", "=", "×", "±", "≤", "≥", "≠", "�
 
 struct Sym { b: BBox, label: String }
 
+/// Replace bare math function names with LaTeX commands in a single longest-first pass,
+/// skipping existing `\commands` so `arcsin`, `sinh`, and `\sin` are never corrupted.
+fn replace_math_fns(src: &str) -> String {
+    const FNS: &[&str] = &[
+        "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
+        "sin", "cos", "tan", "log", "ln", "lim", "exp", "max", "min",
+    ];
+    let mut out = String::with_capacity(src.len() + 16);
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < src.len() {
+        if bytes[i] == b'\\' {
+            // Copy the entire LaTeX command verbatim without re-matching inside it.
+            let start = i;
+            i += 1;
+            if i < src.len() {
+                if bytes[i].is_ascii_alphabetic() {
+                    while i < src.len() && bytes[i].is_ascii_alphabetic() { i += 1; }
+                } else {
+                    let ch_len = src[i..].chars().next().map_or(1, char::len_utf8);
+                    i += ch_len;
+                }
+            }
+            out.push_str(&src[start..i]);
+            continue;
+        }
+        let rest = &src[i..];
+        if let Some(&f) = FNS.iter().find(|&&f| rest.starts_with(f)) {
+            out.push('\\');
+            out.push_str(f);
+            out.push(' ');
+            i += f.len();
+            continue;
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    while out.contains("  ") { out = out.replace("  ", " "); }
+    out.trim().to_string()
+}
+
 /// Recognise handwritten math as LaTeX.
 pub fn recognize_math(strokes: &[Stroke]) -> String {
     let strokes: Vec<&Stroke> = strokes.iter().filter(|s| !s.highlighter && !s.points.is_empty()).collect();
@@ -457,10 +514,7 @@ pub fn recognize_math(strokes: &[Stroke]) -> String {
     let u = unit(&strokes);
     let rows: Vec<String> = lines(&strokes, u * 0.9, u).iter().map(|l| expr(l, u).trim().to_string()).collect();
     let src = rows.join(r" \\ ");
-    // read runs of letters that spell a function name as that function
-    let mut s = src;
-    for f in ["sin", "cos", "tan", "log", "ln", "lim", "exp", "max", "min"] { s = s.replace(f, &format!("\\{f} ")); }
-    s.replace("  ", " ").trim().to_string()
+    replace_math_fns(&src)
 }
 
 fn expr(strokes: &[&Stroke], u: f32) -> String {
@@ -558,8 +612,8 @@ mod tests {
     fn rust_port_matches_pytorch() {
         let b = include_bytes!("../assets/hw-parity.bin");
         let n = u32::from_le_bytes(b[..4].try_into().unwrap()) as usize;
-        let imgs: Vec<f32> = b[4..4 + n * 784 * 4].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-        let want: Vec<u32> = b[4 + n * 784 * 4..].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        let imgs: Vec<f32> = b[4..4 + n * 784 * 4].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
+        let want: Vec<u32> = b[4 + n * 784 * 4..].as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         let same = (0..n).filter(|&i| {
             let p = probs_with(model(), &imgs[i * 784..(i + 1) * 784]);
             p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0 as u32 == want[i]
@@ -616,6 +670,10 @@ mod tests {
         // separate lines stay separate
         let ml = recognize_text(&[stroke(&ring), stroke(&ring.iter().map(|p| (p.0, p.1 + 120.0)).collect::<Vec<_>>())]);
         assert_eq!(ml.lines().count(), 2, "{ml:?}");
+        // math function replacement preserves hyperbolic, inverse, and already-escaped commands
+        assert_eq!(replace_math_fns("sinh(x) + arcsin(y)"), r"\sinh (x) + \arcsin (y)");
+        assert_eq!(replace_math_fns(r"\sin x + cos(x)"), r"\sin x + \cos (x)");
+        assert_eq!(replace_math_fns("sinx + 2exp(t)"), r"\sin x + 2\exp (t)");
     }
 }
 

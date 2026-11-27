@@ -24,6 +24,16 @@ pub enum Loaded {
 fn page_path(dir: &Path, id: u64) -> PathBuf { dir.join("pages").join(format!("{id}.json")) }
 fn history_path(dir: &Path, id: u64) -> PathBuf { dir.join("history").join(format!("{id}.jsonl")) }
 
+/// Set owner-only permissions (0o600) on Unix for private attachments and reports.
+pub(crate) fn set_private_perms(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    let _ = path;
+}
+
 /// Write a file so that a crash, a dead battery or a pulled plug leaves either the old or the new
 /// version, never an empty file: a temporary file, flushed to the disk, then renamed over the old
 /// one (and the folder flushed, so the rename itself is kept).
@@ -67,9 +77,12 @@ pub fn load(dir: &Path) -> Result<Loaded, String> {
     if lib.exists() || backup.exists() {
         let mut store: Store = match read_json(&lib).or_else(|| read_json(&backup)) {
             Some(s) => s,
-            // A missing or empty file holds nothing to protect (older versions could leave an empty one
-            // after a sudden power-off): bring back the pages themselves, or start fresh if there are none.
-            None if std::fs::metadata(&lib).map_or(true, |m| m.len() == 0) => return Ok(recover_pages(dir, &Default::default()).map_or(Loaded::Fresh, |s| Loaded::Store(s, vec![]))),
+            // Only treat as empty/recoverable when NEITHER library nor backup holds non-empty corrupt data.
+            None if std::fs::metadata(&lib).map_or(true, |m| m.len() == 0)
+                && std::fs::metadata(&backup).map_or(true, |m| m.len() == 0) =>
+            {
+                return Ok(recover_pages(dir, &Default::default()).map_or(Loaded::Fresh, |s| Loaded::Store(s, vec![])));
+            }
             None => return Err(format!("{} is damaged and has no readable backup.", lib.display())),
         };
         let mut damaged = vec![];
@@ -125,7 +138,7 @@ fn recover_pages(dir: &Path, known: &std::collections::HashSet<u64>) -> Option<S
         .filter_map(|e| read_json::<Page>(&e.path())).filter(|p| !known.contains(&p.id)).collect();
     if pages.is_empty() { return None; }
     pages.sort_by_key(|p| p.created);
-    let section = Section { id: new_id(), name: crate::i18n::tr("Recovered pages").into(), color: crate::model::PALETTE[1], pages, lock: None };
+    let section = Section { id: new_id(), name: crate::i18n::tr("Recovered pages").into(), color: crate::model::PALETTE[1], pages, lock: None, locked_files: vec![] };
     Some(Store { notebooks: vec![Notebook { id: new_id(), name: crate::i18n::tr("Recovered notes").into(), color: crate::model::PALETTE[0], sections: vec![section] }], trash: vec![], study: Default::default() })
 }
 
@@ -167,9 +180,10 @@ impl Saver {
     pub fn save_with(&mut self, dir: &Path, store: &Store, front: Option<u64>) -> std::io::Result<()> {
         std::fs::create_dir_all(dir.join("pages"))?;
         if !self.started && read_json::<Store>(&dir.join(LIBRARY)).is_some() {
-            // once per session: keep the library from before, so a bad session can be rolled back by hand
-            // (only a readable one: a damaged library must never replace the good backup)
-            let _ = std::fs::copy(dir.join(LIBRARY), dir.join(format!("{LIBRARY}.backup")));
+            // Atomically write the session backup so a crash mid-copy can never corrupt library.json.backup.
+            if let Ok(b) = std::fs::read(dir.join(LIBRARY)) {
+                let _ = write_atomic(&dir.join(format!("{LIBRARY}.backup")), &b);
+            }
         }
         let now = now_secs();
         let mut seen = std::collections::HashSet::new();
@@ -243,7 +257,201 @@ pub fn history(dir: &Path, id: u64) -> Vec<(u64, Page)> {
 }
 
 impl Notebook { pub(crate) fn clone_meta(&self) -> Notebook { Notebook { id: self.id, name: self.name.clone(), color: self.color, sections: vec![] } } }
-impl Section { pub(crate) fn clone_meta(&self) -> Section { Section { id: self.id, name: self.name.clone(), color: self.color, pages: vec![], lock: self.lock.clone() } } }
+impl Section {
+    pub(crate) fn clone_meta(&self) -> Section {
+        Section { id: self.id, name: self.name.clone(), color: self.color, pages: vec![], lock: self.lock.clone(), locked_files: self.locked_files.clone() }
+    }
+}
+
+/// Request sent to the background autosave writer thread.
+pub(crate) struct SaveJob {
+    pub dir: PathBuf,
+    pub store: Store,
+    pub front: Option<u64>,
+    pub ai: crate::ai::AiSettings,
+    pub prefs: crate::Prefs,
+    pub sync: crate::sync::SyncSettings,
+    pub backup_name: Option<String>,
+}
+
+enum WorkerMsg {
+    Save(Box<SaveJob>),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+/// Dedicated background autosave writer thread so `fsync`, JSON serialization, keyring writes,
+/// and daily backups never stall the UI frame loop.
+pub(crate) struct SaveWorker {
+    tx: std::sync::mpsc::Sender<WorkerMsg>,
+    err_rx: std::sync::mpsc::Receiver<String>,
+    backup_ok_rx: std::sync::mpsc::Receiver<u64>,
+}
+
+impl SaveWorker {
+    pub(crate) fn start() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
+        let (err_tx, err_rx) = std::sync::mpsc::channel::<String>();
+        let (bk_tx, backup_ok_rx) = std::sync::mpsc::channel::<u64>();
+        std::thread::spawn(move || {
+            let mut saver = Saver::default();
+            while let Ok(msg) = rx.recv() {
+                match msg {
+                    WorkerMsg::Flush(ack) => { let _ = ack.send(()); }
+                    WorkerMsg::Save(mut job) => {
+                        // Coalesce any queued Save jobs if multiple arrived while busy; keep Flush barriers in order.
+                        let mut flushes = vec![];
+                        while let Ok(next) = rx.try_recv() {
+                            match next {
+                                WorkerMsg::Save(mut newer) => {
+                                    // Preserve full save (front == None) if either job requested one.
+                                    let full = job.front.is_none() || newer.front.is_none();
+                                    let bk = newer.backup_name.take().or(job.backup_name.take());
+                                    job = newer;
+                                    if full { job.front = None; }
+                                    job.backup_name = bk;
+                                }
+                                WorkerMsg::Flush(ack) => flushes.push(ack),
+                            }
+                        }
+                        let mut ai = job.ai;
+                        ai.api_key = crate::keys::store("ai-key", &ai.api_key);
+                        let mut sy = job.sync;
+                        sy.password = crate::keys::store("webdav-password", &sy.password);
+                        sy.google_token = crate::keys::store("google-token", &sy.google_token);
+                        let r = saver
+                            .save_with(&job.dir, &job.store, job.front)
+                            .and_then(|_| crate::model::save("ai-settings.json", &ai))
+                            .and_then(|_| crate::model::save("prefs.json", &job.prefs))
+                            .and_then(|_| crate::model::save(crate::sync::SYNC_FILE, &sy));
+                        match r {
+                            Err(e) => { let _ = err_tx.send(e.to_string()); }
+                            Ok(()) => {
+                                if let Some(name) = job.backup_name {
+                                    let bdir = job.dir.join("backups");
+                                    if let Ok(b) = serde_json::to_vec(&job.store) {
+                                        if write_atomic(&bdir.join(format!("{name}.json")), &b).is_ok() {
+                                            let _ = bk_tx.send(now_secs());
+                                            let mut old: Vec<_> = std::fs::read_dir(&bdir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+                                            old.sort();
+                                            for p in old.iter().rev().skip(7) { let _ = std::fs::remove_file(p); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for ack in flushes { let _ = ack.send(()); }
+                    }
+                }
+            }
+        });
+        Self { tx, err_rx, backup_ok_rx }
+    }
+
+    pub(crate) fn submit(&self, job: SaveJob) {
+        let _ = self.tx.send(WorkerMsg::Save(Box::new(job)));
+    }
+
+    pub(crate) fn poll_error(&self) -> Option<String> {
+        let mut last = None;
+        while let Ok(e) = self.err_rx.try_recv() { last = Some(e); }
+        last
+    }
+
+    pub(crate) fn poll_backup_done(&self) -> Option<u64> {
+        let mut last = None;
+        while let Ok(t) = self.backup_ok_rx.try_recv() { last = Some(t); }
+        last
+    }
+
+    /// Block until all previously submitted saves have been flushed to disk.
+    pub(crate) fn flush(&self) {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        if self.tx.send(WorkerMsg::Flush(ack_tx)).is_ok() {
+            let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(10));
+        }
+    }
+}
+
+/// Every attachment filename referenced anywhere inside `store`: open pages, `Section::locked_files`
+/// manifests (both live and trashed), and trashed open pages.
+pub fn store_files(store: &Store) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let add_section = |out: &mut std::collections::HashSet<String>, s: &Section| {
+        for f in collect_page_files(&s.pages) { out.insert(f); }
+        for f in &s.locked_files { out.insert(f.clone()); }
+    };
+    for n in &store.notebooks {
+        for s in &n.sections { add_section(&mut out, s); }
+    }
+    for t in &store.trash {
+        match &t.item {
+            TrashItem::Page { page, .. } => {
+                for f in collect_page_files(std::slice::from_ref(page)) { out.insert(f); }
+            }
+            TrashItem::Section { section, .. } => add_section(&mut out, section),
+            TrashItem::Notebook(n) => {
+                for s in &n.sections { add_section(&mut out, s); }
+            }
+        }
+    }
+    out
+}
+
+/// True when any closed locked section (live or trashed) is a legacy `v = 0` section that lacks a
+/// `locked_files` manifest. Attachment GC must stand down until such sections are unlocked once and
+/// migrated so we can never delete an attachment referenced inside an opaque ciphertext blob.
+pub fn has_unmanifested_locked_section(store: &Store) -> bool {
+    let check = |s: &Section| s.sealed() && s.lock.as_ref().is_some_and(|l| l.v == 0) && s.locked_files.is_empty();
+    if store.notebooks.iter().flat_map(|n| &n.sections).any(check) { return true; }
+    store.trash.iter().any(|t| match &t.item {
+        TrashItem::Section { section, .. } => check(section),
+        TrashItem::Notebook(n) => n.sections.iter().any(check),
+        TrashItem::Page { .. } => false,
+    })
+}
+
+/// Every attachment filename that must be kept on local disk: `store_files(store)` plus any files
+/// referenced by local `history/*.jsonl` snapshots plus an optional in-progress recording filename.
+pub fn live_files(store: &Store, dir: &Path, active_rec_file: Option<&str>) -> std::collections::HashSet<String> {
+    let mut out = store_files(store);
+    if let Some(f) = active_rec_file { out.insert(f.to_string()); }
+    #[derive(serde::Deserialize)]
+    struct Entry { page: Page }
+    for e in std::fs::read_dir(dir.join("history")).into_iter().flatten().flatten() {
+        let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
+        for line in text.lines() {
+            if let Ok(ent) = serde_json::from_str::<Entry>(line) {
+                for f in collect_page_files(std::slice::from_ref(&ent.page)) { out.insert(f); }
+            }
+        }
+    }
+    out
+}
+
+/// Safely delete unreferenced orphan files from `dir/files/`.
+/// Preserves closed locked sections (`locked_files`), page history, temp/part files, dotfiles, and
+/// files newer than `min_age_secs`. Does nothing if any legacy unmanifested locked section exists.
+pub fn gc_local_files(store: &Store, dir: &Path, active_rec_file: Option<&str>, min_age_secs: u64) -> usize {
+    if has_unmanifested_locked_section(store) { return 0; }
+    let live = live_files(store, dir, active_rec_file);
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for e in std::fs::read_dir(dir.join("files")).into_iter().flatten().flatten() {
+        if !e.file_type().is_ok_and(|t| t.is_file()) { continue; }
+        let Some(name) = e.file_name().to_str().map(String::from) else { continue };
+        if !safe_name(&name) || name.ends_with(".part") || name.ends_with(".tmp") { continue; }
+        if live.contains(&name) { continue; }
+        if min_age_secs > 0 {
+            let fresh = e.metadata().ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| now.duration_since(t).ok())
+                .is_none_or(|age| age.as_secs() < min_age_secs);
+            if fresh { continue; }
+        }
+        if std::fs::remove_file(e.path()).is_ok() { removed += 1; }
+    }
+    removed
+}
 
 #[cfg(test)]
 mod tests {
@@ -378,6 +586,43 @@ mod tests {
         store.notebooks[1].sections[0].pages.insert(0, gone.clone());
         saver.save_with(&d, &store, Some(front)).unwrap();
         assert!(page_path(&d, gone.id).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn gc_preserves_locked_and_history_files_and_cleans_orphans() {
+        let d = tmp();
+        std::fs::create_dir_all(d.join("files")).unwrap();
+        std::fs::create_dir_all(d.join("history")).unwrap();
+        let mut store = sample();
+        // 1. Live open page attachment
+        store.notebooks[0].sections[0].pages[0].blocks.push(block(0.0, 0.0, 200.0, Kind::Image { file: "live.png".into() }));
+        // 2. Closed v=1 locked section with locked_files manifest
+        let locked_sec = &mut store.notebooks[1].sections[0];
+        locked_sec.lock = Some(Lock { v: 1, salt: "s".into(), nonce: "n".into(), data: "d".into() });
+        locked_sec.locked_files = vec!["secret.png".into()];
+        locked_sec.pages = vec![locked_sec.placeholder()];
+        // 3. History file referencing hist.png
+        let mut hp = Page::new("Old");
+        hp.blocks.push(block(0.0, 0.0, 200.0, Kind::File { file: "hist.pdf".into(), name: "a.pdf".into(), size: 10 }));
+        let hline = format!("{{\"t\":1,\"page\":{}}}\n", serde_json::to_string(&hp).unwrap());
+        std::fs::write(d.join("history").join(format!("{}.jsonl", hp.id)), hline).unwrap();
+        // 4. Write live, secret, hist, active rec, part file, and orphan
+        for f in ["live.png", "secret.png", "hist.pdf", "rec.wav", "wip.wav.part", "orphan.png"] {
+            std::fs::write(d.join("files").join(f), b"x").unwrap();
+        }
+        let removed = gc_local_files(&store, &d, Some("rec.wav"), 0);
+        assert_eq!(removed, 1);
+        assert!(!d.join("files/orphan.png").exists(), "orphan cleaned");
+        for keep in ["live.png", "secret.png", "hist.pdf", "rec.wav", "wip.wav.part"] {
+            assert!(d.join("files").join(keep).exists(), "{keep} must be preserved");
+        }
+        // 5. Legacy v=0 closed locked section without locked_files blocks GC completely
+        std::fs::write(d.join("files/orphan2.png"), b"x").unwrap();
+        store.notebooks[1].sections[0].lock.as_mut().unwrap().v = 0;
+        store.notebooks[1].sections[0].locked_files.clear();
+        assert_eq!(gc_local_files(&store, &d, None, 0), 0);
+        assert!(d.join("files/orphan2.png").exists(), "legacy v0 lock stands down GC");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -14,7 +14,7 @@ javac -nowarn -Xlint:-options -source 8 -target 8 -bootclasspath "$JAR" -d "$OUT
 # cargo-apk can't declare a service or a provider: add them to its manifest and package it again
 # (the recording service, which keeps the microphone on with the screen off, and FileShare for Android 8/9)
 MAN=$(dirname "$APK")/AndroidManifest.xml
-sed -e 's|<uses-permission android:name="android.permission.RECORD_AUDIO"/>|&<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>|' \
+sed -e 's|<uses-permission android:name="android.permission.RECORD_AUDIO"/>|&<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>|' \
     -e 's|</application>|<service android:name="org.leafnotes.app.RecordService" android:foregroundServiceType="microphone" android:exported="false"/><provider android:name="org.leafnotes.app.FileShare" android:authorities="org.leafnotes.app.files" android:exported="false" android:grantUriPermissions="true"/></application>|' \
     "$MAN" > "$OUT/AndroidManifest.xml"
 grep -q RecordService "$OUT/AndroidManifest.xml" || { echo "couldn't add the recording service to the manifest"; exit 1; }

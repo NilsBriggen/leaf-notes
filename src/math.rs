@@ -73,6 +73,7 @@ fn blackboard(c: char) -> char {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+#[allow(clippy::enum_variant_names)]
 enum End { Eof, Brace, Amp, NewRow, EnvEnd, Right }
 
 struct Parser { s: Vec<char>, i: usize }
@@ -109,9 +110,24 @@ impl Parser {
                     out.push(Node::Script { base, sup, sub });
                 }
                 '\'' => {
-                    self.i += 1;
+                    let mut count = 0usize;
+                    while self.peek() == Some('\'') { self.i += 1; count += 1; }
+                    let primes = "′".repeat(count);
                     let base = out.pop().unwrap_or(Node::Row(vec![]));
-                    out.push(Node::Script { base: Box::new(base), sup: Some(Box::new(Node::Sym("′".into(), false))), sub: None });
+                    let (base, sup, sub) = match base {
+                        Node::Script { base, sup, sub } => {
+                            let new_sup = match sup {
+                                Some(s) => match *s {
+                                    Node::Sym(prev, false) => Node::Sym(prev + &primes, false),
+                                    other => Node::Row(vec![other, Node::Sym(primes, false)]),
+                                },
+                                None => Node::Sym(primes, false),
+                            };
+                            (base, Some(Box::new(new_sup)), sub)
+                        }
+                        other => (Box::new(other), Some(Box::new(Node::Sym(primes, false))), None),
+                    };
+                    out.push(Node::Script { base, sup, sub });
                 }
                 _ => { if let Some(n) = self.atom() { out.push(n) } }
             }
@@ -198,8 +214,14 @@ impl Parser {
                     "mathbf" | "boldsymbol" | "mathit" | "mathcal" | "mathsf" | "mathfrak" | "bm" => self.arg(),
                     "left" => {
                         let l = self.delim();
-                        let (inner, _) = self.row(false);
-                        let r = self.delim();
+                        let (inner, end) = self.row(false);
+                        let r = match end {
+                            End::Right => self.delim(),
+                            // Unclosed \left before a cell/row boundary: rewind so the enclosing matrix keeps it.
+                            End::Amp => { self.i = self.i.saturating_sub(1); String::new() }
+                            End::NewRow => { self.i = self.i.saturating_sub(2); String::new() }
+                            _ => String::new(),
+                        };
                         Node::Fenced(l, Box::new(Node::Row(inner)), r)
                     }
                     "right" => Node::Row(vec![]),
@@ -253,7 +275,12 @@ pub fn unknown_commands(src: &str) -> Vec<String> {
 
 /// Parse a LaTeX math expression. Top-level `\\` and `&` lay out as aligned lines.
 pub fn parse(src: &str) -> Node {
-    let src = src.trim().trim_start_matches("$$").trim_end_matches("$$").trim_matches('$');
+    let mut src = src.trim();
+    if let Some(inner) = src.strip_prefix("$$").and_then(|s| s.strip_suffix("$$")) {
+        if !inner.ends_with('\\') { src = inner; }
+    } else if let Some(inner) = src.strip_prefix('$').and_then(|s| s.strip_suffix('$')) {
+        if !inner.ends_with('\\') { src = inner; }
+    }
     // the parser and layout recurse per level of nesting: absurdly deep input is shown as plain text
     // rather than overflowing the stack (it's drawn every frame)
     let deepest = src.chars().scan(0i32, |d, c| { *d += match c { '{' => 1, '}' => -1, _ => 0 }; Some(*d) }).max().unwrap_or(0);
@@ -392,13 +419,13 @@ fn layout(p: &Painter, n: &Node, size: f32, color: Color32) -> MBox {
             out.append(b, (w - bw) / 2.0, 0.0);
             if let Some(x) = sup {
                 let dy = -basc - gap - x.desc;
-                out.asc = -dy + x.asc;
+                out.asc = out.asc.max(-dy + x.asc);
                 let xw = x.w;
                 out.append(x, (w - xw) / 2.0, dy);
             }
             if let Some(x) = sub {
                 let dy = bdesc + gap + x.asc;
-                out.desc = dy + x.desc;
+                out.desc = out.desc.max(dy + x.desc);
                 let xw = x.w;
                 out.append(x, (w - xw) / 2.0, dy);
             }
@@ -508,24 +535,42 @@ fn parsed(src: &str) -> Node {
 }
 
 pub fn math_label(ui: &mut egui::Ui, src: &str, size: f32) -> egui::Response {
-    let color = ui.visuals().text_color();
+    math_label_styled(ui, src, size, ui.visuals().text_color(), false)
+}
+
+pub fn math_label_styled(ui: &mut egui::Ui, src: &str, size: f32, color: Color32, strike: bool) -> egui::Response {
     let node = parsed(src);
     let mut b = layout(ui.painter(), &node, size, color);
     let avail = ui.available_width();
     if b.w > avail && avail > 60.0 {
-        // Shrink wide equations to fit their note (down to 55%) instead of spilling over neighbours.
         b = layout(ui.painter(), &node, size * (avail / b.w).max(0.55), color);
     }
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(b.w.max(8.0), b.asc + b.desc), egui::Sense::click());
-    let origin = Pos2::new(rect.left(), rect.top() + b.asc);
-    let painter = ui.painter_at(rect.expand(4.0));
-    for it in b.items {
-        match it {
-            Item::Text(pos, g) => painter.galley(origin + pos, g, color),
-            Item::Line(a, c, w) => { painter.line_segment([origin + a, origin + c], Stroke::new(w, color)); }
+    let paint_box = |ui: &mut egui::Ui, b: MBox| -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(b.w.max(8.0), b.asc + b.desc), egui::Sense::click());
+        let origin = Pos2::new(rect.left(), rect.top() + b.asc);
+        let painter = ui.painter_at(rect.expand(4.0));
+        for it in b.items {
+            match it {
+                Item::Text(pos, g) => painter.galley(origin + pos, g, color),
+                Item::Line(a, c, w) => { painter.line_segment([origin + a, origin + c], Stroke::new(w, color)); }
+            }
         }
+        if strike {
+            let y = rect.center().y;
+            painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], Stroke::new(1.0, color));
+        }
+        resp
+    };
+    if b.w > avail && avail > 80.0 {
+        egui::ScrollArea::horizontal()
+            .id_salt(("math-scroll", src))
+            .max_width(avail)
+            .auto_shrink([true, true])
+            .show(ui, |ui| paint_box(ui, b))
+            .inner
+    } else {
+        paint_box(ui, b)
     }
-    resp
 }
 
 #[cfg(test)]

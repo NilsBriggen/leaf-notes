@@ -23,13 +23,25 @@ pub fn take_photo() -> Result<(), String> {
     with_activity(|env, act| { env.call_method(&act, JNIString::new("takePhoto"), jni::jni_sig!("()V"), &[])?; Ok(()) })
 }
 
-/// Files picked or shared since the last call: (kind, where the copy is).
-pub fn incoming() -> Vec<(i32, PathBuf)> {
+/// Files picked or shared since the last call: `(kind, clean_display_name, where_the_copy_is)`.
+pub fn incoming() -> Vec<(i32, String, PathBuf)> {
     let text = with_activity(|env, act| {
         let o = env.call_method(&act, JNIString::new("takeIncoming"), jni::jni_sig!("()Ljava/lang/String;"), &[])?.l()?;
         string(env, o)
     }).unwrap_or_default();
-    text.lines().filter_map(|l| l.split_once('|')).filter_map(|(k, p)| Some((k.parse().ok()?, PathBuf::from(p)))).collect()
+    text.lines().filter_map(|l| {
+        let (k, rest) = l.split_once('|')?;
+        let kind: i32 = k.parse().ok()?;
+        let (name, path) = match rest.split_once('|') {
+            Some((n, p)) => (n.to_string(), PathBuf::from(p)),
+            None => {
+                let p = PathBuf::from(rest);
+                let n = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                (n, p)
+            }
+        };
+        Some((kind, name, path))
+    }).collect()
 }
 
 /// Something was picked or shared and waits to be collected.
@@ -48,8 +60,17 @@ pub fn share(path: &Path) {
 
 fn call_file(method: &str, path: &Path, name: &str) {
     let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
-        "pdf" => "application/pdf", "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "txt" => "text/plain", "md" => "text/markdown", "json" => "application/json", "wav" => "audio/wav",
-        "doc" | "docx" => "application/msword", "zip" => "application/zip", _ => "application/octet-stream",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "txt" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "json" => "application/json",
+        "wav" => "audio/wav",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
     };
     let _ = with_activity(|env, act| {
         let (p, n, m) = (env.new_string(path.to_string_lossy())?, env.new_string(name)?, env.new_string(mime)?);

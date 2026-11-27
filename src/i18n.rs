@@ -103,10 +103,19 @@ pub(crate) mod tests {
         let keys: std::collections::HashSet<&str> = crate::i18n_table::TABLE.iter().map(|t| t.0).collect();
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
         let mut missing = vec![];
-        for e in std::fs::read_dir(dir).unwrap().flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".rs") || name.starts_with("i18n") { continue; }
-            let src = std::fs::read_to_string(e.path()).unwrap();
+        fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() { collect_rs(&p, out); }
+                else if p.extension().is_some_and(|x| x == "rs") { out.push(p); }
+            }
+        }
+        let mut files = vec![];
+        collect_rs(std::path::Path::new(dir), &mut files);
+        for path in files {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if name.starts_with("i18n") { continue; }
+            let src = std::fs::read_to_string(&path).unwrap();
             for start in ["tr(\"", "tf!(\"", ".say(\"", ".tip(\""] {
                 for (at, _) in src.match_indices(start) {
                     // "tr(" on its own, not the end of push_str( or similar

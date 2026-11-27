@@ -1,12 +1,20 @@
 //! First-run tour, help, "What's new" after an update, and sending feedback.
+use crate::state::ActiveModal;
 use crate::*;
-use eframe::egui::{RichText, Sense};
+use eframe::egui::{Align, Layout, RichText, Sense};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ISSUES: &str = "https://github.com/NilsBriggen/leaf-notes/issues/new";
 
 /// What changed in each version, newest first (shown once after an update).
 const CHANGES: &[(&str, &[&str])] = &[
+    ("0.4.0", &[
+        "Tables fill their full width with wrapping cells; audio keeps playing across pages in a compact mini-player.",
+        "Cleaner scrolling toolbar with overflow arrows, stacked dialogs, and dark-mode and maths fixes.",
+        "Stronger Argon2id encryption for locked sections, background saving and image loading, and safe cleanup of unused files.",
+        "Faster incremental per-page sync with automatic migration, live streaming AI answers with Stop, and disk-streaming audio playback.",
+        "Sharper PDF exports (highlighters, rotated pages, full tables and code) and Android polish.",
+    ]),
     ("0.3.2", &[
         "Your notes are safer: fixes for locked sections, a damaged notes file, the welcome tour and sync, a lock against two windows, and daily backups.",
         "The eraser catches straight lines anywhere; undo stays on the page you're on; highlighting works on printed PDFs.",
@@ -61,85 +69,108 @@ const CHANGES: &[(&str, &[&str])] = &[
 impl NotesApp {
     /// Decide what to show at start: the tour on a new install, What's new after an update.
     pub(crate) fn greet(&mut self, fresh_install: bool) {
-        if fresh_install { self.st.tour = Some(0); self.st.tour_fresh = true; }
-        else if self.st.p.seen_version != VERSION && CHANGES.iter().any(|(v, _)| *v == VERSION) { self.st.show_news = true; }
-        if self.st.p.seen_version != VERSION { self.st.p.seen_version = VERSION.into(); self.st.dirty = true; }
+        if fresh_install {
+            self.st.modals.push(ActiveModal::Tour { step: 0, fresh: true });
+        } else if self.st.p.seen_version != VERSION && CHANGES.iter().any(|(v, _)| *v == VERSION) {
+            self.st.modals.push(ActiveModal::News);
+        }
+        if self.st.p.seen_version != VERSION {
+            self.st.p.seen_version = VERSION.into();
+            self.st.dirty = true;
+        }
     }
 
-    pub(crate) fn tour_window(&mut self, ctx: &egui::Context) {
-        let Some(mut step) = self.st.tour else { return };
+    pub(crate) fn tour_window(&mut self, ctx: &egui::Context, mut step: u8, fresh: bool) -> Option<(u8, bool)> {
         const STEPS: u8 = 5;
         let (mut close, mut empty_start) = (false, false);
-        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(26)).corner_radius(20);
+        let mut open_settings_tab = None;
+        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(24)).corner_radius(20);
         let id = egui::Id::unique("tour");
-        let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, self.st.bars[0] + (ctx.content_rect().height() * 0.1).min(90.0)));
-        egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+        let top = self.st.bars[0] + (ctx.content_rect().height() * 0.08).min(80.0);
+        let body_max_h = (ctx.content_rect().height() - top - self.st.bars[1] - 180.0).max(140.0);
+        let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, top));
+        let modal = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
             let w = crate::fit_w(ui.ctx(), 520.0);
             ui.set_width(w);
             let big = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).font(rich::serif(26.0)).color(ui.visuals().strong_text_color())); ui.add_space(6.0); };
             let text = |ui: &mut egui::Ui, t: &str| { ui.label(RichText::new(tr(t)).size(15.0)); ui.add_space(4.0); };
-            // the steps differ in length: keep the buttons below them in one place
-            ui.vertical(|ui| { ui.set_min_height(if w < 480.0 { 340.0 } else { 250.0 }); match step {
-                0 => {
-                    big(ui, "Welcome to Leaf Notes");
-                    text(ui, "Your notes live in notebooks. A notebook has sections (like the tabs of a binder), and each section has pages.");
-                    // phones show one panel at a time and have no keyboard shortcuts: say it their way
-                    let (touch, narrow) = (self.st.touch_ui, self.st.narrow);
-                    text(ui, if narrow { "Tap ☰ to see your notebooks, their sections and pages." } else { "Pick a notebook at the top left, a section below it, and a page in the next column." });
-                    text(ui, "Everything stays on this device and works offline.");
-                    text(ui, if touch { "🔍 finds any page; type [[ in a note to link another page." } else { "Ctrl+K jumps to any page; type [[ in a note to link another page." });
-                }
-                1 => {
-                    big(ui, "Type or write");
-                    text(ui, if self.st.touch_ui { "Tap anywhere on a page to start typing there. Type / for headings, lists, tables, equations and more." } else { "Click anywhere on a page to start typing there. Type / for headings, lists, tables, equations and more." });
-                    text(ui, "Choose a pen in the Draw tab to write by hand. A stylus always draws; handwriting can be turned into text or maths.");
-                    text(ui, "Record a lecture while you write, then tap your notes to hear that moment again.");
-                }
-                2 => {
-                    big(ui, "Make it yours");
-                    ui.label(RichText::new(tr("Language")).strong());
-                    ui.horizontal_wrapped(|ui| {
-                        for (code, name) in i18n::LANGUAGES {
-                            if ui.selectable_label(self.st.p.lang == code, if code.is_empty() { tr(name) } else { name }).clicked() { self.st.p.lang = code.into(); apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
+            let min_h = (if w < 480.0 { 260.0_f32 } else { 230.0_f32 }).min(body_max_h);
+            egui::ScrollArea::vertical().id_salt(("tour-body", step)).max_height(body_max_h).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_min_height(min_h);
+                    match step {
+                        0 => {
+                            big(ui, "Welcome to Leaf Notes");
+                            text(ui, "Your notes live in notebooks. A notebook has sections (like the tabs of a binder), and each section has pages.");
+                            let (touch, narrow) = (self.st.nav.touch_ui, self.st.nav.narrow);
+                            text(ui, if narrow { "Tap ☰ to see your notebooks, their sections and pages." } else { "Pick a notebook at the top left, a section below it, and a page in the next column." });
+                            text(ui, "Everything stays on this device and works offline.");
+                            text(ui, if touch { "🔍 finds any page; type [[ in a note to link another page." } else { "Ctrl+K jumps to any page; type [[ in a note to link another page." });
                         }
-                    });
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(tr("Theme")).strong());
-                    ui.horizontal(|ui| {
-                        for (dark, name) in [(false, "Light"), (true, "Dark")] {
-                            if ui.selectable_label(self.st.p.dark == dark && !self.st.p.follow_system, tr(name)).clicked() { self.st.p.follow_system = false; self.st.p.dark = dark; apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
+                        1 => {
+                            big(ui, "Type or write");
+                            text(ui, if self.st.nav.touch_ui { "Tap anywhere on a page to start typing there. Type / for headings, lists, tables, equations and more." } else { "Click anywhere on a page to start typing there. Type / for headings, lists, tables, equations and more." });
+                            text(ui, "Choose a pen in the Draw tab to write by hand. A stylus always draws; handwriting can be turned into text or maths.");
+                            text(ui, "Record a lecture while you write, then tap your notes to hear that moment again.");
                         }
-                        if ui.selectable_label(self.st.p.follow_system, tr("System")).clicked() { self.st.p.follow_system = true; apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
-                    });
-                    ui.add_space(8.0);
-                    text(ui, "More in Settings (⚙, top right): pens, paper, text size and more.");
-                }
-                3 => {
-                    big(ui, "Optional extras");
-                    text(ui, "AI with your own key: summaries, flashcards, rewriting and reading handwriting. Your key stays on this device.");
-                    text(ui, "Sync keeps notes the same on all your devices, through Google Drive, a synced folder or a WebDAV server.");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button(tr("Add an AI key…")).clicked() { self.st.show_settings = true; self.st.settings_tab = 3; close = true; }
-                        if ui.button(tr("Set up sync…")).clicked() { self.st.show_settings = true; self.st.settings_tab = 5; close = true; }
-                    });
-                    ui.label(RichText::new(tr("Both can be set up any time later in Settings.")).weak());
-                }
-                _ => {
-                    big(ui, "Ready");
-                    // only on the first start: seen again from Help, the notes are the person's own
-                    if self.st.tour_fresh {
-                        text(ui, "There's a sample notebook to look around in. Keep it, or start with an empty one.");
-                        ui.add_space(6.0);
-                        ui.horizontal_wrapped(|ui| {
-                            if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
-                            if ui.button(tr("Start with an empty notebook")).clicked() { empty_start = true; close = true; }
-                        });
+                        2 => {
+                            big(ui, "Make it yours");
+                            ui.label(RichText::new(tr("Language")).strong());
+                            ui.horizontal_wrapped(|ui| {
+                                for (code, name) in i18n::LANGUAGES {
+                                    if ui.selectable_label(self.st.p.lang == code, if code.is_empty() { tr(name) } else { name }).clicked() {
+                                        self.st.p.lang = code.into();
+                                        apply_prefs(ctx, &self.st.p);
+                                        self.st.dirty = true;
+                                    }
+                                }
+                            });
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(tr("Theme")).strong());
+                            ui.horizontal_wrapped(|ui| {
+                                for (dark, name) in [(false, "Light"), (true, "Dark")] {
+                                    if ui.selectable_label(self.st.p.dark == dark && !self.st.p.follow_system, tr(name)).clicked() {
+                                        self.st.p.follow_system = false;
+                                        self.st.p.dark = dark;
+                                        apply_prefs(ctx, &self.st.p);
+                                        self.st.dirty = true;
+                                    }
+                                }
+                                if ui.selectable_label(self.st.p.follow_system, tr("System")).clicked() {
+                                    self.st.p.follow_system = true;
+                                    apply_prefs(ctx, &self.st.p);
+                                    self.st.dirty = true;
+                                }
+                            });
+                            ui.add_space(8.0);
+                            text(ui, "More in Settings (⚙, top right): pens, paper, text size and more.");
+                        }
+                        3 => {
+                            big(ui, "Optional extras");
+                            text(ui, "AI with your own key: summaries, flashcards, rewriting and reading handwriting. Your key stays on this device.");
+                            text(ui, "Sync keeps notes the same on all your devices, through Google Drive, a synced folder or a WebDAV server.");
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button(tr("Add an AI key…")).clicked() { open_settings_tab = Some(3); close = true; }
+                                if ui.button(tr("Set up sync…")).clicked() { open_settings_tab = Some(5); close = true; }
+                            });
+                            ui.label(RichText::new(tr("Both can be set up any time later in Settings.")).weak());
+                        }
+                        _ => {
+                            big(ui, "Ready");
+                            if fresh {
+                                text(ui, "There's a sample notebook to look around in. Keep it, or start with an empty one.");
+                                ui.add_space(6.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui.add(egui::Button::new(RichText::new(tr("Keep the sample notes")).color(Color32::WHITE)).fill(accent_base()).corner_radius(10)).clicked() { close = true; }
+                                    if ui.button(tr("Start with an empty notebook")).clicked() { empty_start = true; close = true; }
+                                });
+                            }
+                            text(ui, "You can see this tour again from Help (?, top right).");
+                        }
                     }
-                    text(ui, "You can see this tour again from Help (?, top right).");
-                }
-            }});
-            ui.add_space(14.0);
-            // progress dots on their own row: longer button names (German) would run into them
+                });
+            });
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
                 for i in 0..STEPS {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
@@ -148,40 +179,62 @@ impl NotesApp {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if step + 1 < STEPS && ui.add(egui::Button::new(RichText::new(tr("Next")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { step += 1; }
-                    if step + 1 == STEPS && !self.st.tour_fresh && ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { close = true; }
+                    if step + 1 == STEPS && !fresh && ui.add(egui::Button::new(RichText::new(tr("Done")).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(90.0, 30.0))).clicked() { close = true; }
                     if step > 0 && ui.button(tr("Back")).clicked() { step -= 1; }
                     if step + 1 < STEPS && ui.add(egui::Button::new(tr("Skip")).frame_when_inactive(false)).clicked() { close = true; }
                 });
             });
         });
+        if let Some(tab) = open_settings_tab {
+            self.st.modals.open_settings(tab);
+        }
         if empty_start {
-            // the sample goes to Recently deleted rather than away for good
             let now = now_secs();
-            for n in std::mem::take(&mut self.store.notebooks) { self.store.trash.push(Trashed { label: tf!("Notebook “{name}”", name = n.name), deleted: now, item: TrashItem::Notebook(n), at: None }); }
-            self.store.notebooks = vec![Notebook { id: new_id(), name: tr("My Notebook").into(), color: PALETTE[0], sections: vec![Section { id: new_id(), name: tr("Quick Notes").into(), color: PALETTE[1], pages: vec![Page::new(tr("First page"))], lock: None }] }];
+            for n in std::mem::take(&mut self.store.notebooks) {
+                self.store.trash.push(Trashed { label: tf!("Notebook “{name}”", name = n.name), deleted: now, item: TrashItem::Notebook(n), at: None });
+            }
+            self.store.notebooks = vec![Notebook { id: new_id(), name: tr("My Notebook").into(), color: PALETTE[0], sections: vec![Section { id: new_id(), name: tr("Quick Notes").into(), color: PALETTE[1], pages: vec![Page::new(tr("First page"))], lock: None, locked_files: vec![] }] }];
             (self.nb, self.sec, self.pg) = (0, 0, 0);
             self.st.dirty = true;
+            self.st.cache.derived_dirty = true;
         }
-        self.st.tour = if close { None } else { Some(step) };
-        if close { self.st.tour_fresh = false; }
+        if close || modal.should_close() { None } else { Some((step, fresh)) }
     }
 
-    pub(crate) fn news_window(&mut self, ctx: &egui::Context) {
-        let mut open = true;
-        egui::Window::new(crate::window_title(tf!("What's new in Leaf Notes {v}", v = VERSION))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).resizable(false).default_width(crate::fit_w(ctx, 460.0)).max_width(crate::fit_w(ctx, 460.0)).show(ctx, |ui| {
-            if let Some((_, items)) = CHANGES.iter().find(|(v, _)| *v == VERSION) {
-                for item in *items { ui.label(RichText::new(format!("•  {}", tr(item))).size(14.0)); }
-            }
+    pub(crate) fn news_window(&mut self, ctx: &egui::Context) -> bool {
+        let mut close = false;
+        let top = self.st.bars[0] + (ctx.content_rect().height() * 0.08).min(64.0);
+        let max_h = (ctx.content_rect().height() - top - self.st.bars[1] - 160.0).clamp(120.0, 420.0);
+        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)).corner_radius(18);
+        let id = egui::Id::unique("news");
+        let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, top));
+        let modal = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+            ui.set_width(crate::fit_w(ctx, 460.0));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tf!("What's new in Leaf Notes {v}", v = VERSION)).font(rich::serif(20.0)).color(ui.visuals().strong_text_color()));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { close = true; }
+                });
+            });
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().min_scrolled_height(max_h).max_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
+                if let Some((_, items)) = CHANGES.iter().find(|(v, _)| *v == VERSION) {
+                    for item in *items {
+                        ui.label(RichText::new(format!("•  {}", tr(item))).size(14.0));
+                        ui.add_space(4.0);
+                    }
+                }
+            });
             ui.add_space(8.0);
-            if ui.button(tr("Got it")).clicked() { self.st.show_news = false; }
+            if ui.button(tr("Got it")).clicked() { close = true; }
         });
-        if !open { self.st.show_news = false; }
+        !(close || modal.should_close())
     }
 
-    pub(crate) fn help_window(&mut self, ctx: &egui::Context) {
-        let mut open = true;
+    pub(crate) fn help_window(&mut self, ctx: &egui::Context) -> bool {
+        let mut close = false;
         let topics: [(&str, &str); 11] = [
             ("Gestures", "Pinch to zoom; two fingers scroll. Tap with two fingers to undo, three to redo. Scribble back and forth over ink to erase it. Long-press (or right-click) for more options. On Android, Back closes whatever is open."),
             ("Organising", "Notebooks hold sections, sections hold pages. Right-click a notebook, section or page to rename, move, colour or delete it; deleted things wait in Recently deleted. Right-click a page ▸ Make subpage to tuck it under the one above. Ctrl+K jumps to any page."),
@@ -195,21 +248,41 @@ impl NotesApp {
             ("Locked sections", "Right-click a section ▸ Lock with a password. Its pages are encrypted; without the password they can't be opened, by anyone."),
             ("Keyboard", "Settings ▸ Your data ▸ Keyboard shortcuts lists them all."),
         ];
-        egui::Window::new(crate::window_title(tr("Help"))).frame(crate::window_frame(ctx)).open(&mut open).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).default_size([crate::fit_w(ctx, 560.0), 520.0f32.min(ctx.content_rect().height() - 60.0)]).max_width(crate::fit_w(ctx, 2000.0)).show(ctx, |ui| {
-            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+        let top = self.st.bars[0] + (ctx.content_rect().height() * 0.08).min(64.0);
+        let max_h = (ctx.content_rect().height() - top - self.st.bars[1] - 190.0).clamp(140.0, 420.0);
+        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(20)).corner_radius(18);
+        let id = egui::Id::unique("help");
+        let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, top));
+        let modal = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+            ui.set_width(crate::fit_w(ctx, 560.0));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Help")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("✕").size(15.0)).frame_when_inactive(false)).tip("Close (Esc)").clicked() { close = true; }
+                });
+            });
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().min_scrolled_height(max_h).max_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
                 for (title, body) in topics {
                     ui.label(RichText::new(tr(title)).size(16.0).strong());
-                    // touch screens have no right-click: say long-press instead
-                    // (a text that already names both is left as it is: "Long-press (or right-click)")
-                    let body = if self.st.touch_ui && !tr(body).contains(tr("Long-press")) { tr(body).replace("Right-click", tr("Long-press")).replace("Rechtsklick", tr("Long-press")).replace("Clic droit", tr("Long-press")) } else { tr(body).to_string() };
+                    let body = if self.st.nav.touch_ui && !tr(body).contains(tr("Long-press")) {
+                        tr(body).replace("Right-click", tr("Long-press")).replace("Rechtsklick", tr("Long-press")).replace("Clic droit", tr("Long-press"))
+                    } else {
+                        tr(body).to_string()
+                    };
                     ui.label(body);
                     ui.add_space(8.0);
                 }
             });
             ui.separator();
             ui.horizontal_wrapped(|ui| {
-                if ui.button(tr("Show the welcome tour")).clicked() { self.st.tour = Some(0); self.st.show_help = false; }
-                if ui.button(tr("What's new")).clicked() { self.st.show_news = true; }
+                if ui.button(tr("Show the welcome tour")).clicked() {
+                    self.st.modals.push(ActiveModal::Tour { step: 0, fresh: false });
+                    close = true;
+                }
+                if ui.button(tr("What's new")).clicked() {
+                    self.st.modals.push(ActiveModal::News);
+                }
                 if ui.button(tr("✉  Send feedback")).clicked() {
                     let body = format!("\n\n---\nLeaf Notes {VERSION} · {} {}", std::env::consts::OS, std::env::consts::ARCH);
                     ctx.open_url(egui::OpenUrl::new_tab(format!("{ISSUES}?body={}", enc(&body))));
@@ -217,8 +290,27 @@ impl NotesApp {
             });
             ui.label(RichText::new(tf!("Leaf Notes {v} · free software under the GPL-3.0", v = VERSION)).size(11.5).weak());
         });
-        if !open { self.st.show_help = false; }
+        !(close || modal.should_close())
     }
+}
+
+/// Format and write a crash report into `dir`.
+fn write_crash_report(dir: &std::path::Path, info: &std::panic::PanicHookInfo<'_>) {
+    let msg = info
+        .payload()
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| info.payload().downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let text = without_home(&format!(
+        "Leaf Notes {VERSION} · {} {}\n\npanicked at {at}: {}\n\n{trace}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        redact(&msg)
+    ));
+    let _ = crate::storage::write_atomic(&dir.join(format!("crash-{}.txt", now_secs())), text.as_bytes());
 }
 
 /// Crash reports: if the app itself panics, a short report is kept; next start asks whether to send it.
@@ -230,67 +322,67 @@ pub(crate) fn install_crash_hook() {
         let dir = data_dir();
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            // background jobs (reading handwriting, PDFs …) catch their own failures: only the app itself counts
             if UI.get() == Some(&std::thread::current().id()) {
-                // where it happened, never what was being worked on: quoted text (a note's words in a
-                // "byte index … of `…`" message) is cut out, and the home folder's name with it
-                let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
-                let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
-                let trace = std::backtrace::Backtrace::force_capture().to_string();
-                let text = without_home(&format!("Leaf Notes {VERSION} · {} {}\n\npanicked at {at}: {}\n\n{trace}", std::env::consts::OS, std::env::consts::ARCH, redact(&msg)));
-                let _ = std::fs::write(dir.join(format!("crash-{}.txt", now_secs())), text);
+                write_crash_report(&dir, info);
             }
             previous(info);
         }));
     });
 }
 
-/// Reports left by earlier crashes, newest first.
-pub(crate) fn crash_reports() -> Vec<std::path::PathBuf> {
-    let mut v: Vec<_> = std::fs::read_dir(data_dir()).into_iter().flatten().flatten().map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("crash-") && n.ends_with(".txt"))).collect();
+/// Reports left by earlier crashes in `dir`, newest first.
+pub(crate) fn crash_reports_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("crash-") && n.ends_with(".txt")))
+        .collect();
     v.sort();
     v.reverse();
     v
 }
 
+/// Reports left by earlier crashes, newest first.
+pub(crate) fn crash_reports() -> Vec<std::path::PathBuf> {
+    crash_reports_in(&data_dir())
+}
+
 impl NotesApp {
-    pub(crate) fn crash_window(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.st.crash.clone() else { return };
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+    pub(crate) fn crash_window(&mut self, ctx: &egui::Context, _path: &std::path::Path, text: &str) -> bool {
         let (mut send, mut delete, mut later) = (false, false, false);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
-        egui::Modal::new(egui::Id::unique("crash")).frame(frame).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("crash")).frame(frame).show(ctx, |ui| {
             ui.set_width(crate::fit_w(ui.ctx(), 520.0));
             ui.label(RichText::new(tr("Leaf Notes closed unexpectedly")).font(rich::serif(22.0)).color(ui.visuals().strong_text_color()));
             ui.label(tr("Your notes were saved up to a few seconds before. A short report of what went wrong can help fix it; it contains no notes, only where in the program it happened. You'll see it before it's sent."));
             ui.add_space(6.0);
-            // exactly what would be sent
-            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| { ui.label(RichText::new(report_part(&text)).monospace().size(11.0).weak()); });
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                ui.label(RichText::new(report_part(text)).monospace().size(11.0).weak());
+            });
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.add(egui::Button::new(RichText::new(tr("Send report…")).color(Color32::WHITE)).fill(accent_base())).clicked() { send = true; }
                 if ui.button(tr("Delete it")).clicked() { delete = true; }
-                // kept: asked again at the next start
                 if ui.button(tr("Not now")).clicked() { later = true; }
             });
         });
-        if later { self.st.crash = None; }
+        if later || modal.should_close() { return false; }
         if send {
-            let body: String = format!("What were you doing when it happened?\n\n\n```\n{}\n```", report_part(&text));
+            let body: String = format!("What were you doing when it happened?\n\n\n```\n{}\n```", report_part(text));
             ctx.open_url(egui::OpenUrl::new_tab(format!("{ISSUES}?title={}&body={}", enc("Crash report"), enc(&body))));
         }
         if send || delete {
             for p in crash_reports() { let _ = std::fs::remove_file(p); }
-            self.st.crash = None;
+            return false;
         }
+        true
     }
 }
 
-/// The part of a report that's sent: short enough for a web address (each character can take 3).
 fn report_part(text: &str) -> String { text.chars().take(2000).collect() }
 
-/// A panic message without the text it quotes, on one line.
 fn redact(msg: &str) -> String {
     let mut out = String::new();
     let mut quote: Option<char> = None;
@@ -315,17 +407,20 @@ fn enc(s: &str) -> String { s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"
 mod tests {
     #[test]
     fn keeps_a_report_when_the_app_crashes() {
+        // Test crash-report writing without mutating process-global LEAFNOTES_DATA env var.
         let dir = std::env::temp_dir().join(format!("ln-crash-{}", crate::model::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("LEAFNOTES_DATA", &dir);
-        super::install_crash_hook();
+        let dir_hook = dir.clone();
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            super::write_crash_report(&dir_hook, info);
+        }));
         let _ = std::panic::catch_unwind(|| panic!("test crash"));
-        let reports = super::crash_reports();
-        std::env::remove_var("LEAFNOTES_DATA");
+        std::panic::set_hook(prev);
+        let reports = super::crash_reports_in(&dir);
         assert_eq!(reports.len(), 1);
         let text = std::fs::read_to_string(&reports[0]).unwrap();
         assert!(text.contains("test crash") && text.contains(super::VERSION));
-        // a note's words in the message never reach the report
         let r = super::redact("byte index 3 is not a char boundary of `my secret note`\nmore \"also secret\"");
         assert!(!r.contains("secret") && r.contains("byte index 3"), "{r}");
         let _ = std::fs::remove_dir_all(dir);

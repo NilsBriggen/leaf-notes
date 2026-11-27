@@ -1,6 +1,6 @@
 [package]
 name = "leafnotes"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 description = "Notes with pen, maths, recordings and flashcards"
 authors = ["Nils Briggen"]
@@ -28,6 +28,8 @@ egui = { version = "0.37", default-features = false, features = ["monochrome_emo
 sha2 = "0.11"
 getrandom = "0.3"
 ring = "0.17"
+argon2 = "0.5"
+zeroize = { version = "1", features = ["derive"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit", "wayland", "x11", "clipboard"] }

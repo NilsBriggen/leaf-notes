@@ -30,7 +30,8 @@ public class RecordService extends Service {
             .setContentIntent(tap)
             .setOngoing(true)
             .build();
-        if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+        // FOREGROUND_SERVICE_TYPE_MICROPHONE was introduced in Android 11 (API 30).
+        if (Build.VERSION.SDK_INT >= 30) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
         else startForeground(1, n);
         return START_NOT_STICKY;
     }

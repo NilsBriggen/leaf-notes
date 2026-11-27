@@ -54,11 +54,37 @@ pub struct Section {
     pub id: u64, pub name: String, pub color: [u8; 3], pub pages: Vec<Page>,
     /// Password-locked: the pages, encrypted (see vault.rs). While locked, `pages` holds only a placeholder.
     #[serde(default, skip_serializing_if = "Option::is_none")] pub lock: Option<Lock>,
+    /// Non-sensitive manifest of attachment filenames referenced by pages inside a locked section
+    /// so attachment GC never deletes files belonging to a closed locked section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub locked_files: Vec<String>,
 }
 
-/// A locked section's encrypted pages: base64 salt (for the password), nonce and data.
+/// A locked section's encrypted pages: version (`0` = PBKDF2 legacy, `1` = Argon2id + AAD),
+/// base64 salt (for the password), nonce and ciphertext+tag.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
-pub struct Lock { pub salt: String, pub nonce: String, pub data: String }
+pub struct Lock {
+    #[serde(default)] pub v: u8,
+    pub salt: String,
+    pub nonce: String,
+    pub data: String,
+}
+
+/// Collect all attachment filenames (`files/<name>`) referenced by a slice of pages.
+pub fn collect_page_files(pages: &[Page]) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for p in pages {
+        for b in &p.blocks {
+            match &b.kind {
+                Kind::Image { file } | Kind::File { file, .. } if safe_name(file) => { set.insert(file.clone()); }
+                _ => {}
+            }
+        }
+        for r in &p.recordings {
+            if safe_name(&r.file) { set.insert(r.file.clone()); }
+        }
+    }
+    set.into_iter().collect()
+}
 
 impl Section {
     /// The page shown in place of a locked section's pages (its id is the section's, which no page has).
@@ -588,22 +614,40 @@ pub fn deck_page(title: &str) -> Page {
 
 /// Render a PDF's pages to PNG files next to it; returns the file names, one per line
 /// (plus "…N" when the document had more than `max` pages).
+/// Caps render scale to avoid OOM on oversized pages, catches parser/renderer panics, and writes atomically.
 pub fn print_pdf(pdf: &std::path::Path, max: usize) -> Result<String, String> {
     use hayro::{hayro_interpret::InterpreterSettings, hayro_syntax::Pdf, render, PixmapSettings, RenderCache, RenderSettings};
-    let doc = Pdf::new(std::fs::read(pdf).map_err(|e| e.to_string())?).map_err(|e| format!("This PDF can't be read ({e:?})"))?;
-    let (cache, settings) = (RenderCache::new(), InterpreterSettings::default());
-    let pix = PixmapSettings { x_scale: 1.6, y_scale: 1.6, bg_color: hayro::vello_cpu::color::palette::css::WHITE };
+    let raw = std::fs::read(pdf).map_err(|e| e.to_string())?;
     let stem = pdf.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let mut names = vec![];
-    for (i, page) in doc.pages().iter().take(max).enumerate() {
-        let png = render(page, &cache, &settings, &RenderSettings::default(), &pix).into_png().map_err(|e| format!("{e:?}"))?;
-        let name = format!("{stem}-page{}.png", i + 1);
-        std::fs::write(pdf.with_file_name(&name), png).map_err(|e| e.to_string())?;
-        names.push(name);
+    let pdf_dir = pdf.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || -> Result<String, String> {
+        let doc = Pdf::new(raw).map_err(|e| format!("This PDF can't be read ({e:?})"))?;
+        let (cache, settings) = (RenderCache::new(), InterpreterSettings::default());
+        let mut names = vec![];
+        for (i, page) in doc.pages().iter().take(max).enumerate() {
+            let (pw, ph) = page.render_dimensions();
+            let max_dim = pw.max(ph).max(1.0);
+            let scale = (1.6f32).min(3200.0 / max_dim).max(0.2);
+            let pix = PixmapSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE };
+            let png = render(page, &cache, &settings, &RenderSettings::default(), &pix)
+                .into_png()
+                .map_err(|e| format!("{e:?}"))?;
+            let name = format!("{stem}-page{}.png", i + 1);
+            crate::storage::write_atomic(&pdf_dir.join(&name), &png).map_err(|e| e.to_string())?;
+            names.push(name);
+        }
+        if names.is_empty() {
+            return Err("This PDF has no pages.".into());
+        }
+        if doc.pages().len() > max {
+            names.push(format!("…{}", doc.pages().len()));
+        }
+        Ok(names.join("\n"))
+    }));
+    match res {
+        Ok(r) => r,
+        Err(_) => Err("This PDF couldn't be rendered (unsupported or damaged content).".into()),
     }
-    if names.is_empty() { return Err("This PDF has no pages.".into()); }
-    if doc.pages().len() > max { names.push(format!("…{}", doc.pages().len())); }
-    Ok(names.join("\n"))
 }
 
 pub fn block(x: f32, y: f32, w: f32, kind: Kind) -> Block { Block { id: new_id(), pos: [x, y], width: w, tag: Tag::None, kind, t: now_f() } }
@@ -648,17 +692,17 @@ pub fn sample() -> Store {
         DeckCard::new("Fourier coefficient $a_n$", r"$a_n = \frac{2}{T}\int_0^T f(t)\cos(n\omega t)\,dt$"),
         DeckCard::new("What is the Gibbs phenomenon?", "The overshoot near a jump that never goes away as you add terms"),
     ];
-    let lect = Section { id: new_id(), name: "Lectures".into(), color: PALETTE[0], pages: vec![p, sub, deck, Page::new("Week 2 — Convolution"), Page::new("Week 1 — Intro")], lock: None };
+    let lect = Section { id: new_id(), name: "Lectures".into(), color: PALETTE[0], pages: vec![p, sub, deck, Page::new("Week 2 — Convolution"), Page::new("Week 1 — Intro")], lock: None, locked_files: vec![] };
     let mut idea = Page::new("App ideas");
     idea.blocks = vec![block(24.0, 8.0, 400.0, text("Sketch the onboarding flow with the pen, then convert it."))];
-    let ideas = Section { id: new_id(), name: "Ideas".into(), color: PALETTE[2], pages: vec![idea], lock: None };
+    let ideas = Section { id: new_id(), name: "Ideas".into(), color: PALETTE[2], pages: vec![idea], lock: None, locked_files: vec![] };
     let mut q = Page::new("Quick notes");
     q.blocks = vec![block(24.0, 8.0, 400.0, text("Tap anywhere on the page to type."))];
-    let quick = Section { id: new_id(), name: "Quick Notes".into(), color: PALETTE[4], pages: vec![q], lock: None };
+    let quick = Section { id: new_id(), name: "Quick Notes".into(), color: PALETTE[4], pages: vec![q], lock: None, locked_files: vec![] };
     let study = Notebook { id: new_id(), name: "Study".into(), color: PALETTE[0], sections: vec![lect, ideas, quick] };
     let mut pl = Page::new("Groceries");
     pl.blocks = vec![block(24.0, 8.0, 300.0, Kind::Checklist { items: vec![(false, "Oats".into()), (false, "Lemons".into())] })];
-    let personal = Notebook { id: new_id(), name: "Personal".into(), color: PALETTE[3], sections: vec![Section { id: new_id(), name: "Home".into(), color: PALETTE[3], pages: vec![pl], lock: None }] };
+    let personal = Notebook { id: new_id(), name: "Personal".into(), color: PALETTE[3], sections: vec![Section { id: new_id(), name: "Home".into(), color: PALETTE[3], pages: vec![pl], lock: None, locked_files: vec![] }] };
     Store { notebooks: vec![study, personal], trash: vec![], study: Default::default() }
 }
 

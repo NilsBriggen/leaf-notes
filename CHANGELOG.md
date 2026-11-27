@@ -2,6 +2,34 @@
 
 Each release on GitHub shows its section from this file. Downloads are on the [releases page](https://github.com/NilsBriggen/leaf-notes/releases): `.AppImage` for Linux, `.msi` for Windows, `.apk` for Android.
 
+## 0.4.0 — 2026-11-27
+
+A major upgrade to reliability, performance, encryption, sync, AI, audio, PDF export, and the interface across desktop and Android.
+
+**Interface & writing**
+- Single-row scrolling toolbar with soft edge fades and clickable overflow chevrons, plus a scrollable tab bar on phones.
+- Tables now fill their full width proportionally with wrapping multi-line cells (`Tab` / `Shift+Tab` navigates and appends rows).
+- Audio keeps playing across page switches with a compact global mini-player bar (play/pause, scrubber, jump back to the recording's page, close).
+- Unified modal stack: dialogs opened from Settings stack cleanly, `Esc` / Android Back pops one layer at a time, and global shortcuts pause while any dialog is open.
+- Fixed dark-mode contrast and chalk-ink previews, viewport-clamped `/` and `[[` popups, inline math & Markdown rendering (`[X]`, quotes, lists, primes, wide formulas), and phone drawers.
+
+**Encryption, storage & performance**
+- Locked sections upgraded to Argon2id key derivation (run off the UI thread) + AES-256-GCM with AAD binding and automatic memory zeroization; older PBKDF2 sections unlock and migrate transparently.
+- Background autosave writer thread, background image/PDF-page decoding with bounded VRAM LRU caching, debounced offline handwriting OCR, cached CNN probabilities, and dirty-flagged library stats.
+- Safe local and remote attachment garbage collection preserving closed locked sections and page history, `0o600` private file permissions, and a visible read-only warning banner when another window holds the data lock.
+
+**Sync & security**
+- Incremental per-page sync (`library.json` + `pages/{id}.json`) across Folder, WebDAV, and Google Drive with automatic one-time migration from legacy `notes.json`, batched Drive folder listings, $O(N)$ ID merging, and Folder lockfile protection.
+- Enforced `https://` for remote AI and WebDAV servers (loopback `http://` stays auto-allowed; private LAN / `.local` `http://` requires an explicit opt-in toggle in Settings).
+
+**AI, audio & PDF export**
+- Live SSE streaming and real cancellation (`Stop`) for both Anthropic and OpenAI-compatible AI chat, structured multi-turn history, and chunk progress + cancellation for speech-to-text transcription.
+- Disk-streaming WAV playback (< 1 MB RAM for multi-hour lectures) with race-free seeking, 24-bit device support, and crash-safe recording flushes.
+- PDF printout export now clones indirect resource dictionaries safely, uses Multiply blend mode for highlighters, handles rotated pages (`/Rotate 90/180/270`), exports full code blocks and tables, and runs off the UI thread; whole-page PDF export streams directly from tiles without giant stitched image allocations.
+
+**Android**
+- Preserved clean attachment display names, fixed `.docx` and Markdown picker MIME types, guarded Android 11+ foreground microphone service & Android 13+ notification permissions, updated `WindowInsets` for cutouts and keyboard, and cleaned up lifecycle background wakeups.
+
 ## 0.3.2 — 2026-11-11
 
 A big round of fixes for safety and reliability, and many smaller improvements.

@@ -128,7 +128,8 @@ pub fn classify(line: &str) -> (LineKind, usize) {
     let t = line.trim_start();
     let lead = line.len() - t.len();
     for (p, k) in [("### ", LineKind::Heading(3)), ("## ", LineKind::Heading(2)), ("# ", LineKind::Heading(1)),
-        ("- [ ] ", LineKind::Check(false)), ("- [x] ", LineKind::Check(true)), ("[ ] ", LineKind::Check(false)), ("[x] ", LineKind::Check(true)),
+        ("- [ ] ", LineKind::Check(false)), ("- [x] ", LineKind::Check(true)), ("- [X] ", LineKind::Check(true)),
+        ("[ ] ", LineKind::Check(false)), ("[x] ", LineKind::Check(true)), ("[X] ", LineKind::Check(true)),
         ("- ", LineKind::Bullet), ("* ", LineKind::Bullet), ("• ", LineKind::Bullet), ("> ", LineKind::Quote)] {
         if t.starts_with(p) { return (k, lead + p.len()); }
     }
@@ -207,6 +208,7 @@ pub fn view_ticks(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Col
     let mut link = None;
     let mut tick = None;
     ui.style_mut().interaction.selectable_labels = false;
+    let saved_spacing_y = ui.spacing().item_spacing.y;
     let mut number = 0;
     for (li, line) in text.split('\n').enumerate() {
         let (kind, plen) = classify(line);
@@ -219,52 +221,79 @@ pub fn view_ticks(ui: &mut egui::Ui, text: &str, base: f32, heading: u8, c: &Col
         let indent = (line.len() - line.trim_start().len()) as f32 * 10.0; // two spaces: one sub-point step
         if matches!(kind, LineKind::Heading(_)) { ui.add_space(size * 0.3); }
         ui.spacing_mut().item_spacing.y = size * 0.3;
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(indent);
-            let lead = match kind {
-                LineKind::Bullet => Some("•  ".to_string()),
-                LineKind::Number => Some(format!("{number}.  ")),
-                LineKind::Check(d) => Some(if d { "☑  " } else { "☐  " }.to_string()),
-                _ => None,
-            };
-            if let Some(l) = lead {
-                let r = ui.add(egui::Label::new(egui::RichText::new(l).size(size).color(c.accent)).sense(egui::Sense::click()));
-                if matches!(kind, LineKind::Check(_)) && r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { tick = Some(li); }
-            }
-            if kind == LineKind::Quote {
-                let (r, _) = ui.allocate_exact_size(egui::vec2(3.0, size * 1.2), egui::Sense::hover());
-                ui.painter().rect_filled(r, 1.0, c.accent);
-                ui.add_space(8.0);
-            }
-            let mut job = LayoutJob::default();
-            let done = matches!(kind, LineKind::Check(true));
-            for p in pieces_cached(&line[plen..]) {
-                match p {
-                    Piece::Marker(_) => {}
-                    Piece::Text(t, mut s) => {
-                        s.italic |= kind == LineKind::Quote;
-                        s.strike |= done;
-                        job.append(&t, 0.0, fmt(size, s, if done { c.dim } else { color }, c, heading > 0 || matches!(kind, LineKind::Heading(_))));
-                    }
-                    Piece::Math(m) => {
-                        if !job.is_empty() { clicked |= ui.label(std::mem::take(&mut job)).clicked(); }
-                        clicked |= crate::math::math_label(ui, &m, size).clicked();
-                    }
-                    Piece::Link(l) => {
-                        if !job.is_empty() { clicked |= ui.label(std::mem::take(&mut job)).clicked(); }
-                        // a link to a page that doesn't exist (yet) looks like it, instead of like a working link
-                        let exists = KNOWN_TITLES.with(|k| { let k = k.borrow(); k.is_empty() || k.contains(&l.trim().to_lowercase()) });
-                        let col = if exists { c.accent } else { c.dim };
-                        let r = ui.add(egui::Label::new(egui::RichText::new(format!("↗ {l}")).size(size).color(col).underline()).sense(egui::Sense::click()))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand).tip(if exists { "Open this page" } else { "No page with this name yet — click to create it" });
-                        if r.clicked() { link = Some(l); }
+        let done = matches!(kind, LineKind::Check(true));
+        let line_color = if done { c.dim } else { color };
+
+        let render_body = |ui: &mut egui::Ui, clicked: &mut bool, link: &mut Option<String>| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let mut job = LayoutJob::default();
+                for p in pieces_cached(&line[plen..]) {
+                    match p {
+                        Piece::Marker(_) => {}
+                        Piece::Text(t, mut s) => {
+                            s.italic |= kind == LineKind::Quote;
+                            s.strike |= done;
+                            job.append(&t, 0.0, fmt(size, s, line_color, c, heading > 0 || matches!(kind, LineKind::Heading(_))));
+                        }
+                        Piece::Math(m) => {
+                            if !job.is_empty() { *clicked |= ui.label(std::mem::take(&mut job)).clicked(); }
+                            *clicked |= crate::math::math_label_styled(ui, &m, size, line_color, done).clicked();
+                        }
+                        Piece::Link(l) => {
+                            if !job.is_empty() { *clicked |= ui.label(std::mem::take(&mut job)).clicked(); }
+                            let exists = KNOWN_TITLES.with(|k| { let k = k.borrow(); k.is_empty() || k.contains(&l.trim().to_lowercase()) });
+                            let col = if exists { c.accent } else { c.dim };
+                            let r = ui.add(egui::Label::new(egui::RichText::new(format!("↗ {l}")).size(size).color(col).underline()).sense(egui::Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand).tip(if exists { "Open this page" } else { "No page with this name yet — click to create it" });
+                            if r.clicked() { *link = Some(l); }
+                        }
                     }
                 }
-            }
-            if !job.is_empty() { clicked |= ui.label(job).clicked(); }
-        });
+                if !job.is_empty() { *clicked |= ui.label(job).clicked(); }
+            });
+        };
+
+        let lead = match kind {
+            LineKind::Bullet => Some("•  ".to_string()),
+            LineKind::Number => Some(format!("{number}.  ")),
+            LineKind::Check(d) => Some(if d { "☑  " } else { "☐  " }.to_string()),
+            _ => None,
+        };
+
+        if kind == LineKind::Quote {
+            let start_pos = ui.cursor().left_top();
+            let resp = ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                if indent > 0.0 { ui.add_space(indent); }
+                ui.add_space(11.0); // room for the full-height quote bar
+                ui.vertical(|ui| render_body(ui, &mut clicked, &mut link));
+            }).response;
+            let bar_x = start_pos.x + indent;
+            let bar_rect = egui::Rect::from_min_max(
+                egui::pos2(bar_x, resp.rect.top() + 2.0),
+                egui::pos2(bar_x + 3.0, (resp.rect.bottom() - 2.0).max(resp.rect.top() + size)),
+            );
+            ui.painter().rect_filled(bar_rect, 1.5, c.accent);
+        } else if indent > 0.0 || lead.is_some() {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                if indent > 0.0 { ui.add_space(indent); }
+                if let Some(l) = lead {
+                    let r = ui.add(egui::Label::new(egui::RichText::new(l).size(size).color(c.accent)).sense(egui::Sense::click()));
+                    if matches!(kind, LineKind::Check(_)) {
+                        if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { tick = Some(li); }
+                    } else if r.clicked() {
+                        clicked = true;
+                    }
+                }
+                ui.vertical(|ui| render_body(ui, &mut clicked, &mut link));
+            });
+        } else {
+            render_body(ui, &mut clicked, &mut link);
+        }
     }
+    ui.spacing_mut().item_spacing.y = saved_spacing_y;
     (clicked, link, tick)
 }
 

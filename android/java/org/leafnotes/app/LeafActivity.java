@@ -7,6 +7,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.database.Cursor;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,6 +16,8 @@ import android.provider.OpenableColumns;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.view.View;
+import android.view.WindowInsets;
 import android.widget.Toast;
 
 import java.io.File;
@@ -36,19 +39,19 @@ import javax.crypto.spec.GCMParameterSpec;
 /**
  * The few things a native app can't do on Android without Java: the system file picker (its
  * answer comes back to an Activity method), files shared into the app, opening attachments in
- * other apps, the hardware-backed key store and the system language. Everything else is Rust.
+ * other apps, the hardware-backed key store, window insets, and the system language. Everything else is Rust.
  */
 public class LeafActivity extends NativeActivity {
     private static final int PICK = 4200;
     private static final int CAMERA = 4400;
     /** Where the camera app writes the photo being taken (Pictures/Leaf Notes, so it's in the gallery too). */
     private Uri photo;
-    /** Files that arrived (picked or shared), as "kind|path", collected by the Rust side. */
+    /** Files that arrived (picked or shared), as "kind|displayName|path", collected by the Rust side. */
     private final ConcurrentLinkedQueue<String> incoming = new ConcurrentLinkedQueue<>();
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        // the camera app may have needed the memory: the photo it was writing still arrives
+        tidyInbox();
         if (state != null) photo = state.getParcelable("photo");
         takeShared(getIntent());
     }
@@ -107,8 +110,8 @@ public class LeafActivity extends NativeActivity {
             final boolean own = FileShare.AUTHORITY.equals(u.getAuthority());
             if (result != RESULT_OK) { try { if (own) FileShare.file(this, u).delete(); else getContentResolver().delete(u, null, null); } catch (Exception e) { /* nothing to tidy */ } return; }
             new Thread(new Runnable() { public void run() {
-                String p = copyIn(u);
-                if (p != null) incoming.add("1|" + p);
+                String[] copied = copyIn(u);
+                if (copied != null) incoming.add("1|" + copied[0] + "|" + copied[1]);
                 if (own) try { FileShare.file(LeafActivity.this, u).delete(); } catch (Exception e) { /* gone already */ }
             } }).start();
             return;
@@ -118,7 +121,12 @@ public class LeafActivity extends NativeActivity {
         final List<Uri> uris = new ArrayList<>();
         if (data.getClipData() != null) for (int k = 0; k < data.getClipData().getItemCount(); k++) uris.add(data.getClipData().getItemAt(k).getUri());
         else if (data.getData() != null) uris.add(data.getData());
-        new Thread(new Runnable() { public void run() { for (Uri u : uris) { String p = copyIn(u); if (p != null) incoming.add(kind + "|" + p); } } }).start();
+        new Thread(new Runnable() { public void run() {
+            for (Uri u : uris) {
+                String[] copied = copyIn(u);
+                if (copied != null) incoming.add(kind + "|" + copied[0] + "|" + copied[1]);
+            }
+        } }).start();
     }
 
     /** "Share to Leaf Notes" from other apps: files and text. */
@@ -128,17 +136,25 @@ public class LeafActivity extends NativeActivity {
         if (Intent.ACTION_SEND.equals(action)) {
             Uri u = it.getParcelableExtra(Intent.EXTRA_STREAM);
             String text = it.getStringExtra(Intent.EXTRA_TEXT);
-            if (u != null) new Thread(new Runnable() { public void run() { String p = copyIn(u); if (p != null) incoming.add("0|" + p); } }).start();
+            if (u != null) new Thread(new Runnable() { public void run() {
+                String[] copied = copyIn(u);
+                if (copied != null) incoming.add("0|" + copied[0] + "|" + copied[1]);
+            } }).start();
             else if (text != null) {
                 try {
                     File f = new File(inbox(), System.nanoTime() + "-shared.txt");
                     try (OutputStream o = new FileOutputStream(f)) { o.write(text.getBytes("UTF-8")); }
-                    incoming.add("9|" + f.getAbsolutePath());
+                    incoming.add("9|shared.txt|" + f.getAbsolutePath());
                 } catch (Exception e) { /* nothing arrives */ }
             }
         } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
             final ArrayList<Uri> us = it.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-            if (us != null) new Thread(new Runnable() { public void run() { for (Uri u : us) { String p = copyIn(u); if (p != null) incoming.add("0|" + p); } } }).start();
+            if (us != null) new Thread(new Runnable() { public void run() {
+                for (Uri u : us) {
+                    String[] copied = copyIn(u);
+                    if (copied != null) incoming.add("0|" + copied[0] + "|" + copied[1]);
+                }
+            } }).start();
         }
         it.setAction(null); // handled once
     }
@@ -146,7 +162,7 @@ public class LeafActivity extends NativeActivity {
     /** Something arrived (the app is woken to collect it). */
     public boolean hasIncoming() { return !incoming.isEmpty(); }
 
-    /** Everything that arrived since the last call, one "kind|path" per line. */
+    /** Everything that arrived since the last call, one "kind|name|path" per line. */
     public String takeIncoming() {
         StringBuilder b = new StringBuilder();
         for (String s; (s = incoming.poll()) != null; ) b.append(s).append('\n');
@@ -155,14 +171,24 @@ public class LeafActivity extends NativeActivity {
 
     private File inbox() { File d = new File(getCacheDir(), "incoming"); d.mkdirs(); return d; }
 
-    /** Copy a picked or shared document into the app (keeping its name). */
-    private String copyIn(Uri uri) {
+    /** Remove stale abandoned files in cache/incoming older than 24 hours. */
+    private void tidyInbox() {
+        File[] files = inbox().listFiles();
+        if (files == null) return;
+        long now = System.currentTimeMillis();
+        for (File f : files) {
+            if (now - f.lastModified() > 86_400_000L) f.delete();
+        }
+    }
+
+    /** Copy a picked or shared document into the app, returning {cleanDisplayName, absolutePath}. */
+    private String[] copyIn(Uri uri) {
         String name = "file";
         try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (c != null && c.moveToFirst() && c.getString(0) != null) name = c.getString(0);
         } catch (Exception e) { /* keep the default name */ }
-        name = name.replaceAll("[^A-Za-z0-9._ -]", "_");
-        // a name without an extension (some apps share "image"): add one from the file's type, so a photo arrives as a picture
+        name = name.replaceAll("[^A-Za-z0-9._ -]", "_").replace('|', '_').trim();
+        if (name.isEmpty()) name = "file";
         if (!name.contains(".")) {
             String type = getContentResolver().getType(uri), ext = type == null ? null : android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
             if (ext != null) name = name + "." + ext;
@@ -172,8 +198,29 @@ public class LeafActivity extends NativeActivity {
             if (in == null) return null;
             byte[] buf = new byte[65536];
             for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
-            return f.getAbsolutePath();
-        } catch (Exception e) { return null; }
+            return new String[]{name, f.getAbsolutePath()};
+        } catch (Exception e) {
+            f.delete();
+            return null;
+        }
+    }
+
+    /** System bar + IME + display cutout insets as [top, bottom, left, right] in pixels. */
+    @SuppressWarnings("deprecation")
+    public int[] getSystemBarInsets() {
+        View decor = getWindow() == null ? null : getWindow().getDecorView();
+        WindowInsets wi = decor == null ? null : decor.getRootWindowInsets();
+        if (wi == null) return new int[]{0, 0, 0, 0};
+        if (Build.VERSION.SDK_INT >= 30) {
+            Insets ins = wi.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime() | WindowInsets.Type.displayCutout());
+            return new int[]{ins.top, ins.bottom, ins.left, ins.right};
+        }
+        return new int[]{
+            wi.getSystemWindowInsetTop(),
+            wi.getSystemWindowInsetBottom(),
+            wi.getSystemWindowInsetLeft(),
+            wi.getSystemWindowInsetRight()
+        };
     }
 
     /** A copy of the file in Downloads/Leaf Notes, which other apps may read (null if that failed).
@@ -196,8 +243,13 @@ public class LeafActivity extends NativeActivity {
         Uri u = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
         if (u == null) { toast("Couldn't copy the file to Downloads."); return null; }
         try (InputStream in = new FileInputStream(path); OutputStream out = r.openOutputStream(u)) {
+            if (out == null) throw new Exception("Couldn't open Downloads stream.");
             byte[] buf = new byte[65536];
             for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+        } catch (Exception e) {
+            // Delete orphaned MediaStore row if copying failed.
+            try { r.delete(u, null, null); } catch (Exception ignored) {}
+            throw e;
         }
         return u;
     }
@@ -225,12 +277,10 @@ public class LeafActivity extends NativeActivity {
             runOnUiThread(new Runnable() { public void run() {
             try {
                 Intent send = new Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, u).putExtra(Intent.EXTRA_TITLE, name).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                send.setClipData(ClipData.newUri(getContentResolver(), name, u)); // shows the file's name in the share sheet
+                send.setClipData(ClipData.newUri(getContentResolver(), name, u));
                 Intent chooser = Intent.createChooser(send, name);
-                // the share sheet itself reads the file's name for its preview
                 chooser.setClipData(send.getClipData());
                 chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                // Leaf Notes itself accepts shared files; don't offer it as a place to send its own export
                 chooser.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, new android.content.ComponentName[] { new android.content.ComponentName(LeafActivity.this, LeafActivity.class) });
                 startActivity(chooser);
             } catch (Exception e) { toast("Couldn't share the file: " + e.getMessage()); }
@@ -240,9 +290,18 @@ public class LeafActivity extends NativeActivity {
 
     private void toast(final String s) { runOnUiThread(new Runnable() { public void run() { Toast.makeText(LeafActivity.this, s, Toast.LENGTH_LONG).show(); } }); }
 
-    /** Ask for the microphone (from the main thread, where Android shows its dialog reliably). */
+    /** Ask for microphone (and notification permission on Android 13+ so the foreground recording notice shows). */
     public void requestMic() {
-        runOnUiThread(new Runnable() { public void run() { requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 7); } });
+        runOnUiThread(new Runnable() { public void run() {
+            if (Build.VERSION.SDK_INT >= 33) {
+                requestPermissions(new String[]{
+                    android.Manifest.permission.RECORD_AUDIO,
+                    "android.permission.POST_NOTIFICATIONS"
+                }, 7);
+            } else {
+                requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 7);
+            }
+        }});
     }
 
     /** A recording started or stopped: hold the app in the foreground meanwhile (see RecordService). */

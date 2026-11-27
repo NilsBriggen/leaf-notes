@@ -1,22 +1,26 @@
 //! The Settings window: appearance, pen & input, notes & pages, AI, your data and sync.
-use crate::chrome::{ago, heading, row, row_below, toggle};
+use crate::chrome::{ago, danger_color, heading, one_line, row, row_below, toggle};
+use crate::state::{ActiveModal, AiJobKind};
 use crate::*;
 use eframe::egui::{Align, Layout, RichText, Sense};
 
 impl NotesApp {
-    pub(crate) fn settings_window(&mut self, ctx: &egui::Context) {
+    /// Returns `true` while Settings should stay on the modal stack.
+    pub(crate) fn settings_window(&mut self, ctx: &egui::Context, settings_tab: &mut u8) -> bool {
         let mut open = true;
         let mut test = false;
         #[allow(unused_mut)]
         let (mut restore, mut import, mut backup_to): (Option<std::path::PathBuf>, Vec<std::path::PathBuf>, Option<std::path::PathBuf>) = (None, vec![], None);
-        #[cfg_attr(target_os = "android", allow(unused_mut))] // the PDF picker is desktop-only
+        #[cfg_attr(target_os = "android", allow(unused_mut))]
         let mut pdfs: Vec<std::path::PathBuf> = vec![];
-        let before = serde_json::to_string(&self.st.p).unwrap_or_default();
-        // phones: a thinner frame, and the section list shows only icons
+        let before = self.st.p.clone();
         let narrow = ctx.content_rect().width() < 640.0;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(if narrow { 12 } else { 22 })).corner_radius(18);
         let modal = egui::Modal::new(egui::Id::unique("settings")).frame(frame).show(ctx, |ui| {
-            let size = Vec2::new(if narrow { ctx.content_rect().width() - 40.0 } else { (ctx.content_rect().width() - 80.0).clamp(560.0, 780.0) }, (ctx.content_rect().height() - 120.0 - self.st.bars[0] - self.st.bars[1]).clamp(200.0, 560.0)); // (minus Android's bars)
+            let size = Vec2::new(
+                if narrow { (ctx.content_rect().width() - 40.0).max(240.0) } else { (ctx.content_rect().width() - 80.0).clamp(560.0, 800.0) },
+                (ctx.content_rect().height() - 120.0 - self.st.bars[0] - self.st.bars[1]).clamp(200.0, 560.0),
+            );
             ui.set_width(size.x);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Settings")).font(rich::serif(24.0)).color(ui.visuals().strong_text_color()));
@@ -27,20 +31,27 @@ impl NotesApp {
             ui.add_space(10.0);
             ui.horizontal_top(|ui| {
                 ui.set_height(size.y);
-                // section list
+                let side_w = if narrow { 40.0 } else { 182.0 };
                 ui.vertical(|ui| {
-                    ui.set_width(if narrow { 40.0 } else { 170.0 });
+                    ui.set_width(side_w);
                     for (i, (icon, name)) in [("🎨", "Appearance"), ("✏", "Pen & input"), ("¶", "Notes & pages"), ("✦", "AI"), ("💾", "Your data"), ("🔄", "Sync")].iter().enumerate() {
-                        let sel = self.st.settings_tab == i as u8;
-                        // icons in their own fixed column, so the names line up whatever the icon's width
-                        let (rect, r) = ui.allocate_exact_size(Vec2::new(if narrow { 38.0 } else { 166.0 }, if narrow { 40.0 } else { 34.0 }), Sense::click());
-                        if sel || r.hovered() { ui.painter().rect_filled(rect, 8.0, if sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill }); }
+                        let sel = *settings_tab == i as u8;
+                        let (rect, r) = ui.allocate_exact_size(Vec2::new(if narrow { 38.0 } else { side_w - 4.0 }, if narrow { 40.0 } else { 34.0 }), Sense::click());
+                        if sel || r.hovered() {
+                            ui.painter().rect_filled(rect, 8.0, if sel { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill });
+                        }
                         let col = if sel { accent(ui) } else { ui.visuals().text_color() };
                         ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), egui::Align2::CENTER_CENTER, *icon, egui::FontId::proportional(14.0), col);
-                        if !narrow { ui.painter().text(rect.left_center() + Vec2::new(38.0, 0.0), egui::Align2::LEFT_CENTER, tr(name), egui::FontId::proportional(14.0), col); }
+                        if !narrow {
+                            let label_left = rect.left() + 38.0;
+                            let room = (rect.right() - 6.0 - label_left).max(20.0);
+                            let g = one_line(ui.painter(), tr(name), egui::FontId::proportional(14.0), col, room);
+                            ui.painter().galley(Pos2::new(label_left, rect.center().y - g.size().y / 2.0), g, col);
+                        }
                         crate::chrome::focus_ring(ui, &r, rect, 8.0);
                         r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, sel, tr(name)));
-                        if r.clicked() { self.st.settings_tab = i as u8; }
+                        let r = if narrow { r.tip(*name) } else { r };
+                        if r.clicked() { *settings_tab = i as u8; }
                     }
                 });
                 ui.add_space(if narrow { 2.0 } else { 8.0 });
@@ -49,7 +60,7 @@ impl NotesApp {
                 egui::ScrollArea::vertical().id_salt("settings-scroll").auto_shrink([false, false]).max_height(size.y).show(ui, |ui| ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 10.0;
                     let p = &mut self.st.p;
-                    match self.st.settings_tab {
+                    match *settings_tab {
                         0 => {
                             heading(ui, "Appearance");
                             row_below(ui, "Theme", "Light, dark, or the same as the system.", |ui| {
@@ -67,10 +78,9 @@ impl NotesApp {
                                 }
                                 let mut col = c3(p.accent);
                                 if ui.color_edit_button_srgba(&mut col).tip("Any colour").changed() { p.accent = [col.r(), col.g(), col.b()]; }
-                                ui.label(RichText::new(tr("Any colour")).size(12.0).weak()); // (phones show no hover tips)
+                                ui.label(RichText::new(tr("Any colour")).size(12.0).weak());
                             });
-                            row(ui, "Interface size", if self.st.touch_ui { "Makes everything larger or smaller." } else { "Makes everything larger or smaller (also Ctrl + / Ctrl −)." }, |ui| {
-                                // applied when the drag ends: rescaling while dragging moves the slider away under the pointer
+                            row(ui, "Interface size", if self.st.nav.touch_ui { "Makes everything larger or smaller." } else { "Makes everything larger or smaller (also Ctrl + / Ctrl −)." }, |ui| {
                                 let held = egui::Id::unique("zoom-drag");
                                 let mut z = ui.data(|d| d.get_temp::<f32>(held)).unwrap_or(ctx.zoom_factor());
                                 let r = ui.add(egui::Slider::new(&mut z, 0.7..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
@@ -93,7 +103,7 @@ impl NotesApp {
                             row(ui, "Draw with a finger", "Some phones report finger pressure like a pen; on those, fingers may still draw.", |ui| { toggle(ui, &mut p.draw_finger); });
                             row(ui, "Pressure-sensitive lines", "Press harder for thicker ink (fountain pen, pencil). Off: even lines.", |ui| { toggle(ui, &mut p.pressure); });
                             row(ui, "Smoothing", "Irons out shaky lines; higher values trail the pen slightly.", |ui| { ui.add(egui::Slider::new(&mut p.stabilizer, 0.0..=1.0).show_value(false)); });
-                            row(ui, "Hold still to snap shapes", "Draw a line, box or circle and keep the pen still at the end: it turns into a perfect one.", |ui| {
+                            row_below(ui, "Hold still to snap shapes", "Draw a line, box or circle and keep the pen still at the end: it turns into a perfect one.", |ui| {
                                 toggle(ui, &mut p.snap_shapes);
                                 if p.snap_shapes { ui.add(egui::Slider::new(&mut p.snap_delay, 0.3..=1.5).suffix(" s")).tip("How long to hold still"); }
                             });
@@ -124,14 +134,13 @@ impl NotesApp {
                             ui.label(RichText::new(tr("Pick a service, paste your key. Your key stays on this device and is sent only to the server below.")).weak());
                             ui.horizontal_wrapped(|ui| {
                                 if ui.button(tr("Anthropic")).clicked() { *a = ai::AiSettings { api_key: a.api_key.clone(), ..Default::default() }; }
-                                if ui.button(tr("OpenAI")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.openai.com/v1".into(); a.model = "gpt-4o".into(); }
-                                if ui.button(tr("OpenRouter")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://openrouter.ai/api/v1".into(); a.model = "anthropic/claude-sonnet-5.5".into(); }
+                                if ui.button(tr("OpenAI")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.openai.com/v1".into(); a.model = "gpt-4o".into(); a.transcribe_model = "whisper-1".into(); }
+                                if ui.button(tr("OpenRouter")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://openrouter.ai/api/v1".into(); a.model = "anthropic/claude-sonnet-5.5".into(); a.transcribe_model = "whisper-1".into(); }
                                 if ui.button(tr("Ollama (on this computer)")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "http://localhost:11434/v1".into(); a.model = "llama3.2-vision".into(); }
                                 if ui.button(tr("LM Studio (on this computer)")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "http://localhost:1234/v1".into(); a.model = "local-model".into(); }
                                 if ui.button(tr("Groq")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.groq.com/openai/v1".into(); a.model = "llama-3.3-70b-versatile".into(); a.transcribe_model = "whisper-large-v3".into(); }
-                                if ui.button(tr("Mistral")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.mistral.ai/v1".into(); a.model = "mistral-large-latest".into(); }
+                                if ui.button(tr("Mistral")).clicked() { a.provider = ai::Provider::OpenAiCompatible; a.base_url = "https://api.mistral.ai/v1".into(); a.model = "mistral-large-latest".into(); a.transcribe_model = "whisper-1".into(); }
                             });
-                            // where a key comes from, for someone who has never made one (and the free option)
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new(tr("Get a key:")).size(12.0).weak());
                                 ui.hyperlink_to(RichText::new("Anthropic").size(12.0), "https://console.anthropic.com/settings/keys");
@@ -141,33 +150,58 @@ impl NotesApp {
                                 ui.hyperlink_to(RichText::new("Ollama").size(12.0), "https://ollama.com");
                             });
                             egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            egui::Grid::new("ai_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                                ui.label(tr("Service"));
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.radio_value(&mut a.provider, ai::Provider::Anthropic, tr("Anthropic API"));
-                                    ui.radio_value(&mut a.provider, ai::Provider::OpenAiCompatible, tr("OpenAI-compatible"));
-                                });
-                                ui.end_row();
-                                ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(ui.available_width().min(300.0))); ui.end_row();
-                                ui.label(tr("API key")); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text(tr("paste your key")).desired_width(ui.available_width().min(300.0))); ui.end_row();
-                                ui.label(tr("Model")); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(ui.available_width().min(300.0))); ui.end_row();
-                                if a.provider == ai::Provider::OpenAiCompatible {
-                                    ui.label(tr("Speech to text")); ui.add(egui::TextEdit::singleline(&mut a.transcribe_model).desired_width(ui.available_width().min(300.0))).tip("Used to turn recordings into text, e.g. whisper-1 (OpenAI) or whisper-large-v3 (Groq)"); ui.end_row();
+                                ui.set_width(ui.available_width());
+                                if ui.available_width() < 360.0 {
+                                    ui.label(RichText::new(tr("Service")).size(12.5).weak());
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.radio_value(&mut a.provider, ai::Provider::Anthropic, tr("Anthropic API"));
+                                        ui.radio_value(&mut a.provider, ai::Provider::OpenAiCompatible, tr("OpenAI-compatible"));
+                                    });
+                                    ui.label(RichText::new(tr("Server address")).size(12.5).weak());
+                                    ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(f32::INFINITY));
+                                    ui.label(RichText::new(tr("API key")).size(12.5).weak());
+                                    ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text(tr("paste your key")).desired_width(f32::INFINITY));
+                                    ui.label(RichText::new(tr("Model")).size(12.5).weak());
+                                    ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(f32::INFINITY));
+                                    if a.provider == ai::Provider::OpenAiCompatible {
+                                        ui.label(RichText::new(tr("Speech to text")).size(12.5).weak());
+                                        ui.add(egui::TextEdit::singleline(&mut a.transcribe_model).desired_width(f32::INFINITY)).tip("Used to turn recordings into text, e.g. whisper-1 (OpenAI) or whisper-large-v3 (Groq)");
+                                    }
+                                } else {
+                                    egui::Grid::new("ai_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                                        ui.label(tr("Service"));
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.radio_value(&mut a.provider, ai::Provider::Anthropic, tr("Anthropic API"));
+                                            ui.radio_value(&mut a.provider, ai::Provider::OpenAiCompatible, tr("OpenAI-compatible"));
+                                        });
+                                        ui.end_row();
+                                        ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut a.base_url).desired_width(ui.available_width().min(300.0))); ui.end_row();
+                                        ui.label(tr("API key")); ui.add(egui::TextEdit::singleline(&mut a.api_key).password(true).hint_text(tr("paste your key")).desired_width(ui.available_width().min(300.0))); ui.end_row();
+                                        ui.label(tr("Model")); ui.add(egui::TextEdit::singleline(&mut a.model).desired_width(ui.available_width().min(300.0))); ui.end_row();
+                                        if a.provider == ai::Provider::OpenAiCompatible {
+                                            ui.label(tr("Speech to text")); ui.add(egui::TextEdit::singleline(&mut a.transcribe_model).desired_width(ui.available_width().min(300.0))).tip("Used to turn recordings into text, e.g. whisper-1 (OpenAI) or whisper-large-v3 (Groq)"); ui.end_row();
+                                        }
+                                    });
                                 }
                             });
-                            });
+                            if sync::is_unencrypted_lan_url(&a.base_url) || a.allow_lan_http {
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.checkbox(&mut a.allow_lan_http, tr("Allow unencrypted local network (http://)"));
+                                });
+                                ui.label(RichText::new(tr("Warning: credentials and notes travel unencrypted over your local network.")).size(11.5).color(danger_color(ui)));
+                            }
                             ui.label(RichText::new(tf!("Your key is kept in {place}.", place = crate::keys::place())).size(11.5).weak());
                             row_below(ui, "Your own prompts", "One per line; each becomes a button in the assistant (e.g. “Make 5 exam questions from this page”).", |ui| {
                                 ui.add(egui::TextEdit::multiline(&mut p.prompts).desired_rows(3).desired_width(f32::INFINITY));
                             });
                             row(ui, "Use this AI for handwriting", "Off: the built-in recognizer reads handwriting offline. On: sent to your AI (better for cursive; needs a model that reads images).", |ui| { toggle(ui, &mut p.ink_ai); });
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 if ui.button(tr("Test connection")).clicked() { test = true; }
-                                if self.st.ai_rx.iter().any(|(j, _)| matches!(j, Job::Test)) { ui.spinner(); }
-                                match &self.st.test_result {
+                                if self.st.jobs.ai_jobs.iter().any(|j| matches!(j.kind, AiJobKind::Test)) { ui.spinner(); }
+                                match &self.st.jobs.test_result {
                                     Some(Ok(_)) => { ui.label(RichText::new(tr("✓ Connected")).color(accent(ui))); }
-                                    Some(Err(e)) => { ui.label(RichText::new(format!("⚠ {e}")).color(Color32::from_rgb(220, 80, 60))); }
+                                    Some(Err(e)) => { ui.label(RichText::new(format!("⚠ {e}")).color(danger_color(ui))); }
                                     None => {}
                                 }
                             });
@@ -176,12 +210,11 @@ impl NotesApp {
                             heading(ui, "Sync");
                             ui.label(RichText::new(tr("Keep your notes the same on all your devices. Changes merge note by note; if the same page was changed on two devices at once, you keep both versions.")).weak());
                             let (mut g_start, mut g_cancel, mut g_out) = (false, false, false);
-                            let s = &mut self.st.sync;
-                            let before = s.clone();
+                            let s = &mut self.st.sync_st.settings;
+                            let before_s = s.clone();
                             row_below(ui, "Sync through", "Choose the same place on every device.", |ui| {
                                 ui.selectable_value(&mut s.via, sync::Via::Off, tr("Off"));
                                 ui.selectable_value(&mut s.via, sync::Via::Google, tr("Google Drive"));
-                                // Android apps can't pick or reach other apps' folders: Drive or WebDAV there
                                 #[cfg(not(target_os = "android"))]
                                 ui.selectable_value(&mut s.via, sync::Via::Folder, tr("A synced folder"));
                                 ui.selectable_value(&mut s.via, sync::Via::WebDav, tr("A WebDAV server"));
@@ -194,34 +227,51 @@ impl NotesApp {
                                 }),
                                 sync::Via::WebDav => {
                                     ui.label(RichText::new(tr("Works with Nextcloud, ownCloud, Koofr, Box and most NAS boxes. Nextcloud: https://your-cloud/remote.php/dav/files/USERNAME/ with an app password (Settings ▸ Security).")).size(12.0).weak());
-                                    egui::Grid::new("dav_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                                        ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut s.url).hint_text(tr("https://")).desired_width(ui.available_width().min(320.0))); ui.end_row();
-                                        ui.label(tr("User name")); ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(ui.available_width().min(320.0))); ui.end_row();
-                                        ui.label(tr("Password")); ui.add(egui::TextEdit::singleline(&mut s.password).password(true).desired_width(ui.available_width().min(320.0))); ui.end_row();
-                                    });
+                                    if ui.available_width() < 360.0 {
+                                        ui.label(RichText::new(tr("Server address")).size(12.5).weak());
+                                        ui.add(egui::TextEdit::singleline(&mut s.url).hint_text(tr("https://")).desired_width(f32::INFINITY));
+                                        ui.label(RichText::new(tr("User name")).size(12.5).weak());
+                                        ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(f32::INFINITY));
+                                        ui.label(RichText::new(tr("Password")).size(12.5).weak());
+                                        ui.add(egui::TextEdit::singleline(&mut s.password).password(true).desired_width(f32::INFINITY));
+                                    } else {
+                                        egui::Grid::new("dav_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                                            ui.label(tr("Server address")); ui.add(egui::TextEdit::singleline(&mut s.url).hint_text(tr("https://")).desired_width(ui.available_width().min(320.0))); ui.end_row();
+                                            ui.label(tr("User name")); ui.add(egui::TextEdit::singleline(&mut s.user).desired_width(ui.available_width().min(320.0))); ui.end_row();
+                                            ui.label(tr("Password")); ui.add(egui::TextEdit::singleline(&mut s.password).password(true).desired_width(ui.available_width().min(320.0))); ui.end_row();
+                                        });
+                                    }
+                                    if sync::is_unencrypted_lan_url(&s.url) || s.allow_lan_http {
+                                        ui.add_space(4.0);
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.checkbox(&mut s.allow_lan_http, tr("Allow unencrypted local network (http://)"));
+                                        });
+                                        ui.label(RichText::new(tr("Warning: credentials and notes travel unencrypted over your local network.")).size(11.5).color(danger_color(ui)));
+                                    }
                                 }
                                 sync::Via::Google => {
                                     if !sync::google_ready() {
                                         ui.label(RichText::new(tr("Google Drive sign-in isn't set up in this build yet.")).weak());
                                     } else if s.google_token.is_empty() {
                                         ui.label(RichText::new(tr("Your notes go to a “Leaf Notes” folder in your Google Drive. Leaf Notes can only see the files it made itself, nothing else in your Drive.")).size(12.0).weak());
-                                        // wraps: on a phone the waiting line is wider than the window
                                         ui.horizontal_wrapped(|ui| {
-                                            match &self.st.google_rx {
+                                            match &self.st.sync_st.google_rx {
                                                 Some((url, _, paste)) => {
                                                     ui.spinner();
                                                     ui.label(tr("Finish signing in in your browser…"));
                                                     ui.hyperlink_to(tr("Open the page again"), url);
                                                     if ui.button(tr("Cancel")).clicked() { g_cancel = true; }
-                                                    // the browser can't always get back to the app (Android may have paused it): its address works too
                                                     ui.end_row();
                                                     ui.label(RichText::new(tr("Browser stuck on a page that won't load after signing in? Copy its address and paste it here:")).size(12.0).weak());
                                                     ui.end_row();
-                                                    let field = ui.add(egui::TextEdit::singleline(&mut self.st.google_paste).hint_text("http://127.0.0.1:…").desired_width(ui.available_width().min(320.0)));
+                                                    let field = ui.add(egui::TextEdit::singleline(&mut self.st.sync_st.google_paste).hint_text("http://127.0.0.1:…").desired_width(ui.available_width().min(320.0)));
                                                     let go = ui.button(tr("Finish")).clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                                                    if go && !self.st.google_paste.trim().is_empty() {
-                                                        if self.st.google_paste.contains("code=") { let _ = paste.send(std::mem::take(&mut self.st.google_paste)); }
-                                                        else { self.st.sync_err = tr("That address has no sign-in code in it — copy the whole address from the browser's address bar.").into(); }
+                                                    if go && !self.st.sync_st.google_paste.trim().is_empty() {
+                                                        if self.st.sync_st.google_paste.contains("code=") {
+                                                            let _ = paste.send(std::mem::take(&mut self.st.sync_st.google_paste));
+                                                        } else {
+                                                            self.st.sync_st.err = tr("That address has no sign-in code in it — copy the whole address from the browser's address bar.").into();
+                                                        }
                                                     }
                                                 }
                                                 None => {
@@ -238,21 +288,25 @@ impl NotesApp {
                                 sync::Via::Off => {}
                             }
                             let on = s.on();
-                            // changed here: wait for "Connect" (or for the window to close) rather than trying half-typed details
-                            if *s != before { self.st.sync_err.clear(); self.st.sync_pending = true; self.st.sync_at = f64::INFINITY; self.st.dirty = true; }
+                            if *s != before_s {
+                                self.st.sync_st.err.clear();
+                                self.st.sync_st.pending = true;
+                                self.st.sync_st.at = f64::INFINITY;
+                                self.st.dirty = true;
+                            }
                             if on {
                                 ui.add_space(4.0);
-                                ui.horizontal(|ui| {
-                                    let first = self.st.sync_ok == 0;
+                                ui.horizontal_wrapped(|ui| {
+                                    let first = self.st.sync_st.ok == 0;
                                     let b = if first { egui::Button::new(RichText::new(tr("Connect")).color(Color32::WHITE)).fill(accent_base()) } else { egui::Button::new(tr("Sync now")) };
-                                    if ui.add_enabled(self.st.sync_rx.is_none(), b).clicked() { self.st.sync_now = true; }
-                                    if self.st.sync_rx.is_some() { ui.spinner(); ui.label(tr("Syncing…")); }
-                                    else if !self.st.sync_err.is_empty() { ui.label(RichText::new(format!("⚠ {}", self.st.sync_err)).color(Color32::from_rgb(220, 80, 60))); }
-                                    else if self.st.sync_ok > 0 { ui.label(RichText::new(tf!("✓ Synced {x}", x = ago(self.st.sync_ok))).color(accent(ui))); }
+                                    if ui.add_enabled(self.st.sync_st.rx.is_none(), b).clicked() { self.st.sync_st.now = true; }
+                                    if self.st.sync_st.rx.is_some() { ui.spinner(); ui.label(tr("Syncing…")); }
+                                    else if !self.st.sync_st.err.is_empty() { ui.label(RichText::new(format!("⚠ {}", self.st.sync_st.err)).color(danger_color(ui))); }
+                                    else if self.st.sync_st.ok > 0 { ui.label(RichText::new(tf!("✓ Synced {x}", x = ago(self.st.sync_st.ok))).color(accent(ui))); }
                                 });
                                 ui.label(RichText::new(tf!("Sign-ins and passwords are kept in {place}. Pictures, PDFs and recordings sync too.", place = crate::keys::place())).size(11.5).weak());
-                                let s = &mut self.st.sync;
-                                row(ui, "Big recordings", "Recordings over this size stay on this device (they are large: about 115 MB an hour).", |ui| {
+                                let s = &mut self.st.sync_st.settings;
+                                row_below(ui, "Big recordings", "Recordings over this size stay on this device (they are large: about 115 MB an hour).", |ui| {
                                     egui::ComboBox::from_id_salt("rec-limit").selected_text(if s.max_recording_mb == 0 { tr("Always sync").to_string() } else { tf!("Over {n} MB stay here", n = s.max_recording_mb) }).show_ui(ui, |ui| {
                                         for n in [0u32, 25, 100, 250] { ui.selectable_value(&mut s.max_recording_mb, n, if n == 0 { tr("Always sync").to_string() } else { tf!("Over {n} MB stay here", n = n) }); }
                                     });
@@ -264,33 +318,32 @@ impl NotesApp {
                                         ctx.open_url(egui::OpenUrl::new_tab(&url));
                                         let (tx, rx) = std::sync::mpsc::channel();
                                         std::thread::spawn(move || { let _ = tx.send(sync::google_finish(sign_in)); });
-                                        self.st.google_rx = Some((url, rx, paste));
-                                        self.st.google_paste.clear();
-                                        self.st.sync_err.clear();
+                                        self.st.sync_st.google_rx = Some((url, rx, paste));
+                                        self.st.sync_st.google_paste.clear();
+                                        self.st.sync_st.err.clear();
                                     }
-                                    Err(e) => self.st.sync_err = e,
+                                    Err(e) => self.st.sync_st.err = e,
                                 }
                             }
-                            if g_cancel { self.st.google_rx = None; }
+                            if g_cancel { self.st.sync_st.google_rx = None; }
                             if g_out {
-                                let t = std::mem::take(&mut self.st.sync.google_token);
-                                self.st.sync.google_email.clear();
+                                let t = std::mem::take(&mut self.st.sync_st.settings.google_token);
+                                self.st.sync_st.settings.google_email.clear();
                                 std::thread::spawn(move || sync::google_revoke(&t));
                                 self.st.dirty = true;
                             }
-                            if self.st.sync.via == sync::Via::Google && !self.st.sync.on() && !self.st.sync_err.is_empty() {
-                                ui.label(RichText::new(format!("⚠ {}", self.st.sync_err)).color(Color32::from_rgb(220, 80, 60)));
+                            if self.st.sync_st.settings.via == sync::Via::Google && !self.st.sync_st.settings.on() && !self.st.sync_st.err.is_empty() {
+                                ui.label(RichText::new(format!("⚠ {}", self.st.sync_st.err)).color(danger_color(ui)));
                             }
                         }
                         _ => {
                             heading(ui, "Your data");
                             let dir = data_dir();
                             row(ui, "Where your notes live", &dir.display().to_string(), |ui| {
-                                let _ = &ui; // the button below is desktop-only
+                                let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
                                 if ui.button(tr("Open folder")).clicked() { let _ = std::fs::create_dir_all(&dir); crate::canvas::open_path(&dir); }
                             });
-                            // Android's notes folder can't be opened, so say plainly what the file leaves out
                             row(ui, "Backup", if cfg!(target_os = "android") { "Save a copy of every notebook as one file. Pictures, attachments and recordings are not in it." } else { "Save a copy of every notebook as one file (pictures and attachments stay in the folder above)." }, |ui| {
                                 let _ = &ui;
                                 #[cfg(not(target_os = "android"))]
@@ -312,7 +365,6 @@ impl NotesApp {
                                 if ui.button(tr("Files…")).clicked() { if let Some(f) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_files() { pdfs = f; } }
                             });
                             row(ui, "Daily backups", "A copy of your notes each day in the backups folder (pictures and recordings stay in the files folder); the last 7 are kept.", |ui| { toggle(ui, &mut p.auto_backup); });
-                            // what takes the space, roughly
                             let info = storage_summary(&data_dir());
                             row(ui, "Storage", &info, |_| {});
                             row(ui, "Import Markdown", "Each Markdown file becomes a page in this section; a folder becomes a new section.", |ui| {
@@ -323,21 +375,28 @@ impl NotesApp {
                                     if ui.button(tr("Files…")).clicked() { if let Some(f) = rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown", "txt"]).pick_files() { import = f; } }
                                 }
                                 #[cfg(target_os = "android")]
-                                if ui.button(tr("Files…")).clicked() { let _ = crate::droid::pick(5, "text/*", true); }
+                                if ui.button(tr("Files…")).clicked() { let _ = crate::droid::pick(5, "text/*,text/markdown,application/octet-stream", true); }
                             });
-                            row(ui, "Recently deleted", &if self.store.trash.is_empty() { tr("Nothing in here right now.").to_string() } else { tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()) }, |ui| { if ui.button(tr("Open")).clicked() { self.st.show_trash = true; } });
+                            row(ui, "Recently deleted", &if self.store.trash.is_empty() { tr("Nothing in here right now.").to_string() } else { tf!("{trash_n} item(s) waiting to be restored or removed.", trash_n = self.store.trash.len()) }, |ui| {
+                                if ui.button(tr("Open")).clicked() { self.st.modals.push(ActiveModal::Trash); }
+                            });
                             row(ui, "Lock sections again", "Opened locked sections close again after this long without use (and always when Leaf Notes closes).", |ui| {
                                 egui::ComboBox::from_id_salt("lock-after").selected_text(if p.lock_after_min == 0 { tr("Only when closing").to_string() } else { tf!("After {m} min", m = p.lock_after_min) }).show_ui(ui, |ui| {
                                     for m in [5u32, 10, 30, 60, 0] { ui.selectable_value(&mut p.lock_after_min, m, if m == 0 { tr("Only when closing").to_string() } else { tf!("After {m} min", m = m) }); }
                                 });
                             });
-                            row(ui, "Check for updates", "Once per start, asks GitHub whether a newer version is out (only the app's version is sent).", |ui| {
+                            row_below(ui, "Check for updates", "Once per start, asks GitHub whether a newer version is out (only the app's version is sent).", |ui| {
                                 toggle(ui, &mut p.check_updates);
-                                if self.st.update_rx.is_some() { ui.spinner(); }
-                                else if ui.button(tr("Check now")).clicked() { self.st.update_rx = Some(crate::updates::check(crate::welcome::VERSION, String::new())); self.st.update_manual = true; }
+                                if self.st.jobs.update_rx.is_some() { ui.spinner(); }
+                                else if ui.button(tr("Check now")).clicked() {
+                                    self.st.jobs.update_rx = Some(crate::updates::check(crate::welcome::VERSION, String::new()));
+                                    self.st.jobs.update_manual = true;
+                                }
                             });
-                            row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| { if ui.button(tr("Show")).clicked() { self.st.show_shortcuts = true; } });
-                            row(ui, "Privacy and terms", &tf!("Notes stay on your devices; secrets are kept in {place}. Leaf Notes is free software under the GPL-3.0.", place = crate::keys::place()), |ui| {
+                            row(ui, "Keyboard shortcuts", "Every shortcut on one card.", |ui| {
+                                if ui.button(tr("Show")).clicked() { self.st.modals.push(ActiveModal::Shortcuts); }
+                            });
+                            row_below(ui, "Privacy and terms", &tf!("Notes stay on your devices; secrets are kept in {place}. Leaf Notes is free software under the GPL-3.0.", place = crate::keys::place()), |ui| {
                                 ui.hyperlink_to(tr("Terms"), "https://leafnotes.briggen.dev/terms");
                                 ui.hyperlink_to(tr("Privacy policy"), "https://leafnotes.briggen.dev/privacy");
                             });
@@ -346,8 +405,7 @@ impl NotesApp {
                                 if !ui.data(|d| d.get_temp::<bool>(sure_id)).unwrap_or(false) {
                                     if ui.button(tr("Reset")).clicked() { ui.data_mut(|d| d.insert_temp(sure_id, true)); }
                                 } else {
-                                    if ui.button(RichText::new(tr("Yes, reset")).color(Color32::from_rgb(200, 60, 50))).clicked() {
-                                        // what's the person's own rather than a setting: kept
+                                    if ui.button(RichText::new(tr("Yes, reset")).color(danger_color(ui))).clicked() {
                                         let keep = Prefs { last: p.last, pens: p.pens.clone(), favorites: p.favorites.clone(), recent: p.recent.clone(), mic_ok: p.mic_ok, pen_detect: p.pen_detect, seen_version: p.seen_version.clone(), ..Prefs::default() };
                                         *p = keep;
                                         ctx.set_zoom_factor(1.0);
@@ -363,25 +421,24 @@ impl NotesApp {
         });
         if modal.should_close() { open = false; }
         if test { self.test_ai(); }
-        if let Some(f) = restore { self.st.restore_ask = Some(f); }
+        if let Some(f) = restore { self.st.modals.push(ActiveModal::RestoreAsk { path: f, parsed: None }); }
         if let Some(path) = backup_to {
-            // locked sections stay sealed in backups too
             let r = serde_json::to_vec_pretty(&self.sealed().unwrap_or_else(|| self.store.clone())).map_err(|e| e.to_string()).and_then(|b| crate::storage::write_atomic(&path, &b).map_err(|e| e.to_string()));
             if r.is_ok() { crate::shared(&path); }
             self.st.say(match r { Ok(_) => tf!("Backup saved to {path}", path = crate::where_saved(&path)), Err(e) => tf!("⚠ Backup failed: {e}", e = e) });
         }
         if !import.is_empty() { self.import_markdown(import); }
         if !pdfs.is_empty() { self.import_pdfs(pdfs); }
-        if serde_json::to_string(&self.st.p).unwrap_or_default() != before { apply_prefs(ctx, &self.st.p); self.st.dirty = true; }
-        if !open {
-            self.st.show_settings = false;
+        if self.st.p != before {
+            apply_prefs(ctx, &self.st.p);
             self.st.dirty = true;
         }
+        if !open { self.st.dirty = true; }
+        open
     }
 
     /// The first sync with a place that already has notes: combine, or take the synced notes.
-    pub(crate) fn sync_ask_window(&mut self, ctx: &egui::Context) {
-        let Some(pages) = self.st.sync_ask else { return };
+    pub(crate) fn sync_ask_window(&mut self, ctx: &egui::Context, pages: usize) -> bool {
         let mut choice = None;
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(22)).corner_radius(18);
         egui::Modal::new(egui::Id::unique("sync-ask")).frame(frame).show(ctx, |ui| {
@@ -391,7 +448,6 @@ impl NotesApp {
             ui.label(tf!("The sync location already has notes ({pages} pages), and this device has its own. How should this device join?", pages = pages));
             ui.add_space(12.0);
             if ui.add(egui::Button::new(RichText::new(tr("Combine both")).size(14.0).color(Color32::WHITE)).fill(accent_base()).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).clicked() { choice = Some(Some(sync::First::Merge)); }
-            // said under each choice (a phone shows no hover tips)
             ui.label(RichText::new(tr("Every notebook from both sides, on every device")).size(11.5).weak());
             ui.add_space(6.0);
             if ui.add(egui::Button::new(RichText::new(tr("Use only the synced notes")).size(14.0)).min_size(Vec2::new(ui.available_width(), 36.0)).corner_radius(10)).clicked() { choice = Some(Some(sync::First::UseShared)); }
@@ -399,39 +455,39 @@ impl NotesApp {
             ui.add_space(6.0);
             if ui.add(egui::Button::new(tr("Not now — turn sync off")).frame_when_inactive(false)).clicked() { choice = Some(None); }
         });
-        let Some(c) = choice else { return };
-        self.st.sync_ask = None;
+        let Some(c) = choice else { return true };
         match c {
-            None => { self.st.sync.via = sync::Via::Off; self.st.dirty = true; self.st.say("Sync is off."); }
+            None => { self.st.sync_st.settings.via = sync::Via::Off; self.st.dirty = true; self.st.say("Sync is off."); }
             Some(first) => {
                 if first == sync::First::UseShared {
                     let path = data_dir().join(format!("before-sync-{}.json", now_secs()));
-                    // sealed: an opened locked section never reaches this file in plain text
                     let notes = self.sealed().unwrap_or_else(|| self.store.clone());
                     match serde_json::to_vec(&notes).map_err(|e| e.to_string()).and_then(|b| crate::storage::write_atomic(&path, &b).map_err(|e| e.to_string())) {
                         Ok(()) => self.st.say(tf!("This device's notes were saved to {path}", path = path.display())),
-                        Err(e) => { self.st.say(tf!("⚠ Couldn't back up this device's notes ({e}), so nothing was replaced.", e = e)); return; }
+                        Err(e) => { self.st.say(tf!("⚠ Couldn't back up this device's notes ({e}), so nothing was replaced.", e = e)); return false; }
                     }
                 }
                 self.start_sync(Some(first));
             }
         }
+        false
     }
-
 }
 
 /// "Recordings 1.1 GB · Pictures 80 MB · …" for the files folder and the notes themselves (cached a few seconds).
 fn storage_summary(dir: &std::path::Path) -> String {
     thread_local! { static CACHE: std::cell::RefCell<(f64, String)> = const { std::cell::RefCell::new((-100.0, String::new())) }; }
     if let Some(s) = CACHE.with(|c| { let c = c.borrow(); (now_f() - c.0 < 5.0).then(|| c.1.clone()) }) { return s; }
-    let mut sizes = [0u64; 4]; // recordings, pictures, PDFs and files, notes
+    let mut sizes = [0u64; 4];
     for e in std::fs::read_dir(dir.join("files")).into_iter().flatten().flatten() {
         let len = e.metadata().map(|m| m.len()).unwrap_or(0);
         let name = e.file_name().to_string_lossy().to_lowercase();
         let k = if name.ends_with(".wav") || name.ends_with(".wav.part") { 0 } else if [".png", ".jpg", ".jpeg", ".webp"].iter().any(|x| name.ends_with(x)) { 1 } else { 2 };
         sizes[k] += len;
     }
-    for sub in ["pages", "history"] { for e in std::fs::read_dir(dir.join(sub)).into_iter().flatten().flatten() { sizes[3] += e.metadata().map(|m| m.len()).unwrap_or(0); } }
+    for sub in ["pages", "history"] {
+        for e in std::fs::read_dir(dir.join(sub)).into_iter().flatten().flatten() { sizes[3] += e.metadata().map(|m| m.len()).unwrap_or(0); }
+    }
     let mb = |b: u64| if b >= 1 << 30 { format!("{:.1} GB", b as f64 / (1u64 << 30) as f64) } else { format!("{:.0} MB", (b as f64 / (1u64 << 20) as f64).ceil()) };
     let s = tf!("Recordings {a} · Pictures {b} · PDFs and files {c} · Notes and history {d}", a = mb(sizes[0]), b = mb(sizes[1]), c = mb(sizes[2]), d = mb(sizes[3]));
     CACHE.with(|c| *c.borrow_mut() = (now_f(), s.clone()));
