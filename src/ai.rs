@@ -549,6 +549,41 @@ mod tests {
         assert!(ask(&lan_http, "", "hi", None, &AtomicBool::new(false)).is_err());
     }
 
+    fn read_http_request(c: &mut std::net::TcpStream) -> String {
+        let mut req = vec![];
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = c.read(&mut buf).unwrap();
+            req.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&req);
+            if let Some(h) = text.find("\r\n\r\n") {
+                let len: usize = text[..h]
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                    .unwrap_or(0);
+                if req.len() >= h + 4 + len {
+                    break;
+                }
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&req).into_owned()
+    }
+
+    fn finish_http_response(c: &mut std::net::TcpStream) {
+        let _ = c.flush();
+        let _ = c.shutdown(std::net::Shutdown::Write);
+        let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        let mut drain = [0u8; 64];
+        while let Ok(n) = c.read(&mut drain) {
+            if n == 0 {
+                break;
+            }
+        }
+    }
+
     #[test]
     fn streams_sse_for_openai_and_anthropic_and_omits_empty_bearer() {
         // OpenAI SSE mock
@@ -556,15 +591,14 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (mut c, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 4096];
-            let n = c.read(&mut buf).unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let req = read_http_request(&mut c);
             let body = concat!(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\n",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\n",
                 "data: [DONE]\n\n"
             );
             write!(c, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            finish_http_response(&mut c);
             req
         });
         let s = AiSettings {
@@ -587,14 +621,14 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (mut c, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 4096];
-            let _ = c.read(&mut buf);
+            let _ = read_http_request(&mut c);
             let body = concat!(
                 "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi \"}}\n\n",
                 "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Claude\"}}\n\n",
                 "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
             );
             write!(c, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            finish_http_response(&mut c);
         });
         let s2 = AiSettings {
             provider: Provider::Anthropic,
@@ -614,12 +648,12 @@ mod tests {
     fn non_json_502_reports_http_status_not_json_error() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
+        let server = std::thread::spawn(move || {
             let (mut c, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 4096];
-            let _ = c.read(&mut buf);
+            let _ = read_http_request(&mut c);
             let body = "<html>502 Bad Gateway</html>";
             write!(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            finish_http_response(&mut c);
         });
         let s = AiSettings {
             provider: Provider::OpenAiCompatible,
@@ -629,6 +663,7 @@ mod tests {
             ..Default::default()
         };
         let err = ask(&s, "", "hi", None, &AtomicBool::new(false)).unwrap_err();
+        server.join().unwrap();
         assert_eq!(err.status, Some(502));
         assert!(!err.is_vision_rejected());
         assert!(err.message.contains("502"), "{}", err.message);
